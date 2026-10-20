@@ -23,7 +23,7 @@ To install elsewhere, run `make install PREFIX=/your/prefix`. The executable is 
 
 ```bash
 dch config   # Add or remove projects; an empty path selects the current directory
-dch list     # Show registered projects and their status, then select one for details
+dch list     # Show registered projects, their status, and container IDs
 dch build    # Select a project and rebuild its container or build its image only
 dch up       # Select a project and run devcontainer up
 dch connect  # Select a running project and open a shell with devcontainer exec
@@ -57,7 +57,9 @@ Removing a project with `dch config` removes only its registration. It does not 
 
 ## Status
 
-`dch list` finds containers with the `devcontainer.local_folder` label using `docker ps -a`, then uses `docker inspect` to match the exact workspace path and, when present, `devcontainer.config_file`. It does not infer projects from container names.
+`dch list` finds containers with the `devcontainer.local_folder` label using `docker ps -a`, then uses `docker inspect` to match the exact workspace path and, when present, `devcontainer.config_file`. It shows the matched container ID, or `-` when there is no matching container. It does not infer projects from container names.
+
+On a terminal, the table colors its header, statuses, and container IDs. Redirected output stays plain text. Set `NO_COLOR=1` to disable colors.
 
 Possible states include `RUNNING`, `STOPPED`, `NOT CREATED`, and `CONFIG MISSING/INVALID`. When Docker is unavailable, valid projects show `UNKNOWN` and a warning is printed. If a project has multiple matching containers, the status includes their count.
 
