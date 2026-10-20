@@ -12,12 +12,12 @@
 ## Install
 
 ```bash
-go build -o dch .
-mkdir -p ~/.local/bin
-install -m 755 dch ~/.local/bin/dch
+make install
 # Ensure ~/.local/bin is on PATH:
 export PATH="$HOME/.local/bin:$PATH"
 ```
+
+To install elsewhere, run `make install PREFIX=/your/prefix`. The executable is installed in `PREFIX/bin`.
 
 ## Usage
 
@@ -77,5 +77,5 @@ Possible states include `RUNNING`, `STOPPED`, `NOT CREATED`, and `CONFIG MISSING
 Run the tests with:
 
 ```bash
-go test ./...
+make test
 ```
