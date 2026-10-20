@@ -1,75 +1,80 @@
 # dch — devcontainer helper
 
-一個單一 Go binary 的 Dev Container 管理工具，適合在 Linux / WSL2 / macOS 的 terminal 使用。只需 Go 標準函式庫，沒有額外 Go dependency。
+`dch` is a single-binary Dev Container helper for Linux, WSL2, and macOS terminals. It uses only the Go standard library.
 
-## 前置需求
+## Prerequisites
 
-- Docker CLI + 可存取的 Docker daemon
-- 官方 [Dev Container CLI](https://github.com/devcontainers/cli)：`npm install -g @devcontainers/cli` (或官方安裝腳本)
-- 建置原始碼使用 Go 1.21+（下載預先建置的 Linux binary 則不需要 Go）
-- 專案位置必須有 `<project>/.devcontainer/devcontainer.json`
+- Docker CLI and an accessible Docker daemon
+- Official [Dev Container CLI](https://github.com/devcontainers/cli): `npm install -g @devcontainers/cli` (or its official install script)
+- Go 1.21 or later to build from source (not required for a prebuilt binary)
+- A `<project>/.devcontainer/devcontainer.json` file in each project you register
 
-## 安裝
+## Install
 
 ```bash
 go build -o dch .
 mkdir -p ~/.local/bin
 install -m 755 dch ~/.local/bin/dch
-# 確認 ~/.local/bin 在 PATH：
+# Ensure ~/.local/bin is on PATH:
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-## 使用
+## Usage
 
 ```bash
-dch config   # Add project / Remove project / Done：加入時輸入 project path，空白 = 當前目錄
-dch list     # 顯示所有註冊項目及狀態，再透過選單查看單一項目詳細資訊
-dch build    # 選專案，再選「完整重建+重建容器」或「只 build image」
-dch up       # 選專案，devcontainer up
-dch connect  # 選 RUNNING 專案，用 devcontainer exec 開啟 shell
+dch config   # Add or remove projects; an empty path selects the current directory
+dch list     # Show registered projects and their status, then select one for details
+dch build    # Select a project and rebuild its container or build its image only
+dch up       # Select a project and run devcontainer up
+dch connect  # Select a running project and open a shell with devcontainer exec
+dch help     # Show command help
 ```
 
-互動選單：方向鍵上下 + Enter 選擇，`q` / `Esc` 取消；非 TTY 時自動改為編號選單。
+Use the arrow keys and Enter to select a menu item. Press `q` or Esc to cancel. When stdin is not a terminal, menus use numbered choices.
 
-### `~/.dch/config` 格式
+### Configuration file
 
-內容是 JSON（無 `.json` 副檔名），只存**專案路徑**；名稱每次從 `.devcontainer/devcontainer.json` 讀取（支援 JSONC 的註解與尾逗號），若 `name` 未設定，使用資料夾名稱。
+`~/.dch/config` is JSON without a `.json` extension. It stores **only project paths**. `dch` reads each project's name from `.devcontainer/devcontainer.json` every time; comments and trailing commas in that file are supported. If `name` is missing, the directory name is used.
 
 ```json
 {
   "version": 1,
   "projects": [
-    "/home/alanli/Projects/aol-svr-external",
-    "/home/alanli/Projects/another-app"
+    "/home/user/projects/app-one",
+    "/home/user/projects/app-two"
   ]
 }
 ```
 
-`dch config` 的 Remove **只會移除註冊紀錄**，不刪除 container、image 或 workspace。
+Removing a project with `dch config` removes only its registration. It does not delete its container, image, or workspace.
 
-### Build 的兩種模式
+### Build modes
 
-| 模式 | 對應指令 | 效果 |
+| Mode | Command | Result |
 | --- | --- | --- |
-| 完整重建（預設第一個選項） | `devcontainer up --workspace-folder PATH --remove-existing-container --build-no-cache` | 刪除現有 devcontainer 並無快取重建，**會啟動**；需要再次確認。container writable layer 內的未持久化變更可能遺失。 |
-| 只 build image | `devcontainer build --workspace-folder PATH --no-cache` | 只產生 image，不會替換已在執行的 container；下次 `up` 未必使用剛 build 的 image。 |
+| Rebuild and recreate (first option) | `devcontainer up --workspace-folder PATH --remove-existing-container --build-no-cache` | Recreates the existing container without using the build cache, then starts it. Requires confirmation. Unsaved changes in the container's writable layer may be lost. |
+| Build image only | `devcontainer build --workspace-folder PATH --no-cache` | Builds an image without replacing the running container. A later `up` may not use the newly built image. |
 
 ## Status
 
-`dch list` 使用 `docker ps -a` 取得帶 `devcontainer.local_folder` label 的容器，再用 `docker inspect` 比對 exact workspace path 與 `devcontainer.config_file`；不是根據 container name 猜測。
+`dch list` finds containers with the `devcontainer.local_folder` label using `docker ps -a`, then uses `docker inspect` to match the exact workspace path and, when present, `devcontainer.config_file`. It does not infer projects from container names.
 
-狀態：`RUNNING`、`STOPPED`、`NOT CREATED`、`CONFIG MISSING/INVALID`，Docker 不可用時顯示 `UNKNOWN` 並提示錯誤。若同專案有多個容器會附上數量。
+Possible states include `RUNNING`, `STOPPED`, `NOT CREATED`, and `CONFIG MISSING/INVALID`. When Docker is unavailable, valid projects show `UNKNOWN` and a warning is printed. If a project has multiple matching containers, the status includes their count.
 
-`dch connect` 走 `devcontainer exec`，會使用 Dev Container CLI 的 `remoteUser`、`remoteEnv` 設定。優先使用 bash，沒有 bash 時改為 sh。專案如果 `STOPPED`，請先 `dch up`。
+`dch connect` uses `devcontainer exec`, which applies the Dev Container CLI's `remoteUser` and `remoteEnv` settings. It starts bash when available and falls back to sh. Run `dch up` before connecting to a stopped project.
 
-## 限制
+## Limitations
 
-- 只支援專案根目錄的 `.devcontainer/devcontainer.json`，不含多個並列的設定檔或只存放 `.devcontainer.json` 的形式。
-- 狀態比對使用本機絕對路徑；若專案透過不同 symlink/Windows VS Code 路徑建立容器，Docker label 可能不一致，狀態無法匹配。
-- 官方 `devcontainer` CLI 支援 Docker Compose devcontainer，但 Docker label 的行為依設定而異；沒有 matching label 的 Compose service 可能不會出現在 `dch list`。
-- 未實作 Docker stop/down（避免超出需求的破壞性操作）。
+- Only `.devcontainer/devcontainer.json` at the project root is supported. Multiple configuration files and a root-level `.devcontainer.json` are not supported.
+- Status matching uses local absolute paths. A container created through a different symlink or Windows/VS Code path may have a different Docker label and fail to match.
+- The official `devcontainer` CLI supports Docker Compose devcontainers, but labels vary by configuration. A Compose service without a matching label may not appear in `dch list`.
+- Docker stop/down commands are not implemented.
 
-## 測試
+## Development
+
+`main.go` is the CLI entry point. Command implementations are in `internal/commands`, with one file per user-facing command and separate files for shared configuration, project, Docker, and menu logic.
+
+Run the tests with:
 
 ```bash
 go test ./...

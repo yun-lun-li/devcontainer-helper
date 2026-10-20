@@ -15,6 +15,8 @@ import (
 var input = bufio.NewReader(os.Stdin)
 var errCancelled = errors.New("cancelled")
 
+// choose shows a native arrow-key menu for Linux/macOS terminals (via stty).
+// For redirected stdin, or when stty is unavailable, it falls back to numbered choices.
 func choose(title string, options []string) (int, error) {
 	if len(options) == 0 {
 		return -1, errors.New("no options")

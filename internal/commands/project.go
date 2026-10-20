@@ -14,6 +14,8 @@ type Project struct {
 	Valid                                bool
 }
 
+// jsoncToJSON blanks comments and trailing commas without modifying string literals.
+// The devcontainer.json format permits both (JSON with Comments / JSONC).
 func jsoncToJSON(in []byte) ([]byte, error) {
 	out := bytes.Clone(in)
 	inString, escape := false, false

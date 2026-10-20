@@ -25,6 +25,3 @@ func invokeDevcontainer(args ...string) error {
 	}
 	return nil
 }
-
-// choose shows a native arrow-key menu for Linux/macOS terminals (via stty).
-// For redirected stdin, or when stty is unavailable, it falls back to numbered choices.

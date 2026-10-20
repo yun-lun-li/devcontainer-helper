@@ -107,6 +107,3 @@ func normalizePath(s string) (string, error) {
 	}
 	return abs, nil
 }
-
-// jsoncToJSON blanks comments and trailing commas without modifying string literals.
-// The devcontainer.json format permits both (JSON with Comments / JSONC).
