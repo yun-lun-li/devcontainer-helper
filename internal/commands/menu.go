@@ -88,29 +88,8 @@ func arrowChoose(title string, opts []string) (index int, used bool, err error) 
 		fmt.Printf("\033[%dA", len(opts))
 	}
 	render()
-	buf := make([]byte, 1)
-	readByte := func(timeout time.Duration) (byte, error) {
-		deadline := time.Now().Add(timeout)
-		for {
-			select {
-			case <-sig:
-				return 0, errCancelled
-			default:
-			}
-			n, err := os.Stdin.Read(buf)
-			if err != nil {
-				return 0, err
-			}
-			if n > 0 {
-				return buf[0], nil
-			}
-			if timeout > 0 && time.Now().After(deadline) {
-				return 0, io.EOF
-			}
-		}
-	}
 	for {
-		b, e := readByte(0)
+		b, e := readTTYByte(os.Stdin, 0, sig)
 		if e != nil {
 			fmt.Printf("\033[%dB", len(opts))
 			return 0, true, e
@@ -128,7 +107,7 @@ func arrowChoose(title string, opts []string) (index int, used bool, err error) 
 		case 'k':
 			index = (index + len(opts) - 1) % len(opts)
 		case 27:
-			next, e := readByte(200 * time.Millisecond)
+			next, e := readTTYByte(os.Stdin, 200*time.Millisecond, sig)
 			if e != nil {
 				fmt.Printf("\033[%dB", len(opts))
 				return -1, true, errCancelled
@@ -137,7 +116,7 @@ func arrowChoose(title string, opts []string) (index int, used bool, err error) 
 				fmt.Printf("\033[%dB", len(opts))
 				return -1, true, errCancelled
 			}
-			dir, e := readByte(200 * time.Millisecond)
+			dir, e := readTTYByte(os.Stdin, 200*time.Millisecond, sig)
 			if e != nil {
 				fmt.Printf("\033[%dB", len(opts))
 				return -1, true, errCancelled
@@ -152,6 +131,30 @@ func arrowChoose(title string, opts []string) (index int, used bool, err error) 
 			continue
 		}
 		render()
+	}
+}
+
+// VMIN=0 and VTIME>0 can make an idle terminal read return io.EOF.
+// Keep waiting for a key until the optional escape-sequence timeout expires.
+func readTTYByte(r io.Reader, timeout time.Duration, sig <-chan os.Signal) (byte, error) {
+	deadline := time.Now().Add(timeout)
+	var buf [1]byte
+	for {
+		select {
+		case <-sig:
+			return 0, errCancelled
+		default:
+		}
+		n, err := r.Read(buf[:])
+		if n > 0 {
+			return buf[0], nil
+		}
+		if err != nil && !errors.Is(err, io.EOF) {
+			return 0, err
+		}
+		if timeout > 0 && time.Now().After(deadline) {
+			return 0, io.EOF
+		}
 	}
 }
 
