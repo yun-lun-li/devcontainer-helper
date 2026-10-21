@@ -106,3 +106,97 @@ func testStopProject(t *testing.T, answer, want string) {
 		t.Fatalf("unexpected Docker actions: %s", got)
 	}
 }
+
+func TestStopHandlesContainersDisappearing(t *testing.T) {
+	for _, tc := range []struct {
+		mode, wantLog string
+		wantError     bool
+	}{
+		{"auto", "stop vanishing\n", false},
+		{"race", "stop vanishing\nrm vanishing\n", false},
+		{"failure", "stop vanishing\nrm vanishing\n", true},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			root := t.TempDir()
+			project := filepath.Join(root, "project")
+			container := DockerContainer{ID: "vanishing"}
+			container.State.Running = true
+			container.Config.Labels = map[string]string{
+				"devcontainer.local_folder": project,
+				"devcontainer.config_file":  filepath.Join(project, ".devcontainer", "devcontainer.json"),
+			}
+			data, err := json.Marshal([]DockerContainer{container})
+			if err != nil {
+				t.Fatal(err)
+			}
+			bin := filepath.Join(root, "bin")
+			if err := os.Mkdir(bin, 0700); err != nil {
+				t.Fatal(err)
+			}
+			gone := filepath.Join(root, "gone")
+			logPath := filepath.Join(root, "docker.log")
+			script := fmt.Sprintf(`#!/bin/sh
+case "$1" in
+  ps) if [ ! -f %q ]; then echo vanishing; fi ;;
+  inspect) cat <<'JSON'
+%s
+JSON
+    ;;
+  stop) echo "stop $2" >> %q; if [ "$DCH_TEST_MODE" = auto ]; then touch %q; fi ;;
+  rm) echo "rm $2" >> %q
+      if [ "$DCH_TEST_MODE" = failure ]; then
+        echo 'permission denied' >&2
+      else
+        touch %q
+        echo 'Error response from daemon: No such container: vanishing' >&2
+      fi
+      exit 1 ;;
+esac
+`, gone, data, logPath, gone, logPath, gone)
+			if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("DCH_TEST_MODE", tc.mode)
+			previous := input
+			input = bufio.NewReader(strings.NewReader("y\n"))
+			defer func() { input = previous }()
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			previousStdout := os.Stdout
+			os.Stdout = w
+			defer func() { os.Stdout = previousStdout }()
+			stopErr := stopProject(Project{Name: "project", Path: project})
+			if (stopErr != nil) != tc.wantError {
+				t.Fatalf("stopProject error = %v, want error %v", stopErr, tc.wantError)
+			}
+			w.Close()
+			output, err := io.ReadAll(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			log, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(log) != tc.wantLog {
+				t.Fatalf("unexpected Docker actions: %s", log)
+			}
+			if strings.Contains(string(output), "No such container") {
+				t.Fatalf("reported an already removed container as an error: %s", output)
+			}
+			if tc.mode == "auto" && !strings.Contains(string(output), "No matching containers remain") {
+				t.Fatalf("missing auto-removal notice: %s", output)
+			}
+			if tc.mode == "race" && !strings.Contains(string(output), "was already removed") {
+				t.Fatalf("missing removal-race notice: %s", output)
+			}
+			if tc.mode == "failure" && !strings.Contains(stopErr.Error(), "permission denied") {
+				t.Fatalf("lost the real Docker error: %v", stopErr)
+			}
+		})
+	}
+}

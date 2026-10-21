@@ -23,6 +23,15 @@ type DockerContainer struct {
 }
 
 func inspectContainers() ([]DockerContainer, error) {
+	containers, err := inspectContainersOnce()
+	if err != nil && strings.HasPrefix(err.Error(), "docker inspect:") {
+		// A container can vanish between ps and inspect after being stopped.
+		return inspectContainersOnce()
+	}
+	return containers, err
+}
+
+func inspectContainersOnce() ([]DockerContainer, error) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return nil, fmt.Errorf("docker executable not found")
 	}
