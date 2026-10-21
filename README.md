@@ -22,36 +22,35 @@ To install elsewhere, run `make install PREFIX=/your/prefix`. The executable is 
 ## Quick start
 
 ```bash
-dch
+dch register --path .          # Register the current directory
+dch console                    # Open the Projects console
 ```
 
-The main menu has **Projects**, **Manage registrations**, and **Quit**. To add your first project, open **Manage registrations → Add project** and enter its directory. Press Enter at the path prompt to register the current directory. The project must contain `.devcontainer/devcontainer.json`.
+`dch register --path PATH` is the only registration command. Relative paths are resolved against the current directory and stored as absolute paths; `~` is also supported. The project must contain `.devcontainer/devcontainer.json`. Registering the same path again is safe and does not create a duplicate.
 
-Open **Projects** to see every registered project, its container state, and its path. Select a project to choose an action:
+`dch console` opens directly on the Projects list. Running `dch` without arguments opens the same console. Each row shows a registered project's name, container state, and path. Select a project to choose an action:
 
 | Project state | Available actions |
 | --- | --- |
-| `RUNNING` | **Connect**, **Stop**, **Build** |
-| `STOPPED` or `NOT CREATED` | **Start**, **Build** |
-| `UNKNOWN` or `CONFIG MISSING/INVALID` | No container actions until Docker or the configuration is fixed |
+| `RUNNING` | **Connect**, **Stop**, **Build**, **Remove Project** |
+| `STOPPED` or `NOT CREATED` | **Start**, **Build**, **Remove Project** |
+| `UNKNOWN` or `CONFIG MISSING/INVALID` | **Remove Project**; container actions require Docker and a valid configuration |
 
 **Connect** opens a shell through `devcontainer exec`, which applies the Dev Container CLI's `remoteUser` and `remoteEnv` settings. It starts bash when available and falls back to sh. **Start** runs `devcontainer up`. The project and action screens refresh Docker status after an operation.
 
-**Stop** stops the project's running containers, then asks whether to delete any matching containers that remain. Answer No to keep them in the `STOPPED` state so **Start** can run them again. Answer Yes to remove them; changes stored only in a container's writable layer are lost. If Docker has already removed a container after stopping it, there is nothing further to delete. The project registration, workspace files, and images are kept. **Manage registrations → Remove project** only unregisters the path; it does not remove any container or file.
+**Stop** stops the project's running containers, then asks whether to delete any matching containers that remain. Answer No to keep them in the `STOPPED` state so **Start** can run them again. Answer Yes to remove them; changes stored only in a container's writable layer are lost. If Docker has already removed a container after stopping it, there is nothing further to delete. **Remove Project** only unregisters the path after confirmation. It keeps project files, containers, and images.
 
 Use ↑/↓ or `j`/`k` to move, Enter to select, and `q` or Esc to go back. The interface redraws in one terminal screen and hides the cursor while a menu is open. The cursor reappears for prompts and shells, and quitting restores the original terminal view. Set `NO_COLOR=1` to disable colors. When stdin is redirected, menus use numbered choices instead.
 
-### Direct commands
+### Commands
 
-You can also run these commands directly. `config`, `build`, `up`, and `connect` still prompt for selections; `list` and `help` print output without a menu.
+The command line has three primary commands. Container operations are available inside the console.
 
 ```bash
-dch config   # Add or remove project paths
-dch list     # Show projects, status, paths, and container IDs
-dch build    # Select a project and build or recreate it
-dch up       # Select a project and run devcontainer up
-dch connect  # Select a running project and open a shell
-dch help     # Show command help
+dch register --path PATH  # Register one project; accepts relative paths
+dch list                  # Print projects, status, paths, and container IDs
+dch console               # Open the interactive Projects console
+dch help                  # Show command help
 ```
 
 ### Configuration file

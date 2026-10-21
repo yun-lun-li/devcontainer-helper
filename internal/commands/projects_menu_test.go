@@ -19,12 +19,12 @@ func TestAvailableProjectActions(t *testing.T) {
 		docker bool
 		want   []projectAction
 	}{
-		{"RUNNING", true, true, []projectAction{actionConnect, actionStop, actionBuild, actionBack}},
-		{"RUNNING (2)", true, true, []projectAction{actionConnect, actionStop, actionBuild, actionBack}},
-		{"STOPPED", true, true, []projectAction{actionStart, actionBuild, actionBack}},
-		{"NOT CREATED", true, true, []projectAction{actionStart, actionBuild, actionBack}},
-		{"UNKNOWN", true, false, []projectAction{actionBack}},
-		{"CONFIG MISSING/INVALID", false, true, []projectAction{actionBack}},
+		{"RUNNING", true, true, []projectAction{actionConnect, actionStop, actionBuild, actionRemove, actionBack}},
+		{"RUNNING (2)", true, true, []projectAction{actionConnect, actionStop, actionBuild, actionRemove, actionBack}},
+		{"STOPPED", true, true, []projectAction{actionStart, actionBuild, actionRemove, actionBack}},
+		{"NOT CREATED", true, true, []projectAction{actionStart, actionBuild, actionRemove, actionBack}},
+		{"UNKNOWN", true, false, []projectAction{actionRemove, actionBack}},
+		{"CONFIG MISSING/INVALID", false, true, []projectAction{actionRemove, actionBack}},
 	}
 	for _, tc := range cases {
 		got := availableProjectActions(Project{State: tc.state, Valid: tc.valid}, tc.docker)

@@ -1,7 +1,7 @@
 package commands
 
 import (
-	"bufio"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -13,11 +13,11 @@ func TestRunRejectsUnknownCommand(t *testing.T) {
 	}
 }
 
-func TestRunOpensMainMenuWithoutArguments(t *testing.T) {
-	previous := input
-	input = bufio.NewReader(strings.NewReader("2\n3\n3\n"))
-	t.Cleanup(func() { input = previous })
-	if err := Run(nil); err != nil {
-		t.Fatalf("Run(nil) returned %v", err)
+func TestRunOpensProjectsConsole(t *testing.T) {
+	t.Setenv("DCH_CONFIG", filepath.Join(t.TempDir(), "config"))
+	for _, args := range [][]string{nil, {"console"}} {
+		if err := Run(args); err != nil {
+			t.Fatalf("Run(%v) returned %v", args, err)
+		}
 	}
 }

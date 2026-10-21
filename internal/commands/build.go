@@ -1,13 +1,5 @@
 package commands
 
-func build() error {
-	p, err := selectRunnableProject("build")
-	if err != nil {
-		return err
-	}
-	return buildProject(p)
-}
-
 func buildProject(p Project) error {
 	if err := requireExecutable("devcontainer"); err != nil {
 		return err

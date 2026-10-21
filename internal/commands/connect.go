@@ -5,20 +5,12 @@ import (
 	"strings"
 )
 
-func connect() error {
-	p, err := selectRunnableProject("connect")
-	if err != nil {
-		return err
-	}
-	return connectProject(p)
-}
-
 func connectProject(p Project) error {
 	if err := requireExecutable("devcontainer"); err != nil {
 		return err
 	}
 	if !strings.HasPrefix(p.State, "RUNNING") {
-		return fmt.Errorf("%s is not RUNNING; use `dch up` first", p.Name)
+		return fmt.Errorf("%s is not RUNNING; use Start in dch console first", p.Name)
 	}
 	// Use devcontainer exec so remoteUser and remoteEnv are applied.
 	// Prefer bash when present; /bin/sh is the portable fallback.

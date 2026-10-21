@@ -13,6 +13,7 @@ const (
 	actionStart   projectAction = "Start"
 	actionStop    projectAction = "Stop"
 	actionBuild   projectAction = "Build"
+	actionRemove  projectAction = "Remove Project"
 	actionBack    projectAction = "Back to projects"
 )
 
@@ -23,7 +24,7 @@ func projectsMenu() error {
 			return err
 		}
 		if len(projects) == 0 {
-			screenNotice("Projects", "No registered projects. Add one in Manage registrations.")
+			screenNotice("Projects", "No registered projects. Run dch register --path PROJECT_PATH first.")
 			return nil
 		}
 		statusErr := updateStatuses(projects)
@@ -31,7 +32,7 @@ func projectsMenu() error {
 		for _, p := range projects {
 			options = append(options, fmt.Sprintf("%s  [%s]  %s", p.Name, p.State, p.Path))
 		}
-		options = append(options, "Back to main menu")
+		options = append(options, "Quit console")
 		title := "Projects"
 		if statusErr != nil {
 			title += "  /  Docker unavailable"
@@ -86,6 +87,12 @@ func projectMenu(path string) error {
 			err = stopProject(p)
 		case actionBuild:
 			err = buildProject(p)
+		case actionRemove:
+			var removed bool
+			removed, err = removeProjectRegistration(p)
+			if removed {
+				return nil
+			}
 		case actionBack:
 			return nil
 		}
@@ -111,6 +118,8 @@ func chooseProject(p Project, actions []projectAction) (int, error) {
 			options[i] = "■ Stop  Stop the running container"
 		case actionBuild:
 			options[i] = "▣ Build  Rebuild container or image"
+		case actionRemove:
+			options[i] = "✕ Remove Project  Unregister this project"
 		case actionBack:
 			options[i] = "← Back to projects"
 		}
@@ -129,5 +138,5 @@ func availableProjectActions(p Project, dockerAvailable bool) []projectAction {
 		}
 		actions = append(actions, actionBuild)
 	}
-	return append(actions, actionBack)
+	return append(actions, actionRemove, actionBack)
 }

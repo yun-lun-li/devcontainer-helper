@@ -88,15 +88,3 @@ func statusColor(state string) string {
 		return "\x1b[90m"
 	}
 }
-
-func selectProject(command string, projects []Project) (Project, error) {
-	options := make([]string, len(projects))
-	for i, p := range projects {
-		options[i] = fmt.Sprintf("%s  [%s]  %s", p.Name, p.State, p.Path)
-	}
-	i, err := choose("Select project for dch "+command, options)
-	if err != nil {
-		return Project{}, err
-	}
-	return projects[i], nil
-}
