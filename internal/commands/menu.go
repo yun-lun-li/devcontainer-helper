@@ -16,23 +16,29 @@ import (
 var input = bufio.NewReader(os.Stdin)
 var errCancelled = errors.New("cancelled")
 
+type menuView struct {
+	title   string
+	project *Project
+	options []string
+}
+
 // choose shows a native arrow-key menu for Linux/macOS terminals (via stty).
 // For redirected stdin, or when stty is unavailable, it falls back to numbered choices.
 func choose(title string, options []string) (int, error) {
-	if len(options) == 0 {
+	return chooseView(menuView{title: title, options: options})
+}
+
+func chooseView(view menuView) (int, error) {
+	if len(view.options) == 0 {
 		return -1, errors.New("no options")
 	}
-	if index, ok, err := arrowChoose(title, options); ok {
+	if index, ok, err := arrowChoose(view); ok {
 		return index, err
 	}
 	clearScreen()
 	color := menuColorEnabled()
-	if color {
-		fmt.Printf("\n\x1b[1;35m%s\x1b[0m\n", title)
-	} else {
-		fmt.Println("\n" + title)
-	}
-	for i, opt := range options {
+	printMenuHeader(view, color)
+	for i, opt := range view.options {
 		if color {
 			fmt.Printf("  \x1b[1;36m%d)\x1b[0m %s\n", i+1, styledMenuOption(opt))
 		} else {
@@ -50,7 +56,7 @@ func choose(title string, options []string) (int, error) {
 			return -1, errCancelled
 		}
 		var n int
-		if _, e := fmt.Sscanf(line, "%d", &n); e == nil && n >= 1 && n <= len(options) {
+		if _, e := fmt.Sscanf(line, "%d", &n); e == nil && n >= 1 && n <= len(view.options) {
 			return n - 1, nil
 		}
 		if errors.Is(err, io.EOF) {
@@ -66,7 +72,8 @@ func runStty(args ...string) ([]byte, error) {
 	return cmd.Output()
 }
 
-func arrowChoose(title string, opts []string) (index int, used bool, err error) {
+func arrowChoose(view menuView) (index int, used bool, err error) {
+	opts := view.options
 	if !terminalInput() {
 		return 0, false, nil
 	}
@@ -93,12 +100,9 @@ func arrowChoose(title string, opts []string) (index int, used bool, err error) 
 		fmt.Print("\x1b[?25l")
 	}
 	color := menuColorEnabled()
-	if color {
-		fmt.Printf("\n\x1b[1;35m%s\x1b[0m  \x1b[2m(↑/↓ Enter, q/Esc back)\x1b[0m\n", title)
-	} else {
-		fmt.Printf("\n%s  (↑/↓ Enter, q/Esc back)\n", title)
-	}
+	printMenuHeader(view, color)
 	index = 0
+	footerLines := 2
 	render := func() {
 		for i, opt := range opts {
 			if color {
@@ -115,21 +119,27 @@ func arrowChoose(title string, opts []string) (index int, used bool, err error) 
 				fmt.Printf("\r\033[2K%s%s\n", prefix, opt)
 			}
 		}
-		fmt.Printf("\033[%dA", len(opts))
+		fmt.Print("\r\033[2K\n\r\033[2K")
+		if color {
+			fmt.Print("  \x1b[2m↑/↓ move  ·  Enter select  ·  q/Esc back\x1b[0m\n")
+		} else {
+			fmt.Print("  ↑/↓ move  ·  Enter select  ·  q/Esc back\n")
+		}
+		fmt.Printf("\033[%dA", len(opts)+footerLines)
 	}
 	render()
 	for {
 		b, e := readTTYByte(os.Stdin, 0, sig)
 		if e != nil {
-			fmt.Printf("\033[%dB", len(opts))
+			fmt.Printf("\033[%dB", len(opts)+footerLines)
 			return 0, true, e
 		}
 		switch b {
 		case 3, 'q', 'Q':
-			fmt.Printf("\033[%dB", len(opts))
+			fmt.Printf("\033[%dB", len(opts)+footerLines)
 			return -1, true, errCancelled
 		case '\r', '\n':
-			fmt.Printf("\033[%dB", len(opts))
+			fmt.Printf("\033[%dB", len(opts)+footerLines)
 			return index, true, nil
 		case 'j':
 			index = (index + 1) % len(opts)
@@ -138,16 +148,16 @@ func arrowChoose(title string, opts []string) (index int, used bool, err error) 
 		case 27:
 			next, e := readTTYByte(os.Stdin, 200*time.Millisecond, sig)
 			if e != nil {
-				fmt.Printf("\033[%dB", len(opts))
+				fmt.Printf("\033[%dB", len(opts)+footerLines)
 				return -1, true, errCancelled
 			}
 			if next != '[' && next != 'O' {
-				fmt.Printf("\033[%dB", len(opts))
+				fmt.Printf("\033[%dB", len(opts)+footerLines)
 				return -1, true, errCancelled
 			}
 			dir, e := readTTYByte(os.Stdin, 200*time.Millisecond, sig)
 			if e != nil {
-				fmt.Printf("\033[%dB", len(opts))
+				fmt.Printf("\033[%dB", len(opts)+footerLines)
 				return -1, true, errCancelled
 			}
 			if dir == 'A' {
@@ -160,6 +170,27 @@ func arrowChoose(title string, opts []string) (index int, used bool, err error) 
 			continue
 		}
 		render()
+	}
+}
+
+func printMenuHeader(view menuView, color bool) {
+	if view.project == nil {
+		if color {
+			fmt.Printf("\n\x1b[1;35m%s\x1b[0m\n\n", view.title)
+		} else {
+			fmt.Printf("\n%s\n\n", view.title)
+		}
+		return
+	}
+	p := view.project
+	if color {
+		fmt.Printf("\n  \x1b[1;35m◆  PROJECT\x1b[0m\n")
+		fmt.Printf("  \x1b[1m%s\x1b[0m\n\n", p.Name)
+		fmt.Printf("  %s● %s\x1b[0m\n", statusColor(p.State), p.State)
+		fmt.Printf("  \x1b[2m⌂ %s\x1b[0m\n\n", p.Path)
+		fmt.Printf("  \x1b[1;35mACTIONS\x1b[0m\n\n")
+	} else {
+		fmt.Printf("\n  ◆  PROJECT\n  %s\n\n  ● %s\n  ⌂ %s\n\n  ACTIONS\n\n", p.Name, p.State, p.Path)
 	}
 }
 

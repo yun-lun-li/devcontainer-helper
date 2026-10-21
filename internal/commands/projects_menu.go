@@ -70,12 +70,7 @@ func projectMenu(path string) error {
 		statusErr := updateStatuses(current)
 		p = current[0]
 		actions := availableProjectActions(p, statusErr == nil)
-		options := make([]string, len(actions))
-		for i, action := range actions {
-			options[i] = string(action)
-		}
-		title := fmt.Sprintf("%s  /  %s\n%s", p.Name, p.State, p.Path)
-		choice, err := choose(title, options)
+		choice, err := chooseProject(p, actions)
 		if errors.Is(err, errCancelled) {
 			return nil
 		}
@@ -102,6 +97,25 @@ func projectMenu(path string) error {
 			}
 		}
 	}
+}
+
+func chooseProject(p Project, actions []projectAction) (int, error) {
+	options := make([]string, len(actions))
+	for i, action := range actions {
+		switch action {
+		case actionConnect:
+			options[i] = "↗ Connect  Open a shell in this container"
+		case actionStart:
+			options[i] = "▶ Start  Create or start the container"
+		case actionStopDelete:
+			options[i] = "■ Stop & Delete  Stop and remove containers"
+		case actionBuild:
+			options[i] = "▣ Build  Rebuild container or image"
+		case actionBack:
+			options[i] = "← Back to projects"
+		}
+	}
+	return chooseView(menuView{project: &p, options: options})
 }
 
 func availableProjectActions(p Project, dockerAvailable bool) []projectAction {
