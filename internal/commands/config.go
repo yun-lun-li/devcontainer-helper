@@ -10,12 +10,16 @@ import (
 
 func configure() error {
 	for {
-		choice, err := choose("Configure projects", []string{"Add project", "Remove project", "Done"})
+		choice, err := choose("Manage projects", []string{"View projects", "Add project", "Remove project", "Back to main menu"})
 		if err != nil {
 			return err
 		}
 		switch choice {
 		case 0:
+			if err := list(); err != nil {
+				fmt.Fprintln(os.Stderr, "Error:", err)
+			}
+		case 1:
 			cwd, _ := os.Getwd()
 			fmt.Printf("Project directory [Enter = %s]: ", cwd)
 			line, err := input.ReadString('\n')
@@ -51,7 +55,7 @@ func configure() error {
 				return err
 			}
 			fmt.Printf("Registered %q (%s)\n", name, path)
-		case 1:
+		case 2:
 			cfg, err := loadConfig()
 			if err != nil {
 				return err
@@ -88,7 +92,7 @@ func configure() error {
 				return err
 			}
 			fmt.Println("Removed registration. No project files or containers were deleted.")
-		case 2:
+		case 3:
 			return nil
 		}
 	}

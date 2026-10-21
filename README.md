@@ -22,6 +22,7 @@ To install elsewhere, run `make install PREFIX=/your/prefix`. The executable is 
 ## Usage
 
 ```bash
+dch          # Open the colorful main menu
 dch config   # Add or remove projects; an empty path selects the current directory
 dch list     # Show registered projects, their status, and container IDs
 dch build    # Select a project and rebuild its container or build its image only
@@ -30,7 +31,9 @@ dch connect  # Select a running project and open a shell with devcontainer exec
 dch help     # Show command help
 ```
 
-Use the arrow keys and Enter to select a menu item. Press `q` or Esc to cancel. When stdin is not a terminal, menus use numbered choices.
+Running `dch` opens the main menu: **Connect**, **Start**, **Build**, **Manage projects**, and **Quit**. Manage projects contains the project list and registration actions. The direct commands above remain available for scripts and quick access.
+
+Use the arrow keys and Enter to select a menu item. Press `q` or Esc to go back, or to exit from the main menu. When stdin is not a terminal, menus use numbered choices. Menus use color on supported terminals; set `NO_COLOR=1` to disable it.
 
 ### Configuration file
 

@@ -7,11 +7,11 @@ import (
 
 // Run dispatches one CLI command. Cancelling an interactive menu exits cleanly.
 func Run(args []string) error {
+	if len(args) == 0 {
+		return mainMenu()
+	}
 	if len(args) != 1 {
 		usage()
-		if len(args) == 0 {
-			return nil
-		}
 		return errors.New("expected one command")
 	}
 
@@ -43,6 +43,7 @@ func usage() {
 	fmt.Print(`dch — devcontainer helper
 
 Usage:
+  dch           Open the interactive menu
   dch config    Add or remove project paths (interactive)
   dch list      Show registered projects and Docker status
   dch build     Build without cache (optionally recreate container)
@@ -52,6 +53,6 @@ Usage:
 
 Prerequisites: devcontainer CLI, Docker (daemon running)
 Config file:   ~/.dch/config (JSON; stores only workspace paths)
-Navigation:    ↑ / ↓ + Enter, q to cancel (or numbered selection if not a TTY)
+Navigation:    ↑ / ↓ + Enter, q/Esc to go back (or numbered selection if not a TTY)
 `)
 }

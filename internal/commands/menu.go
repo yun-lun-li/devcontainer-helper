@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 var input = bufio.NewReader(os.Stdin)
@@ -24,9 +25,18 @@ func choose(title string, options []string) (int, error) {
 	if index, ok, err := arrowChoose(title, options); ok {
 		return index, err
 	}
-	fmt.Println("\n" + title)
+	color := menuColorEnabled()
+	if color {
+		fmt.Printf("\n\x1b[1;35m%s\x1b[0m\n", title)
+	} else {
+		fmt.Println("\n" + title)
+	}
 	for i, opt := range options {
-		fmt.Printf("  %d) %s\n", i+1, opt)
+		if color {
+			fmt.Printf("  \x1b[1;36m%d)\x1b[0m %s\n", i+1, styledMenuOption(opt))
+		} else {
+			fmt.Printf("  %d) %s\n", i+1, opt)
+		}
 	}
 	for {
 		fmt.Print("Choose number (q to cancel): ")
@@ -60,6 +70,10 @@ func arrowChoose(title string, opts []string) (index int, used bool, err error) 
 	if statErr != nil || st.Mode()&os.ModeCharDevice == 0 {
 		return 0, false, nil
 	}
+	out, outErr := os.Stdout.Stat()
+	if outErr != nil || out.Mode()&os.ModeCharDevice == 0 {
+		return 0, false, nil
+	}
 	if _, e := exec.LookPath("stty"); e != nil {
 		return 0, false, nil
 	}
@@ -75,15 +89,28 @@ func arrowChoose(title string, opts []string) (index int, used bool, err error) 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
 	defer signal.Stop(sig)
-	fmt.Printf("\n%s  (↑/↓ Enter, q/Esc cancel)\n", title)
+	color := menuColorEnabled()
+	if color {
+		fmt.Printf("\n\x1b[1;35m%s\x1b[0m  \x1b[2m(↑/↓ Enter, q/Esc back)\x1b[0m\n", title)
+	} else {
+		fmt.Printf("\n%s  (↑/↓ Enter, q/Esc back)\n", title)
+	}
 	index = 0
 	render := func() {
 		for i, opt := range opts {
-			prefix := "  "
-			if i == index {
-				prefix = "> "
+			if color {
+				if i == index {
+					fmt.Printf("\r\033[2K\x1b[1;30;46m › %-*s \x1b[0m\n", menuWidth(opts), opt)
+				} else {
+					fmt.Printf("\r\033[2K  \x1b[36m·\x1b[0m %s\n", styledMenuOption(opt))
+				}
+			} else {
+				prefix := "  "
+				if i == index {
+					prefix = "> "
+				}
+				fmt.Printf("\r\033[2K%s%s\n", prefix, opt)
 			}
-			fmt.Printf("\r\033[2K%s%s\n", prefix, opt)
 		}
 		fmt.Printf("\033[%dA", len(opts))
 	}
@@ -132,6 +159,29 @@ func arrowChoose(title string, opts []string) (index int, used bool, err error) 
 		}
 		render()
 	}
+}
+
+func styledMenuOption(option string) string {
+	label, description, found := strings.Cut(option, "  ")
+	if found {
+		return "\x1b[1;36m" + label + "\x1b[0m  \x1b[2m" + strings.TrimLeft(description, " ") + "\x1b[0m"
+	}
+	return "\x1b[1;36m" + option + "\x1b[0m"
+}
+
+func menuColorEnabled() bool {
+	info, err := os.Stdout.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0 && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
+}
+
+func menuWidth(options []string) int {
+	width := 0
+	for _, option := range options {
+		if n := utf8.RuneCountInString(option); n > width {
+			width = n
+		}
+	}
+	return width
 }
 
 // VMIN=0 and VTIME>0 can make an idle terminal read return io.EOF.
