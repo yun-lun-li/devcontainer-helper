@@ -1,6 +1,6 @@
 # dch — devcontainer helper
 
-`dch` is a single-binary Dev Container helper for Linux, WSL2, and macOS terminals. It uses only the Go standard library.
+`dch` is a terminal app for managing Dev Containers on Linux, WSL2, and macOS. It is a single Go binary with no third-party Go dependencies.
 
 ## Prerequisites
 
@@ -19,21 +19,40 @@ export PATH="$HOME/.local/bin:$PATH"
 
 To install elsewhere, run `make install PREFIX=/your/prefix`. The executable is installed in `PREFIX/bin`.
 
-## Usage
+## Quick start
 
 ```bash
-dch          # Open the colorful main menu
-dch config   # Add or remove projects; an empty path selects the current directory
-dch list     # Show registered projects, their status, and container IDs
-dch build    # Select a project and rebuild its container or build its image only
-dch up       # Select a project and run devcontainer up
-dch connect  # Select a running project and open a shell with devcontainer exec
-dch help     # Show command help
+dch
 ```
 
-Running `dch` opens a full-screen terminal menu with **Projects**, **Manage registrations**, and **Quit**. Projects lists every registered project with its current container state. Select a project to see its available actions: **Connect** and **Stop & Delete** when running, **Start** when stopped or not created, and **Build** when Docker is available. The menu hides the cursor; prompts and shells show it again. Moving between screens replaces the previous screen, and exiting restores the original terminal view. The direct commands above remain available for scripts and quick access.
+The main menu has **Projects**, **Manage registrations**, and **Quit**. To add your first project, open **Manage registrations → Add project** and enter its directory. Press Enter at the path prompt to register the current directory. The project must contain `.devcontainer/devcontainer.json`.
 
-Use the arrow keys and Enter to select a menu item. Press `q` or Esc to go back, or to exit from the main menu. When stdin is not a terminal, menus use numbered choices. Menus use color on supported terminals; set `NO_COLOR=1` to disable it.
+Open **Projects** to see every registered project, its container state, and its path. Select a project to choose an action:
+
+| Project state | Available actions |
+| --- | --- |
+| `RUNNING` | **Connect**, **Stop & Delete**, **Build** |
+| `STOPPED` or `NOT CREATED` | **Start**, **Build** |
+| `UNKNOWN` or `CONFIG MISSING/INVALID` | No container actions until Docker or the configuration is fixed |
+
+**Connect** opens a shell through `devcontainer exec`, which applies the Dev Container CLI's `remoteUser` and `remoteEnv` settings. It starts bash when available and falls back to sh. **Start** runs `devcontainer up`. The project and action screens refresh Docker status after an operation.
+
+**Stop & Delete** asks for confirmation, then stops and removes every container matching the project's workspace and Dev Container configuration labels. It leaves the project registration, workspace files, and images intact. Changes stored only in a container's writable layer are lost. **Manage registrations → Remove project** only unregisters the path; it does not remove any container or file.
+
+Use ↑/↓ or `j`/`k` to move, Enter to select, and `q` or Esc to go back. The interface redraws in one terminal screen and hides the cursor while a menu is open. The cursor reappears for prompts and shells, and quitting restores the original terminal view. Set `NO_COLOR=1` to disable colors. When stdin is redirected, menus use numbered choices instead.
+
+### Direct commands
+
+You can also run these commands directly. `config`, `build`, `up`, and `connect` still prompt for selections; `list` and `help` print output without a menu.
+
+```bash
+dch config   # Add or remove project paths
+dch list     # Show projects, status, paths, and container IDs
+dch build    # Select a project and build or recreate it
+dch up       # Select a project and run devcontainer up
+dch connect  # Select a running project and open a shell
+dch help     # Show command help
+```
 
 ### Configuration file
 
@@ -49,10 +68,6 @@ Use the arrow keys and Enter to select a menu item. Press `q` or Esc to go back,
 }
 ```
 
-Removing a project with `dch config` removes only its registration. It does not delete its container, image, or workspace.
-
-**Stop & Delete** asks for confirmation, then stops and removes all containers with matching workspace and Dev Container configuration labels. It leaves the project registration, workspace, and images intact.
-
 ### Build modes
 
 | Mode | Command | Result |
@@ -62,13 +77,11 @@ Removing a project with `dch config` removes only its registration. It does not 
 
 ## Status
 
-`dch list` finds containers with the `devcontainer.local_folder` label using `docker ps -a`, then uses `docker inspect` to match the exact workspace path and, when present, `devcontainer.config_file`. It shows the matched container ID, or `-` when there is no matching container. It does not infer projects from container names.
+`dch` finds containers with the `devcontainer.local_folder` label using `docker ps -a`, then uses `docker inspect` to match the exact workspace path and, when present, `devcontainer.config_file`. `dch list` shows the matched container ID, or `-` when there is no matching container. It does not infer projects from container names.
 
 On a terminal, the table colors its header, statuses, and container IDs. Redirected output stays plain text. Set `NO_COLOR=1` to disable colors.
 
-Possible states include `RUNNING`, `STOPPED`, `NOT CREATED`, and `CONFIG MISSING/INVALID`. When Docker is unavailable, valid projects show `UNKNOWN` and a warning is printed. If a project has multiple matching containers, the status includes their count.
-
-`dch connect` uses `devcontainer exec`, which applies the Dev Container CLI's `remoteUser` and `remoteEnv` settings. It starts bash when available and falls back to sh. Run `dch up` before connecting to a stopped project.
+Possible states include `RUNNING`, `STOPPED`, `NOT CREATED`, and `CONFIG MISSING/INVALID`. When Docker is unavailable, valid projects show `UNKNOWN`; the Projects screen indicates that Docker is unavailable, while `dch list` prints a warning. If a project has multiple matching containers, the status includes their count.
 
 ## Limitations
 
@@ -78,7 +91,7 @@ Possible states include `RUNNING`, `STOPPED`, `NOT CREATED`, and `CONFIG MISSING
 
 ## Development
 
-`main.go` is the CLI entry point. Command implementations are in `internal/commands`, with one file per user-facing command and separate files for shared configuration, project, Docker, and menu logic.
+`main.go` is the CLI entry point. Command implementations and terminal UI code are in `internal/commands`.
 
 Run the tests with:
 
