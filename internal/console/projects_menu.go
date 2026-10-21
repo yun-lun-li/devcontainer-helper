@@ -1,9 +1,11 @@
-package commands
+package console
 
 import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"dch/internal/common"
 )
 
 type projectAction string
@@ -19,7 +21,7 @@ const (
 
 func projectsMenu() error {
 	for {
-		projects, err := loadProjects()
+		projects, err := common.LoadProjects()
 		if err != nil {
 			return err
 		}
@@ -30,7 +32,7 @@ func projectsMenu() error {
 			}
 			return err
 		}
-		statusErr := updateStatuses(projects)
+		statusErr := common.UpdateStatuses(projects)
 		options := make([]string, 0, len(projects)+1)
 		for _, p := range projects {
 			options = append(options, fmt.Sprintf("%s  [%s]  %s", p.Name, p.State, p.Path))
@@ -55,7 +57,7 @@ func projectsMenu() error {
 
 func projectMenu(path string) error {
 	for {
-		projects, err := loadProjects()
+		projects, err := common.LoadProjects()
 		if err != nil {
 			return err
 		}
@@ -71,7 +73,7 @@ func projectMenu(path string) error {
 			return nil
 		}
 		current := []Project{p}
-		statusErr := updateStatuses(current)
+		statusErr := common.UpdateStatuses(current)
 		p = current[0]
 		actions := availableProjectActions(p, statusErr == nil)
 		choice, err := chooseProject(p, actions)
@@ -91,7 +93,7 @@ func projectMenu(path string) error {
 		case actionBuild:
 			err = buildProject(p)
 		case actionRemove:
-			err = removeProjectRegistration(p.Path)
+			err = common.RemoveProjectRegistration(p.Path)
 			if err == nil {
 				return nil
 			}

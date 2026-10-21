@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -11,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"dch/internal/common"
 )
 
 func TestListShowsContainerIDWithoutPrompt(t *testing.T) {
@@ -23,18 +24,18 @@ func TestListShowsContainerIDWithoutPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DCH_CONFIG", filepath.Join(root, "config"))
-	if err := saveConfig(Config{Version: 1, Projects: []string{project}}); err != nil {
+	if err := common.SaveConfig(common.Config{Version: 1, Projects: []string{project}}); err != nil {
 		t.Fatal(err)
 	}
 
-	container := DockerContainer{ID: "abc123", Name: "/example"}
+	container := common.DockerContainer{ID: "abc123", Name: "/example"}
 	container.Config.Labels = map[string]string{
 		"devcontainer.local_folder": project,
 		"devcontainer.config_file":  filepath.Join(project, ".devcontainer", "devcontainer.json"),
 	}
 	container.State.Running = true
 	container.State.Status = "running"
-	data, err := json.Marshal([]DockerContainer{container})
+	data, err := json.Marshal([]common.DockerContainer{container})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,10 +48,6 @@ func TestListShowsContainerIDWithoutPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	oldInput := input
-	input = bufio.NewReader(strings.NewReader(""))
-	defer func() { input = oldInput }()
-
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +79,7 @@ func TestListShowsContainerIDWithoutPrompt(t *testing.T) {
 }
 
 func TestListColorsKeepColumnsAligned(t *testing.T) {
-	projects := []Project{
+	projects := []common.Project{
 		{Name: "short", State: "RUNNING", Path: "/work/short", ID: "abc123"},
 		{Name: "long project", State: "STOPPED", Path: "/work/long", ID: "def456"},
 	}

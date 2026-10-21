@@ -1,18 +1,20 @@
-package commands
+package console
 
 import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"dch/internal/common"
 )
 
 // stopProject stops matching running containers, then offers to delete them.
 func stopProject(p Project) error {
-	containers, err := inspectContainers()
+	containers, err := common.InspectContainers()
 	if err != nil {
 		return err
 	}
-	matched := matchingContainers(p.Path, containers)
+	matched := common.MatchingContainers(p.Path, containers)
 	if len(matched) == 0 {
 		return fmt.Errorf("no matching container found for %s", p.Name)
 	}
@@ -36,11 +38,11 @@ func stopProject(p Project) error {
 		screenNotice("Already stopped", "No running containers were found for this project.")
 		return nil
 	}
-	remaining, err := inspectContainers()
+	remaining, err := common.InspectContainers()
 	if err != nil {
 		return err
 	}
-	matched = matchingContainers(p.Path, remaining)
+	matched = common.MatchingContainers(p.Path, remaining)
 	if len(matched) == 0 {
 		screenNotice("Container stopped", "No matching containers remain to delete.")
 		return nil

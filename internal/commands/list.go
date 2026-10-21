@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+
+	"dch/internal/common"
 )
 
 func list() error {
@@ -15,20 +17,20 @@ func list() error {
 	if err != nil {
 		return err
 	}
-	if err := updateStatuses(projects); err != nil {
+	if err := common.UpdateStatuses(projects); err != nil {
 		fmt.Fprintln(os.Stderr, "Warning: cannot query Docker status:", err)
 	}
 	printProjects(projects)
 	return nil
 }
 
-func printProjects(projects []Project) {
+func printProjects(projects []common.Project) {
 	info, err := os.Stdout.Stat()
 	color := err == nil && info.Mode()&os.ModeCharDevice != 0 && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
 	renderProjects(os.Stdout, projects, color)
 }
 
-func renderProjects(out io.Writer, projects []Project, color bool) {
+func renderProjects(out io.Writer, projects []common.Project, color bool) {
 	var plain bytes.Buffer
 	w := tabwriter.NewWriter(&plain, 0, 8, 2, ' ', 0)
 	fmt.Fprintln(w, "#\tDEVCONTAINER\tSTATUS\tPROJECT PATH\tCONTAINER ID")

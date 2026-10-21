@@ -1,4 +1,4 @@
-package commands
+package common
 
 import (
 	"bytes"
@@ -95,7 +95,7 @@ func jsoncToJSON(in []byte) ([]byte, error) {
 	return out, nil
 }
 
-func projectName(path string) (string, error) {
+func ProjectName(path string) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return "", err
@@ -124,15 +124,15 @@ func projectName(path string) (string, error) {
 	return cfg.Name, nil
 }
 
-func loadProjects() ([]Project, error) {
-	cfg, err := loadConfig()
+func LoadProjects() ([]Project, error) {
+	cfg, err := LoadConfig()
 	if err != nil {
 		return nil, err
 	}
 	projects := make([]Project, 0, len(cfg.Projects))
 	for _, p := range cfg.Projects {
 		pr := Project{Path: p, Name: filepath.Base(p), State: "NOT CREATED"}
-		if name, err := projectName(p); err == nil {
+		if name, err := ProjectName(p); err == nil {
 			pr.Name, pr.Valid = name, true
 		} else {
 			pr.State = "CONFIG MISSING/INVALID"

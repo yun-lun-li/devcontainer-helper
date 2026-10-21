@@ -1,4 +1,4 @@
-package commands
+package common
 
 import (
 	"encoding/json"
@@ -25,7 +25,7 @@ func configPath() (string, error) {
 	return filepath.Join(home, ".dch", "config"), nil
 }
 
-func loadConfig() (Config, error) {
+func LoadConfig() (Config, error) {
 	path, err := configPath()
 	if err != nil {
 		return Config{}, err
@@ -50,7 +50,7 @@ func loadConfig() (Config, error) {
 	return cfg, nil
 }
 
-func saveConfig(cfg Config) error {
+func SaveConfig(cfg Config) error {
 	p, err := configPath()
 	if err != nil {
 		return err
@@ -86,7 +86,7 @@ func saveConfig(cfg Config) error {
 	return os.Rename(f.Name(), p)
 }
 
-func normalizePath(s string) (string, error) {
+func NormalizePath(s string) (string, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		s = "."

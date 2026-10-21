@@ -1,4 +1,4 @@
-package commands
+package common
 
 import (
 	"encoding/json"
@@ -22,7 +22,7 @@ type DockerContainer struct {
 	Created string `json:"Created"`
 }
 
-func inspectContainers() ([]DockerContainer, error) {
+func InspectContainers() ([]DockerContainer, error) {
 	containers, err := inspectContainersOnce()
 	if err != nil && strings.HasPrefix(err.Error(), "docker inspect:") {
 		// A container can vanish between ps and inspect after being stopped.
@@ -57,7 +57,7 @@ func inspectContainersOnce() ([]DockerContainer, error) {
 }
 
 func matchContainer(path string, cs []DockerContainer) (DockerContainer, bool, int) {
-	matched := matchingContainers(path, cs)
+	matched := MatchingContainers(path, cs)
 	if len(matched) == 0 {
 		return DockerContainer{}, false, 0
 	}
@@ -70,7 +70,7 @@ func matchContainer(path string, cs []DockerContainer) (DockerContainer, bool, i
 	return matched[0], true, len(matched)
 }
 
-func matchingContainers(path string, cs []DockerContainer) []DockerContainer {
+func MatchingContainers(path string, cs []DockerContainer) []DockerContainer {
 	confFile := filepath.Join(path, ".devcontainer", "devcontainer.json")
 	var matched []DockerContainer
 	for _, c := range cs {
@@ -87,8 +87,8 @@ func matchingContainers(path string, cs []DockerContainer) []DockerContainer {
 	return matched
 }
 
-func updateStatuses(projects []Project) error {
-	cs, err := inspectContainers()
+func UpdateStatuses(projects []Project) error {
+	cs, err := InspectContainers()
 	if err != nil {
 		for i := range projects {
 			if projects[i].Valid {

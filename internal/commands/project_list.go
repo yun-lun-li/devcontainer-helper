@@ -2,10 +2,12 @@ package commands
 
 import (
 	"errors"
+
+	"dch/internal/common"
 )
 
-func projectsForCommand() ([]Project, error) {
-	projects, err := loadProjects()
+func projectsForCommand() ([]common.Project, error) {
+	projects, err := common.LoadProjects()
 	if err != nil {
 		return nil, err
 	}

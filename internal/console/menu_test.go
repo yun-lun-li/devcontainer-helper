@@ -1,7 +1,8 @@
-package commands
+package console
 
 import (
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -24,6 +25,13 @@ func TestReadTTYByteWaitsAfterTemporaryEOF(t *testing.T) {
 	b, err := readTTYByte(r, 0, nil)
 	if err != nil || b != 'q' || reads != 2 {
 		t.Fatalf("got byte %q, error %v, reads %d", b, err, reads)
+	}
+}
+
+func TestRunWithNoRegisteredProjects(t *testing.T) {
+	t.Setenv("DCH_CONFIG", filepath.Join(t.TempDir(), "config"))
+	if err := Run(); err != nil {
+		t.Fatalf("console returned %v", err)
 	}
 }
 

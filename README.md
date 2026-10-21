@@ -67,6 +67,12 @@ dch help                  # Show command help
 }
 ```
 
+### Source layout
+
+- `internal/commands` handles CLI dispatch, registration, and `dch list` output.
+- `internal/console` handles the full-screen interface and container actions.
+- `internal/common` holds project configuration, metadata, and Docker status logic shared by both.
+
 ### Build modes
 
 | Mode | Command | Result |

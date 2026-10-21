@@ -5,9 +5,12 @@ import (
 )
 
 // Run dispatches a CLI command. The console is also the default command.
-func Run(args []string) error {
+func Run(args []string, openConsole func() error) error {
 	if len(args) == 0 {
-		return console()
+		if openConsole == nil {
+			return fmt.Errorf("console is unavailable")
+		}
+		return openConsole()
 	}
 
 	switch args[0] {
@@ -21,7 +24,10 @@ func Run(args []string) error {
 		if len(args) != 1 {
 			return fmt.Errorf("console does not accept arguments")
 		}
-		return console()
+		if openConsole == nil {
+			return fmt.Errorf("console is unavailable")
+		}
+		return openConsole()
 	case "register":
 		if len(args) != 3 || args[1] != "--path" || args[2] == "" {
 			return fmt.Errorf("usage: dch register --path PROJECT_PATH")

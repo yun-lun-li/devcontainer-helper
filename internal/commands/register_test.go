@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"dch/internal/common"
 )
 
 func TestRegisterRelativePathAndRejectExtraArguments(t *testing.T) {
@@ -26,11 +28,11 @@ func TestRegisterRelativePathAndRejectExtraArguments(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
-		if err := Run([]string{"register", "--path", relative}); err != nil {
+		if err := Run([]string{"register", "--path", relative}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
-	cfg, err := loadConfig()
+	cfg, err := common.LoadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +44,7 @@ func TestRegisterRelativePathAndRejectExtraArguments(t *testing.T) {
 		{"register", "--wrong", project}, {"register", "--path", " "},
 		{"config"}, {"build"}, {"up"}, {"connect"},
 	} {
-		if err := Run(args); err == nil {
+		if err := Run(args, nil); err == nil {
 			t.Errorf("Run(%v) should reject this command", args)
 		}
 	}
@@ -59,7 +61,7 @@ func TestRemoveProjectOnlyChangesRegistration(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DCH_CONFIG", filepath.Join(root, "config"))
-	if err := saveConfig(Config{Version: 1, Projects: []string{project}}); err != nil {
+	if err := common.SaveConfig(common.Config{Version: 1, Projects: []string{project}}); err != nil {
 		t.Fatal(err)
 	}
 	r, w, err := os.Pipe()
@@ -70,7 +72,7 @@ func TestRemoveProjectOnlyChangesRegistration(t *testing.T) {
 	previousStdout := os.Stdout
 	os.Stdout = w
 	defer func() { os.Stdout = previousStdout }()
-	if err := removeProjectRegistration(project); err != nil {
+	if err := common.RemoveProjectRegistration(project); err != nil {
 		t.Fatal(err)
 	}
 	w.Close()
@@ -81,7 +83,7 @@ func TestRemoveProjectOnlyChangesRegistration(t *testing.T) {
 	if len(output) != 0 {
 		t.Fatalf("unregister prompted or printed another screen: %s", output)
 	}
-	cfg, err := loadConfig()
+	cfg, err := common.LoadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}

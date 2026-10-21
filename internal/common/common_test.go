@@ -1,4 +1,4 @@
-package commands
+package common
 
 import (
 	"encoding/json"
@@ -22,7 +22,7 @@ func TestJSONCNameAndTrailingComma(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".devcontainer", "devcontainer.json"), []byte(sample), 0600); err != nil {
 		t.Fatal(err)
 	}
-	name, err := projectName(root)
+	name, err := ProjectName(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestInvalidJSONC(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(p, ".devcontainer", "devcontainer.json"), []byte("{"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := projectName(p); err == nil {
+	if _, err := ProjectName(p); err == nil {
 		t.Fatal("expected invalid JSON error")
 	}
 }
@@ -69,10 +69,10 @@ func TestSaveLoadConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".dch", "config")
 	t.Setenv("DCH_CONFIG", path)
 	want := Config{Version: 1, Projects: []string{"/tmp/work-a", "/tmp/work-b"}}
-	if err := saveConfig(want); err != nil {
+	if err := SaveConfig(want); err != nil {
 		t.Fatal(err)
 	}
-	got, err := loadConfig()
+	got, err := LoadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,13 +118,13 @@ func TestProjectNameFallbackAndMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := filepath.Join(p, ".devcontainer", "devcontainer.json")
-	if _, err := projectName(p); err == nil || !strings.Contains(err.Error(), "devcontainer.json") {
+	if _, err := ProjectName(p); err == nil || !strings.Contains(err.Error(), "devcontainer.json") {
 		t.Fatalf("got %v", err)
 	}
 	if err := os.WriteFile(cfg, []byte(`{"image":"ubuntu:22.04"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	name, err := projectName(p)
+	name, err := ProjectName(p)
 	if err != nil || name != "repo" {
 		t.Fatalf("got %q, %v", name, err)
 	}

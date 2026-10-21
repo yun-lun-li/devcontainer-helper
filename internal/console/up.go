@@ -1,4 +1,4 @@
-package commands
+package console
 
 func startProject(p Project) error {
 	if err := requireExecutable("devcontainer"); err != nil {

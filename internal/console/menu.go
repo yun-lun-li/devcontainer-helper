@@ -1,4 +1,4 @@
-package commands
+package console
 
 import (
 	"bufio"
@@ -323,7 +323,7 @@ func styledMenuOption(option string) string {
 		description = strings.TrimLeft(description, " ")
 		if strings.HasPrefix(description, "[RUNNING") {
 			if end := strings.IndexByte(description, ']'); end >= 0 {
-				return "\x1b[1;36m" + label + "\x1b[0m  " + statusColor("RUNNING") + description[:end+1] + "\x1b[0m  \x1b[2m" + strings.TrimLeft(description[end+1:], " ") + "\x1b[0m"
+				return "\x1b[1;36m" + label + "\x1b[0m  \x1b[94m" + description[:end+1] + "\x1b[0m  \x1b[2m" + strings.TrimLeft(description[end+1:], " ") + "\x1b[0m"
 			}
 		}
 		return "\x1b[1;36m" + label + "\x1b[0m  \x1b[2m" + description + "\x1b[0m"
