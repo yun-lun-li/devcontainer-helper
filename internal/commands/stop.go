@@ -6,9 +6,8 @@ import (
 	"strings"
 )
 
-// stopDeleteProject removes only containers whose Dev Container labels match
-// this registered workspace and its configuration file.
-func stopDeleteProject(p Project) error {
+// stopProject stops matching running containers, then offers to delete them.
+func stopProject(p Project) error {
 	containers, err := inspectContainers()
 	if err != nil {
 		return err
@@ -22,19 +21,32 @@ func stopDeleteProject(p Project) error {
 			return fmt.Errorf("matching container has no ID")
 		}
 	}
-	question := fmt.Sprintf("Stop and delete %d container(s) for %s? Changes inside their writable layers will be lost.", len(matched), p.Name)
-	ok, err := confirm(question, false)
-	if err != nil || !ok {
-		return err
-	}
-	screenHeading("Stop & Delete  /  " + p.Name)
+	screenHeading("Stop  /  " + p.Name)
+	stopped := 0
 	for _, c := range matched {
 		if c.State.Running {
 			if err := runDockerAction("stop", c.ID); err != nil {
 				screenWait()
 				return err
 			}
+			stopped++
 		}
+	}
+	if stopped == 0 {
+		screenNotice("Already stopped", "No running containers were found for this project.")
+		return nil
+	}
+	question := fmt.Sprintf("Stopped %d container(s). Delete all %d matching container(s) for %s? Changes inside their writable layers will be lost.", stopped, len(matched), p.Name)
+	deleteContainers, err := confirm(question, false)
+	if err != nil {
+		return err
+	}
+	if !deleteContainers {
+		screenNotice("Containers stopped", "The containers were kept and can be started again.")
+		return nil
+	}
+	screenHeading("Delete containers  /  " + p.Name)
+	for _, c := range matched {
 		if err := runDockerAction("rm", c.ID); err != nil {
 			screenWait()
 			return err

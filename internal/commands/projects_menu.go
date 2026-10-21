@@ -9,11 +9,11 @@ import (
 type projectAction string
 
 const (
-	actionConnect    projectAction = "Connect"
-	actionStart      projectAction = "Start"
-	actionStopDelete projectAction = "Stop & Delete"
-	actionBuild      projectAction = "Build"
-	actionBack       projectAction = "Back to projects"
+	actionConnect projectAction = "Connect"
+	actionStart   projectAction = "Start"
+	actionStop    projectAction = "Stop"
+	actionBuild   projectAction = "Build"
+	actionBack    projectAction = "Back to projects"
 )
 
 func projectsMenu() error {
@@ -82,8 +82,8 @@ func projectMenu(path string) error {
 			err = connectProject(p)
 		case actionStart:
 			err = startProject(p)
-		case actionStopDelete:
-			err = stopDeleteProject(p)
+		case actionStop:
+			err = stopProject(p)
 		case actionBuild:
 			err = buildProject(p)
 		case actionBack:
@@ -107,8 +107,8 @@ func chooseProject(p Project, actions []projectAction) (int, error) {
 			options[i] = "↗ Connect  Open a shell in this container"
 		case actionStart:
 			options[i] = "▶ Start  Create or start the container"
-		case actionStopDelete:
-			options[i] = "■ Stop & Delete  Stop and remove containers"
+		case actionStop:
+			options[i] = "■ Stop  Stop the running container"
 		case actionBuild:
 			options[i] = "▣ Build  Rebuild container or image"
 		case actionBack:
@@ -123,7 +123,7 @@ func availableProjectActions(p Project, dockerAvailable bool) []projectAction {
 	if p.Valid && dockerAvailable {
 		switch {
 		case strings.HasPrefix(p.State, "RUNNING"):
-			actions = append(actions, actionConnect, actionStopDelete)
+			actions = append(actions, actionConnect, actionStop)
 		case strings.HasPrefix(p.State, "STOPPED"), p.State == "NOT CREATED":
 			actions = append(actions, actionStart)
 		}

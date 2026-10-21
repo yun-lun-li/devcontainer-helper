@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -18,8 +19,8 @@ func TestAvailableProjectActions(t *testing.T) {
 		docker bool
 		want   []projectAction
 	}{
-		{"RUNNING", true, true, []projectAction{actionConnect, actionStopDelete, actionBuild, actionBack}},
-		{"RUNNING (2)", true, true, []projectAction{actionConnect, actionStopDelete, actionBuild, actionBack}},
+		{"RUNNING", true, true, []projectAction{actionConnect, actionStop, actionBuild, actionBack}},
+		{"RUNNING (2)", true, true, []projectAction{actionConnect, actionStop, actionBuild, actionBack}},
 		{"STOPPED", true, true, []projectAction{actionStart, actionBuild, actionBack}},
 		{"NOT CREATED", true, true, []projectAction{actionStart, actionBuild, actionBack}},
 		{"UNKNOWN", true, false, []projectAction{actionBack}},
@@ -33,7 +34,20 @@ func TestAvailableProjectActions(t *testing.T) {
 	}
 }
 
-func TestStopDeleteOnlyRemovesMatchingContainers(t *testing.T) {
+func TestStopOffersOptionalDeleteForMatchingContainers(t *testing.T) {
+	for _, tc := range []struct {
+		name, answer, want string
+	}{
+		{"keep", "n\n", "stop running\n"},
+		{"delete", "y\n", "stop running\nrm running\nrm stopped\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testStopProject(t, tc.answer, tc.want)
+		})
+	}
+}
+
+func testStopProject(t *testing.T, answer, want string) {
 	root := t.TempDir()
 	project := filepath.Join(root, "project")
 	configFile := filepath.Join(project, ".devcontainer", "devcontainer.json")
@@ -63,16 +77,32 @@ func TestStopDeleteOnlyRemovesMatchingContainers(t *testing.T) {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	previous := input
-	input = bufio.NewReader(strings.NewReader("y\n"))
+	input = bufio.NewReader(strings.NewReader(answer))
 	t.Cleanup(func() { input = previous })
-	if err := stopDeleteProject(Project{Name: "project", Path: project}); err != nil {
+	r, w, err := os.Pipe()
+	if err != nil {
 		t.Fatal(err)
+	}
+	defer r.Close()
+	previousStdout := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = previousStdout }()
+	if err := stopProject(Project{Name: "project", Path: project}); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	output, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(output), "Delete all 2 matching container(s)") {
+		t.Fatalf("missing post-stop delete prompt: %s", output)
 	}
 	got, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != "stop running\nrm running\nrm stopped\n" {
+	if string(got) != want {
 		t.Fatalf("unexpected Docker actions: %s", got)
 	}
 }

@@ -31,13 +31,13 @@ Open **Projects** to see every registered project, its container state, and its 
 
 | Project state | Available actions |
 | --- | --- |
-| `RUNNING` | **Connect**, **Stop & Delete**, **Build** |
+| `RUNNING` | **Connect**, **Stop**, **Build** |
 | `STOPPED` or `NOT CREATED` | **Start**, **Build** |
 | `UNKNOWN` or `CONFIG MISSING/INVALID` | No container actions until Docker or the configuration is fixed |
 
 **Connect** opens a shell through `devcontainer exec`, which applies the Dev Container CLI's `remoteUser` and `remoteEnv` settings. It starts bash when available and falls back to sh. **Start** runs `devcontainer up`. The project and action screens refresh Docker status after an operation.
 
-**Stop & Delete** asks for confirmation, then stops and removes every container matching the project's workspace and Dev Container configuration labels. It leaves the project registration, workspace files, and images intact. Changes stored only in a container's writable layer are lost. **Manage registrations → Remove project** only unregisters the path; it does not remove any container or file.
+**Stop** stops the project's running containers, then asks whether to delete all containers matching its workspace and Dev Container configuration labels. Answer No to keep them in the `STOPPED` state so **Start** can run them again. Answer Yes to remove them; changes stored only in a container's writable layer are lost. The project registration, workspace files, and images are kept. **Manage registrations → Remove project** only unregisters the path; it does not remove any container or file.
 
 Use ↑/↓ or `j`/`k` to move, Enter to select, and `q` or Esc to go back. The interface redraws in one terminal screen and hides the cursor while a menu is open. The cursor reappears for prompts and shells, and quitting restores the original terminal view. Set `NO_COLOR=1` to disable colors. When stdin is redirected, menus use numbered choices instead.
 
