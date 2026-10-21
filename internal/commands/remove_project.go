@@ -2,24 +2,16 @@ package commands
 
 import "fmt"
 
-func removeProjectRegistration(p Project) (bool, error) {
-	confirmed, err := confirm("Remove "+p.Name+" from dch? Project files and containers will be kept.", false)
-	if err != nil || !confirmed {
-		return false, err
-	}
+func removeProjectRegistration(path string) error {
 	cfg, err := loadConfig()
 	if err != nil {
-		return false, err
+		return err
 	}
-	for i, path := range cfg.Projects {
-		if path == p.Path {
+	for i, registered := range cfg.Projects {
+		if registered == path {
 			cfg.Projects = append(cfg.Projects[:i], cfg.Projects[i+1:]...)
-			if err := saveConfig(cfg); err != nil {
-				return false, err
-			}
-			screenNotice("Project removed", "Registration removed. Project files and containers were kept.")
-			return true, nil
+			return saveConfig(cfg)
 		}
 	}
-	return false, fmt.Errorf("project %s is no longer registered", p.Path)
+	return fmt.Errorf("project %s is no longer registered", path)
 }

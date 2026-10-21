@@ -24,8 +24,11 @@ func projectsMenu() error {
 			return err
 		}
 		if len(projects) == 0 {
-			screenNotice("Projects", "No registered projects. Run dch register --path PROJECT_PATH first.")
-			return nil
+			_, err := choose("Projects\nNo registered projects. Run dch register --path PROJECT_PATH first.", []string{"Quit console"})
+			if errors.Is(err, errCancelled) {
+				return nil
+			}
+			return err
 		}
 		statusErr := updateStatuses(projects)
 		options := make([]string, 0, len(projects)+1)
@@ -88,9 +91,8 @@ func projectMenu(path string) error {
 		case actionBuild:
 			err = buildProject(p)
 		case actionRemove:
-			var removed bool
-			removed, err = removeProjectRegistration(p)
-			if removed {
+			err = removeProjectRegistration(p.Path)
+			if err == nil {
 				return nil
 			}
 		case actionBack:
@@ -119,7 +121,7 @@ func chooseProject(p Project, actions []projectAction) (int, error) {
 		case actionBuild:
 			options[i] = "▣ Build  Rebuild container or image"
 		case actionRemove:
-			options[i] = "✕ Remove Project  Unregister this project"
+			options[i] = "✕ Remove Project  Unregister only; keep files and containers"
 		case actionBack:
 			options[i] = "← Back to projects"
 		}

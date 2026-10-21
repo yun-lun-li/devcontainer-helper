@@ -38,7 +38,7 @@ dch console                    # Open the Projects console
 
 **Connect** opens a shell through `devcontainer exec`, which applies the Dev Container CLI's `remoteUser` and `remoteEnv` settings. It starts bash when available and falls back to sh. **Start** runs `devcontainer up`. The project and action screens refresh Docker status after an operation.
 
-**Stop** stops the project's running containers, then asks whether to delete any matching containers that remain. Answer No to keep them in the `STOPPED` state so **Start** can run them again. Answer Yes to remove them; changes stored only in a container's writable layer are lost. If Docker has already removed a container after stopping it, there is nothing further to delete. **Remove Project** only unregisters the path after confirmation. It keeps project files, containers, and images.
+**Stop** stops the project's running containers, then asks whether to delete any matching containers that remain. Answer No to keep them in the `STOPPED` state so **Start** can run them again. Answer Yes to remove them; changes stored only in a container's writable layer are lost. If Docker has already removed a container after stopping it, there is nothing further to delete. **Remove Project** immediately unregisters the path without another prompt. It never deletes project files, containers, or images.
 
 Use ↑/↓ or `j`/`k` to move, Enter to select, and `q` or Esc to go back. The interface redraws in one terminal screen and hides the cursor while a menu is open. The cursor reappears for prompts and shells, and quitting restores the original terminal view. Set `NO_COLOR=1` to disable colors. When stdin is redirected, menus use numbered choices instead.
 
