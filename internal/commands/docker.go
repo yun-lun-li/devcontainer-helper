@@ -48,6 +48,20 @@ func inspectContainers() ([]DockerContainer, error) {
 }
 
 func matchContainer(path string, cs []DockerContainer) (DockerContainer, bool, int) {
+	matched := matchingContainers(path, cs)
+	if len(matched) == 0 {
+		return DockerContainer{}, false, 0
+	}
+	sort.Slice(matched, func(i, j int) bool {
+		if matched[i].State.Running != matched[j].State.Running {
+			return matched[i].State.Running
+		}
+		return matched[i].Created > matched[j].Created
+	})
+	return matched[0], true, len(matched)
+}
+
+func matchingContainers(path string, cs []DockerContainer) []DockerContainer {
 	confFile := filepath.Join(path, ".devcontainer", "devcontainer.json")
 	var matched []DockerContainer
 	for _, c := range cs {
@@ -61,16 +75,7 @@ func matchContainer(path string, cs []DockerContainer) (DockerContainer, bool, i
 		}
 		matched = append(matched, c)
 	}
-	if len(matched) == 0 {
-		return DockerContainer{}, false, 0
-	}
-	sort.Slice(matched, func(i, j int) bool {
-		if matched[i].State.Running != matched[j].State.Running {
-			return matched[i].State.Running
-		}
-		return matched[i].Created > matched[j].Created
-	})
-	return matched[0], true, len(matched)
+	return matched
 }
 
 func updateStatuses(projects []Project) error {

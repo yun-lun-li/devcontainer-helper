@@ -5,6 +5,13 @@ func build() error {
 	if err != nil {
 		return err
 	}
+	return buildProject(p)
+}
+
+func buildProject(p Project) error {
+	if err := requireExecutable("devcontainer"); err != nil {
+		return err
+	}
 	mode, err := choose("Build mode", []string{
 		"Rebuild and RECREATE container (no cache; starts it)",
 		"Build image only (no cache; does NOT replace existing container)",

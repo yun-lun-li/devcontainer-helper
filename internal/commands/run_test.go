@@ -15,7 +15,7 @@ func TestRunRejectsUnknownCommand(t *testing.T) {
 
 func TestRunOpensMainMenuWithoutArguments(t *testing.T) {
 	previous := input
-	input = bufio.NewReader(strings.NewReader("4\n4\n5\n"))
+	input = bufio.NewReader(strings.NewReader("2\n3\n3\n"))
 	t.Cleanup(func() { input = previous })
 	if err := Run(nil); err != nil {
 		t.Fatalf("Run(nil) returned %v", err)

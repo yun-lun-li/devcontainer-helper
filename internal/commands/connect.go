@@ -10,6 +10,13 @@ func connect() error {
 	if err != nil {
 		return err
 	}
+	return connectProject(p)
+}
+
+func connectProject(p Project) error {
+	if err := requireExecutable("devcontainer"); err != nil {
+		return err
+	}
 	if !strings.HasPrefix(p.State, "RUNNING") {
 		return fmt.Errorf("%s is not RUNNING; use `dch up` first", p.Name)
 	}

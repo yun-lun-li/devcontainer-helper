@@ -20,13 +20,13 @@ func startScreen() bool {
 		return false
 	}
 	screenActive = true
-	fmt.Print("\x1b[?1049h")
+	fmt.Print("\x1b[?1049h\x1b[?25l")
 	return true
 }
 
 func stopScreen() {
 	if screenActive {
-		fmt.Print("\x1b[0m\x1b[?1049l")
+		fmt.Print("\x1b[0m\x1b[?25h\x1b[?1049l")
 		screenActive = false
 	}
 }
@@ -40,6 +40,7 @@ func clearScreen() {
 func screenHeading(title string) {
 	clearScreen()
 	if screenActive {
+		fmt.Print("\x1b[?25h")
 		if menuColorEnabled() {
 			fmt.Printf("\x1b[1;35m%s\x1b[0m\n\n", title)
 		} else {

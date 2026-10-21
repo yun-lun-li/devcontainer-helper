@@ -10,23 +10,12 @@ import (
 
 func configure() error {
 	for {
-		choice, err := choose("Manage projects", []string{"View projects", "Add project", "Remove project", "Back to main menu"})
+		choice, err := choose("Manage registrations", []string{"Add project", "Remove project", "Back to main menu"})
 		if err != nil {
 			return err
 		}
 		switch choice {
 		case 0:
-			screenHeading("Registered projects")
-			if err := list(); err != nil {
-				if screenActive {
-					screenError(err)
-				} else {
-					fmt.Fprintln(os.Stderr, "Error:", err)
-				}
-			} else {
-				screenWait()
-			}
-		case 1:
 			screenHeading("Add project")
 			cwd, _ := os.Getwd()
 			fmt.Printf("Project directory [Enter = %s]: ", cwd)
@@ -67,7 +56,7 @@ func configure() error {
 				return err
 			}
 			screenNotice("Project registered", fmt.Sprintf("%s\n%s", name, path))
-		case 2:
+		case 1:
 			cfg, err := loadConfig()
 			if err != nil {
 				return err
@@ -104,7 +93,7 @@ func configure() error {
 				return err
 			}
 			screenNotice("Registration removed", "No project files or containers were deleted.")
-		case 3:
+		case 2:
 			return nil
 		}
 	}

@@ -31,7 +31,7 @@ dch connect  # Select a running project and open a shell with devcontainer exec
 dch help     # Show command help
 ```
 
-Running `dch` opens a full-screen terminal menu: **Connect**, **Start**, **Build**, **Manage projects**, and **Quit**. Manage projects contains the project list and registration actions. Moving between screens replaces the previous screen instead of adding more menu text to the terminal. Exiting restores the original terminal view. The direct commands above remain available for scripts and quick access.
+Running `dch` opens a full-screen terminal menu with **Projects**, **Manage registrations**, and **Quit**. Projects lists every registered project with its current container state. Select a project to see its available actions: **Connect** and **Stop & Delete** when running, **Start** when stopped or not created, and **Build** when Docker is available. The menu hides the cursor; prompts and shells show it again. Moving between screens replaces the previous screen, and exiting restores the original terminal view. The direct commands above remain available for scripts and quick access.
 
 Use the arrow keys and Enter to select a menu item. Press `q` or Esc to go back, or to exit from the main menu. When stdin is not a terminal, menus use numbered choices. Menus use color on supported terminals; set `NO_COLOR=1` to disable it.
 
@@ -50,6 +50,8 @@ Use the arrow keys and Enter to select a menu item. Press `q` or Esc to go back,
 ```
 
 Removing a project with `dch config` removes only its registration. It does not delete its container, image, or workspace.
+
+**Stop & Delete** asks for confirmation, then stops and removes all containers with matching workspace and Dev Container configuration labels. It leaves the project registration, workspace, and images intact.
 
 ### Build modes
 
@@ -73,7 +75,6 @@ Possible states include `RUNNING`, `STOPPED`, `NOT CREATED`, and `CONFIG MISSING
 - Only `.devcontainer/devcontainer.json` at the project root is supported. Multiple configuration files and a root-level `.devcontainer.json` are not supported.
 - Status matching uses local absolute paths. A container created through a different symlink or Windows/VS Code path may have a different Docker label and fail to match.
 - The official `devcontainer` CLI supports Docker Compose devcontainers, but labels vary by configuration. A Compose service without a matching label may not appear in `dch list`.
-- Docker stop/down commands are not implemented.
 
 ## Development
 

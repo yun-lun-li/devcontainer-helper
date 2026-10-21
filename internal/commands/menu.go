@@ -89,6 +89,9 @@ func arrowChoose(title string, opts []string) (index int, used bool, err error) 
 	signal.Notify(sig, os.Interrupt)
 	defer signal.Stop(sig)
 	clearScreen()
+	if screenActive {
+		fmt.Print("\x1b[?25l")
+	}
 	color := menuColorEnabled()
 	if color {
 		fmt.Printf("\n\x1b[1;35m%s\x1b[0m  \x1b[2m(↑/↓ Enter, q/Esc back)\x1b[0m\n", title)
