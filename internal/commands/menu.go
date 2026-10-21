@@ -265,8 +265,6 @@ func printProjectHeader(w io.Writer, p Project, color bool, width int) {
 	}
 	line("● "+p.State, stateColor)
 	line("", "")
-	line(strings.Repeat("─", width-4), cardMuted)
-	line("", "")
 	line("🗁 "+p.Path, cardCyan)
 	line("", "")
 	fmt.Fprintf(w, "  %s\n\n", style(cardPurple, "╰"+strings.Repeat("─", width-2)+"╯"))
