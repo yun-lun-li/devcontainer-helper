@@ -31,7 +31,7 @@ dch connect  # Select a running project and open a shell with devcontainer exec
 dch help     # Show command help
 ```
 
-Running `dch` opens the main menu: **Connect**, **Start**, **Build**, **Manage projects**, and **Quit**. Manage projects contains the project list and registration actions. The direct commands above remain available for scripts and quick access.
+Running `dch` opens a full-screen terminal menu: **Connect**, **Start**, **Build**, **Manage projects**, and **Quit**. Manage projects contains the project list and registration actions. Moving between screens replaces the previous screen instead of adding more menu text to the terminal. Exiting restores the original terminal view. The direct commands above remain available for scripts and quick access.
 
 Use the arrow keys and Enter to select a menu item. Press `q` or Esc to go back, or to exit from the main menu. When stdin is not a terminal, menus use numbered choices. Menus use color on supported terminals; set `NO_COLOR=1` to disable it.
 

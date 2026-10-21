@@ -7,6 +7,9 @@ import (
 )
 
 func mainMenu() error {
+	if startScreen() {
+		defer stopScreen()
+	}
 	options := []string{
 		"Connect          Open a shell in a running container",
 		"Start            Start a project's container",
@@ -35,7 +38,11 @@ func mainMenu() error {
 			return nil
 		}
 		if err != nil && !errors.Is(err, errCancelled) {
-			fmt.Fprintln(os.Stderr, "Error:", err)
+			if screenActive {
+				screenError(err)
+			} else {
+				fmt.Fprintln(os.Stderr, "Error:", err)
+			}
 		}
 	}
 }

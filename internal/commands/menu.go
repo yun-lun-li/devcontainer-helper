@@ -25,6 +25,7 @@ func choose(title string, options []string) (int, error) {
 	if index, ok, err := arrowChoose(title, options); ok {
 		return index, err
 	}
+	clearScreen()
 	color := menuColorEnabled()
 	if color {
 		fmt.Printf("\n\x1b[1;35m%s\x1b[0m\n", title)
@@ -66,12 +67,10 @@ func runStty(args ...string) ([]byte, error) {
 }
 
 func arrowChoose(title string, opts []string) (index int, used bool, err error) {
-	st, statErr := os.Stdin.Stat()
-	if statErr != nil || st.Mode()&os.ModeCharDevice == 0 {
+	if !terminalInput() {
 		return 0, false, nil
 	}
-	out, outErr := os.Stdout.Stat()
-	if outErr != nil || out.Mode()&os.ModeCharDevice == 0 {
+	if !terminalOutput() {
 		return 0, false, nil
 	}
 	if _, e := exec.LookPath("stty"); e != nil {
@@ -89,6 +88,7 @@ func arrowChoose(title string, opts []string) (index int, used bool, err error) 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
 	defer signal.Stop(sig)
+	clearScreen()
 	color := menuColorEnabled()
 	if color {
 		fmt.Printf("\n\x1b[1;35m%s\x1b[0m  \x1b[2m(↑/↓ Enter, q/Esc back)\x1b[0m\n", title)
@@ -127,7 +127,6 @@ func arrowChoose(title string, opts []string) (index int, used bool, err error) 
 			return -1, true, errCancelled
 		case '\r', '\n':
 			fmt.Printf("\033[%dB", len(opts))
-			fmt.Printf("Selected: %s\n", opts[index])
 			return index, true, nil
 		case 'j':
 			index = (index + 1) % len(opts)
@@ -209,6 +208,7 @@ func readTTYByte(r io.Reader, timeout time.Duration, sig <-chan os.Signal) (byte
 }
 
 func confirm(question string, defaultYes bool) (bool, error) {
+	screenHeading("Confirm")
 	def := "y/N"
 	if defaultYes {
 		def = "Y/n"

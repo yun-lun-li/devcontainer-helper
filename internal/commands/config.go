@@ -16,10 +16,18 @@ func configure() error {
 		}
 		switch choice {
 		case 0:
+			screenHeading("Registered projects")
 			if err := list(); err != nil {
-				fmt.Fprintln(os.Stderr, "Error:", err)
+				if screenActive {
+					screenError(err)
+				} else {
+					fmt.Fprintln(os.Stderr, "Error:", err)
+				}
+			} else {
+				screenWait()
 			}
 		case 1:
+			screenHeading("Add project")
 			cwd, _ := os.Getwd()
 			fmt.Printf("Project directory [Enter = %s]: ", cwd)
 			line, err := input.ReadString('\n')
@@ -32,7 +40,11 @@ func configure() error {
 			}
 			name, err := projectName(path)
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "Cannot register:", err)
+				if screenActive {
+					screenNotice("Cannot register", err.Error())
+				} else {
+					fmt.Fprintln(os.Stderr, "Cannot register:", err)
+				}
 				continue
 			}
 			cfg, err := loadConfig()
@@ -47,21 +59,21 @@ func configure() error {
 				}
 			}
 			if found {
-				fmt.Println("Already registered:", path)
+				screenNotice("Already registered", path)
 				continue
 			}
 			cfg.Projects = append(cfg.Projects, path)
 			if err := saveConfig(cfg); err != nil {
 				return err
 			}
-			fmt.Printf("Registered %q (%s)\n", name, path)
+			screenNotice("Project registered", fmt.Sprintf("%s\n%s", name, path))
 		case 2:
 			cfg, err := loadConfig()
 			if err != nil {
 				return err
 			}
 			if len(cfg.Projects) == 0 {
-				fmt.Println("No registered projects.")
+				screenNotice("Manage projects", "No registered projects.")
 				continue
 			}
 			opts := make([]string, 0, len(cfg.Projects))
@@ -91,7 +103,7 @@ func configure() error {
 			if err := saveConfig(cfg); err != nil {
 				return err
 			}
-			fmt.Println("Removed registration. No project files or containers were deleted.")
+			screenNotice("Registration removed", "No project files or containers were deleted.")
 		case 3:
 			return nil
 		}

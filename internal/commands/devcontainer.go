@@ -15,12 +15,15 @@ func requireExecutable(name string) error {
 }
 
 func invokeDevcontainer(args ...string) error {
+	screenHeading("devcontainer " + args[0])
 	fmt.Printf("$ devcontainer %s\n\n", strings.Join(args, " "))
 	cmd := exec.Command("devcontainer", args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	screenWait()
+	if err != nil {
 		return fmt.Errorf("devcontainer command failed: %w", err)
 	}
 	return nil

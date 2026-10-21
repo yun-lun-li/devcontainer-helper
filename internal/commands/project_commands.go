@@ -39,6 +39,8 @@ func selectRunnableProject(command string) (Project, error) {
 	if !p.Valid {
 		return Project{}, fmt.Errorf("missing or invalid .devcontainer/devcontainer.json at %s", p.Path)
 	}
-	fmt.Printf("\nSelected: %s (%s)\n", p.Name, p.Path)
+	if !screenActive {
+		fmt.Printf("\nSelected: %s (%s)\n", p.Name, p.Path)
+	}
 	return p, nil
 }
