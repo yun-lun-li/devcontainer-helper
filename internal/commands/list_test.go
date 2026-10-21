@@ -89,7 +89,7 @@ func TestListColorsKeepColumnsAligned(t *testing.T) {
 	var plain, colored bytes.Buffer
 	renderProjects(&plain, projects, false)
 	renderProjects(&colored, projects, true)
-	if !strings.Contains(colored.String(), "\x1b[32mRUNNING\x1b[0m") || !strings.Contains(colored.String(), "\x1b[33mSTOPPED\x1b[0m") {
+	if !strings.Contains(colored.String(), "\x1b[94mRUNNING\x1b[0m") || !strings.Contains(colored.String(), "\x1b[33mSTOPPED\x1b[0m") {
 		t.Fatalf("status colors missing: %q", colored.String())
 	}
 	ansi := regexp.MustCompile(`\x1b\[[0-9;]*m`)

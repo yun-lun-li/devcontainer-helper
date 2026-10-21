@@ -79,7 +79,7 @@ func renderProjects(out io.Writer, projects []Project, color bool) {
 func statusColor(state string) string {
 	switch {
 	case strings.HasPrefix(state, "RUNNING"):
-		return "\x1b[32m"
+		return "\x1b[94m"
 	case strings.HasPrefix(state, "STOPPED"), state == "UNKNOWN":
 		return "\x1b[33m"
 	case state == "CONFIG MISSING/INVALID":
