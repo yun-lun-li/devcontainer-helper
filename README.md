@@ -28,7 +28,7 @@ dch console                    # Open the Projects console
 
 `dch register --path PATH` is the only registration command. Relative paths are resolved against the current directory and stored as absolute paths; `~` is also supported. The project must contain `.devcontainer/devcontainer.json`. Registering the same path again is safe and does not create a duplicate.
 
-`dch console` opens directly on the Projects list. Running `dch` without arguments opens the same console. Each row shows a registered project's name, container state, and path. Select a project to choose an action:
+`dch console` opens directly on the Projects list. Running `dch` without arguments opens the same console. Each row shows a registered project's name, container state, and path. Select a project to see its colored status card, path with a folder icon, and available actions:
 
 | Project state | Available actions |
 | --- | --- |

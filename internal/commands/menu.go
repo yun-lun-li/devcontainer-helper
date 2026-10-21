@@ -39,7 +39,9 @@ func chooseView(view menuView) (int, error) {
 	color := menuColorEnabled()
 	printMenuHeader(view, color)
 	for i, opt := range view.options {
-		if color {
+		if view.project != nil {
+			fmt.Printf("  %d) %s\n", i+1, projectOption(opt, false, color, projectMenuWidth()-3))
+		} else if color {
 			fmt.Printf("  \x1b[1;36m%d)\x1b[0m %s\n", i+1, styledMenuOption(opt))
 		} else {
 			fmt.Printf("  %d) %s\n", i+1, opt)
@@ -102,10 +104,13 @@ func arrowChoose(view menuView) (index int, used bool, err error) {
 	color := menuColorEnabled()
 	printMenuHeader(view, color)
 	index = 0
+	projectWidth := projectMenuWidth()
 	footerLines := 2
 	render := func() {
 		for i, opt := range opts {
-			if color {
+			if view.project != nil {
+				fmt.Printf("\r\033[2K%s\n", projectOption(opt, i == index, color, projectWidth))
+			} else if color {
 				if i == index {
 					fmt.Printf("\r\033[2K\x1b[1;30;46m › %-*s \x1b[0m\n", menuWidth(opts), opt)
 				} else {
@@ -183,15 +188,135 @@ func printMenuHeader(view menuView, color bool) {
 		return
 	}
 	p := view.project
-	if color {
-		fmt.Printf("\n  \x1b[1;35m◆  PROJECT\x1b[0m\n")
-		fmt.Printf("  \x1b[1m%s\x1b[0m\n\n", p.Name)
-		fmt.Printf("  %s● %s\x1b[0m\n", statusColor(p.State), p.State)
-		fmt.Printf("  \x1b[2m⌂ %s\x1b[0m\n\n", p.Path)
-		fmt.Printf("  \x1b[1;35mACTIONS\x1b[0m\n\n")
-	} else {
-		fmt.Printf("\n  ◆  PROJECT\n  %s\n\n  ● %s\n  ⌂ %s\n\n  ACTIONS\n\n", p.Name, p.State, p.Path)
+	printProjectHeader(os.Stdout, *p, color, projectMenuWidth())
+}
+
+const (
+	cardPurple = "\x1b[38;2;177;139;230m"
+	cardBlue   = "\x1b[38;2;111;170;255m"
+	cardCyan   = "\x1b[38;2;106;216;232m"
+	cardAmber  = "\x1b[38;2;255;192;119m"
+	cardPink   = "\x1b[38;2;255;127;145m"
+	cardMuted  = "\x1b[38;2;142;162;188m"
+	cardFill   = "\x1b[48;2;24;35;58m"
+	cardSelect = "\x1b[48;2;47;153;177m\x1b[38;2;11;31;46m"
+	cardReset  = "\x1b[0m"
+)
+
+func projectMenuWidth() int {
+	width := 80
+	if size, err := runStty("size"); err == nil {
+		var rows, cols int
+		if _, err := fmt.Sscan(string(size), &rows, &cols); err == nil && cols > 0 {
+			width = cols
+		}
 	}
+	if width > 100 {
+		width = 100
+	}
+	if width < 24 {
+		width = 24
+	}
+	return width - 4
+}
+
+func truncateMenuText(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= width {
+		return s
+	}
+	if width == 1 {
+		return "…"
+	}
+	return string(runes[:width-1]) + "…"
+}
+
+func printProjectHeader(w io.Writer, p Project, color bool, width int) {
+	if width < 20 {
+		width = 20
+	}
+	style := func(code, s string) string {
+		if !color {
+			return s
+		}
+		return code + s + cardReset
+	}
+	name := truncateMenuText(p.Name, width-8)
+	breadcrumbName := truncateMenuText(p.Name, width-21)
+	borderCount := width - 7 - utf8.RuneCountInString(name)
+	fmt.Fprintf(w, "  %s   %s  /  %s\n\n", style(cardPurple, "dch"), style(cardMuted, "Projects"), style(cardMuted, breadcrumbName))
+	fmt.Fprintf(w, "  %s%s%s\n", style(cardPurple, "╭─ ◆ "), style(cardPurple, name), style(cardPurple, " "+strings.Repeat("─", borderCount)+"╮"))
+	line := func(content string, contentColor string) {
+		content = truncateMenuText(content, width-4)
+		padding := strings.Repeat(" ", width-4-utf8.RuneCountInString(content))
+		if color {
+			fmt.Fprintf(w, "  %s%s│  %s%s%s%s│%s\n", cardFill, cardPurple, contentColor, content, padding, cardPurple, cardReset)
+		} else {
+			fmt.Fprintf(w, "  │  %s%s│\n", content, padding)
+		}
+	}
+	line("", "")
+	stateColor := cardAmber
+	if strings.HasPrefix(p.State, "RUNNING") {
+		stateColor = cardBlue
+	}
+	line("● "+p.State, stateColor)
+	line("", "")
+	line(strings.Repeat("─", width-4), cardMuted)
+	line("", "")
+	line("🗁 "+p.Path, cardCyan)
+	line("", "")
+	fmt.Fprintf(w, "  %s\n\n", style(cardPurple, "╰"+strings.Repeat("─", width-2)+"╯"))
+	fmt.Fprintf(w, "  %s\n  %s\n", style(cardPurple, "ACTIONS"), style(cardMuted, strings.Repeat("─", width)))
+}
+
+func projectOption(option string, selected, color bool, width int) string {
+	label, description, _ := strings.Cut(option, "  ")
+	label = truncateMenuText(label, width-5)
+	if width < 42 {
+		description = ""
+	}
+	labelWidth := 25
+	if labelWidth > width-3 {
+		labelWidth = width - 3
+	}
+	plain := "  "
+	if selected {
+		plain = " ›"
+	}
+	plain += "  " + label
+	pad := labelWidth - utf8.RuneCountInString(label)
+	if pad > 0 && description != "" {
+		plain += strings.Repeat(" ", pad)
+	}
+	available := width - utf8.RuneCountInString(plain)
+	description = truncateMenuText(description, available)
+	plain += description
+	if !color {
+		return plain
+	}
+	if selected {
+		return cardSelect + plain + strings.Repeat(" ", width-utf8.RuneCountInString(plain)) + cardReset
+	}
+	optionColor := cardBlue
+	switch {
+	case strings.Contains(label, "Connect"):
+		optionColor = cardCyan
+	case strings.Contains(label, "Stop"), strings.Contains(label, "Start"):
+		optionColor = cardAmber
+	case strings.Contains(label, "Build"):
+		optionColor = cardPurple
+	case strings.Contains(label, "Remove"):
+		optionColor = cardPink
+	}
+	spacing := ""
+	if description != "" && pad > 0 {
+		spacing = strings.Repeat(" ", pad)
+	}
+	return optionColor + "     " + label + cardReset + spacing + cardMuted + description + cardReset
 }
 
 func styledMenuOption(option string) string {
