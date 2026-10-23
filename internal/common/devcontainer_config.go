@@ -3,6 +3,7 @@ package common
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -22,7 +23,7 @@ func MergedDevcontainerConfig(projectPath string) ([]byte, error) {
 	localPath := filepath.Join(configDir, "devcontainer.local.json")
 	local, err := readJSONCObject(localPath)
 	if err != nil {
-		if !os.IsNotExist(err) {
+		if !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
 		local = map[string]any{}
