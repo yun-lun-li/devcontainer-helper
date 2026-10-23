@@ -6,7 +6,7 @@
 
 - Docker CLI and an accessible Docker daemon
 - Official [Dev Container CLI](https://github.com/devcontainers/cli): `npm install -g @devcontainers/cli` (or its official install script)
-- Go 1.21 or later to build from source (not required for a prebuilt binary)
+- Go 1.26 or later to build from source (not required for a prebuilt binary)
 - A `<project>/.devcontainer/devcontainer.json` file in each project you register
 
 ## Install
