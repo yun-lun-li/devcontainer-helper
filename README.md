@@ -105,3 +105,7 @@ Run the tests with:
 ```bash
 make test
 ```
+
+## Releases
+
+Releases are created manually from the `main` branch in GitHub Actions by running the **Release** workflow. Enter a version in `vX.Y.Z-xxx` format, such as `v1.2.3-rc1`. The workflow creates and pushes the matching Git tag, then publishes `.tar.gz` archives containing the `dch` binary and README for Linux and macOS on amd64 and arm64. Windows builds are not provided.
