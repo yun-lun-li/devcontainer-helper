@@ -5,15 +5,17 @@ description: Draft or create a pull request for this repository. Use when the us
 
 # Create a pull request
 
-Prepare a clear PR title and body from the changes on the current branch. When the user asks to open the PR, push the branch if needed and create the PR with GitHub CLI.
+Prepare a clear PR title and body from the final changes on the current branch relative to the PR target. When the user asks to open the PR, push the branch if needed and create the PR with GitHub CLI.
 
 ## Review the changes
 
-1. Use the base branch named by the user. Use `main` when the user does not name a base branch.
-2. Confirm that the current branch is not the base branch. Inspect the commit list and the complete diff from the base branch.
+1. Use the target branch named by the user. Use `main` when the user does not name a target branch.
+2. Confirm that the current branch is not the target branch. Compare the current branch with the target branch using the merge base and inspect the final diff (`target...HEAD`). Use the commit list and PR history to understand the changes, but write only about behavior present in that final diff.
 3. Check the working tree. If uncommitted changes are part of the requested PR, stop and ask the user to commit them. Do not commit or stage changes unless the user asks. If the changes are unrelated, state that they are not part of the PR.
 4. Read the changed code and existing tests. Report test status only when the user or current task has run those tests.
 5. Describe changes that are present in the diff. Do not infer features or claim behavior that the changes do not support.
+
+The PR body describes the net change proposed for the target branch. Treat development history as context: when a problem found during feature work was fixed before the PR is ready, describe the final feature once and omit the resolved intermediate problem as a separate bugfix. Use `Bugfix` for a defect that the final diff fixes for users.
 
 ## Write the title and body
 

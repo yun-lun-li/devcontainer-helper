@@ -9,12 +9,12 @@ Create release notes from merged pull requests. When the user asks to publish a 
 
 ## Prepare the notes
 
-1. Get the target version from the user. Use the `vX.Y.Z-xxx` format. If the user asks only for a draft, do not require a version.
-2. Find the latest published GitHub Release tag. Use it as the start of the change range. If this is the first release, use all merged pull requests on `main`.
-3. List merged pull requests for `main`. Include a pull request only when its merge commit is in the change range from the previous release tag to `main` HEAD.
-4. Review each pull request title and description. Use the user-visible change as the release note. Put each pull request in one section: `Features`, `Bugfix`, or `Chore`.
-5. Write one numbered point for each pull request. Add its pull request number to that point. Add zero to three sub-items only when they help explain the change.
-6. Omit empty sections. Omit changes that do not map to a pull request. If a user-visible change has no matching pull request, tell the user before publishing.
+1. Get the target version or tag from the user. If the user asks only for a draft, do not require a version.
+2. Use the requested target tag as the comparison endpoint. If the user asks only for a draft and gives no target tag, use `HEAD` and state that endpoint. Find the previous release tag in its history and compare the endpoint with that tag. For the first release, use all merged pull requests included in the endpoint.
+3. List merged pull requests whose merge commits are in that tag-to-tag range. Review each pull request title and description. Use its final user-visible change as the release note. Put each pull request in one section: `Features`, `Bugfix`, or `Chore`.
+4. Write one numbered point for each pull request. Add its pull request number to that point. Add zero to three sub-items only when they help explain the change.
+5. Describe the net changes between the two endpoints, not the development history inside the range. A feature developed and then fixed before release is one feature note; do not add a separate bugfix note for the resolved intermediate problem. Use `Bugfix` for a defect fixed by a PR that remains a user-visible change in the release diff.
+6. Omit empty sections. Omit changes that do not map to a PR. If a user-visible change in the tag range has no matching PR, tell the user before publishing.
 7. Show the complete notes to the user before publishing. When the user asked to publish, continue to the release script unless a release precondition fails. When the user asked only for notes, stop after showing the draft.
 
 ## Release note format
@@ -45,7 +45,7 @@ Every numbered point must include its pull request number in `(#123)` form. A po
 
 When the user asks to publish the release:
 
-1. Confirm that the working tree is clean, the current branch is `main`, and local `main` matches `origin/main`. The script checks these conditions too.
+1. Confirm that the working tree is clean, the current branch is `main`, and local `main` matches `origin/main`. The script checks these conditions too. Confirm that the target commit is the intended release point and that the notes cover only changes since the previous release tag.
 2. Present the release notes and version. If the user has not authorized publishing, ask for approval before pushing the tag.
 3. Run the co-located helper with the version and the full notes as its second argument:
 
