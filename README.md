@@ -77,8 +77,8 @@ dch help                  # Show command help
 
 | Mode | Command | Result |
 | --- | --- | --- |
-| Rebuild and recreate (first option) | `devcontainer up --workspace-folder PATH --remove-existing-container --build-no-cache` | Recreates the existing container without using the build cache, then starts it. Requires confirmation. Unsaved changes in the container's writable layer may be lost. |
-| Build image only | `devcontainer build --workspace-folder PATH --no-cache` | Builds an image without replacing the running container. A later `up` may not use the newly built image. |
+| Rebuild and recreate (first option) | `devcontainer up --workspace-folder PATH --remove-existing-container` (add `--build-no-cache` when cache is disabled) | Recreates the existing container, then starts it. The app asks whether to use the build cache, defaulting to Yes. Recreating requires confirmation. Unsaved changes in the container's writable layer may be lost. |
+| Build image only | `devcontainer build --workspace-folder PATH` (add `--no-cache` when cache is disabled) | Builds an image without replacing the running container. The app asks whether to use the build cache, defaulting to Yes. A later `up` may not use the newly built image. |
 
 ## Status
 
