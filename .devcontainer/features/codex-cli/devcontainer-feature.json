@@ -7,7 +7,7 @@
     "codexVersion": {
       "type": "string",
       "default": "latest",
-      "description": "Codex CLI version"
+      "description": "Codex release version (e.g. rust-v0.XX.X)"
     }
   }
 }
