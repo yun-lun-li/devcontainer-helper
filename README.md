@@ -33,22 +33,6 @@ dch console                    # Open the Projects console
 
 `dch register --path PATH` is the only registration command. Relative paths are resolved against the current directory and stored as absolute paths; `~` is also supported. The project must contain `.devcontainer/devcontainer.json`. Registering the same path again is safe and does not create a duplicate.
 
-`dch console` opens directly on the Projects list. Running `dch` without arguments opens the same console. Each row shows a registered project's name, container state, and path. Select a project to see its colored status card, path with a folder icon, and available actions:
-
-| Project state | Available actions |
-| --- | --- |
-| `RUNNING` | **Connect**, **Stop**, **Build**, **Show config**, **Remove Project** |
-| `STOPPED` or `NOT CREATED` | **Start**, **Build**, **Show config**, **Remove Project** |
-| `UNKNOWN` or `CONFIG MISSING/INVALID` | **Show config**, **Remove Project**; container actions require Docker and a valid configuration |
-
-**Connect** opens a shell through `devcontainer exec`, which applies the Dev Container CLI's `remoteUser` and `remoteEnv` settings. It starts bash when available and falls back to sh. **Start** runs `devcontainer up`. The project and action screens refresh Docker status after an operation.
-
-**Show config** previews the merged configuration in a scrollable view. Each project may have a `.devcontainer/devcontainer.local.json` for per-user settings. dch recursively merges objects, lets local values override base values, and appends unique array entries. Without the local file, the base configuration is used. Start, Build, and rebuild pass a temporary merged config to the Dev Container CLI; the original `devcontainer.json` is left untouched. dch does not edit `.gitignore`, so keep `devcontainer.local.json` out of version control yourself.
-
-**Stop** stops the project's running containers, then asks whether to delete any matching containers that remain. Answer No to keep them in the `STOPPED` state so **Start** can run them again. Answer Yes to remove them; changes stored only in a container's writable layer are lost. If Docker has already removed a container after stopping it, there is nothing further to delete. **Remove Project** immediately unregisters the path without another prompt. It never deletes project files, containers, or images.
-
-Use ↑/↓ or `j`/`k` to move, Enter to select, and `q` or Esc to go back. The interface redraws in one terminal screen and hides the cursor while a menu is open. The cursor reappears for prompts and shells, and quitting restores the original terminal view. Set `NO_COLOR=1` to disable colors. When stdin is redirected, menus use numbered choices instead.
-
 ### Commands
 
 The command line has three primary commands. Container operations are available inside the console.
@@ -73,16 +57,3 @@ dch help                  # Show command help
   ]
 }
 ```
-
-### Source layout
-
-- `internal/commands` handles CLI dispatch, registration, and `dch list` output.
-- `internal/console` handles the full-screen interface and container actions.
-- `internal/common` holds project configuration, metadata, and Docker status logic shared by both.
-
-### Build modes
-
-| Mode | Command | Result |
-| --- | --- | --- |
-| Rebuild and recreate (first option) | `devcontainer up --workspace-folder PATH --remove-existing-container` (add `--build-no-cache` when cache is disabled) | Recreates the existing container, then starts it. The app asks whether to use the build cache, defaulting to Yes. Recreating requires confirmation. Unsaved changes in the container's writable layer may be lost. |
-| Build image only | `devcontainer build --workspace-folder PATH` (add `--no-cache` when cache is disabled) | Builds an image without replacing the running container. The app asks whether to use the build cache, defaulting to Yes. A later `up` may not use the newly built image. |
