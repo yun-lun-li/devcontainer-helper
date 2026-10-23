@@ -2,6 +2,11 @@
 
 `dch` is a terminal app for managing Dev Containers on Linux, WSL2, and macOS. It is a single Go binary with no third-party Go dependencies.
 
+| Feature | Description |
+| --- | --- |
+| Manage Dev Containers in one place | View the status of multiple projects in a terminal interface, and connect to, start, build, or stop their containers. |
+| Apply personal settings | Merge `devcontainer.local.json` with the project configuration for previews and container operations, without changing the original configuration file. |
+
 ## Prerequisites
 
 - Docker CLI and an accessible Docker daemon
@@ -81,31 +86,3 @@ dch help                  # Show command help
 | --- | --- | --- |
 | Rebuild and recreate (first option) | `devcontainer up --workspace-folder PATH --remove-existing-container` (add `--build-no-cache` when cache is disabled) | Recreates the existing container, then starts it. The app asks whether to use the build cache, defaulting to Yes. Recreating requires confirmation. Unsaved changes in the container's writable layer may be lost. |
 | Build image only | `devcontainer build --workspace-folder PATH` (add `--no-cache` when cache is disabled) | Builds an image without replacing the running container. The app asks whether to use the build cache, defaulting to Yes. A later `up` may not use the newly built image. |
-
-## Status
-
-`dch` finds containers with the `devcontainer.local_folder` label using `docker ps -a`, then uses `docker inspect` to match the exact workspace path and, when present, `devcontainer.config_file`. `dch list` shows the matched container ID, or `-` when there is no matching container. It does not infer projects from container names.
-
-On a terminal, the table colors its header, statuses, and container IDs. Redirected output stays plain text. Set `NO_COLOR=1` to disable colors.
-
-Possible states include `RUNNING`, `STOPPED`, `NOT CREATED`, and `CONFIG MISSING/INVALID`. When Docker is unavailable, valid projects show `UNKNOWN`; the Projects screen indicates that Docker is unavailable, while `dch list` prints a warning. If a project has multiple matching containers, the status includes their count.
-
-## Limitations
-
-- `.devcontainer/devcontainer.json` and its optional `.devcontainer/devcontainer.local.json` are supported. Other configuration locations, multiple base configurations, and a root-level `.devcontainer.json` are not supported.
-- Status matching uses local absolute paths. A container created through a different symlink or Windows/VS Code path may have a different Docker label and fail to match.
-- The official `devcontainer` CLI supports Docker Compose devcontainers, but labels vary by configuration. A Compose service without a matching label may not appear in `dch list`.
-
-## Development
-
-`main.go` is the CLI entry point. Command implementations and terminal UI code are in `internal/commands`.
-
-Run the tests with:
-
-```bash
-make test
-```
-
-## Releases
-
-Run `.agents/skills/release/release.sh vX.Y.Z-xxx [release-notes]` from a clean, up-to-date `main` branch, for example `.agents/skills/release/release.sh v1.2.3-rc1 "Fix project registration"`. The script creates and pushes an annotated tag; pushing it triggers the **Release** workflow. The workflow uses the tag annotation as the GitHub Release notes and attaches `.tar.gz` archives containing the `dch` binary and README for Linux and macOS on amd64 and arm64. If notes are omitted, the annotation is `Release <version>`. Windows builds are not provided. The script requires Git and permission to push tags to the repository.
