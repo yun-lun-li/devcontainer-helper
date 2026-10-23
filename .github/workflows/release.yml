@@ -23,8 +23,8 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[A-Za-z0-9]+([.-][A-Za-z0-9]+)*$ ]]; then
-            echo "Invalid version '$VERSION'. Expected vX.Y.Z-xxx, for example v1.2.3-rc1." >&2
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9]+([.-][A-Za-z0-9]+)*)?$ ]]; then
+            echo "Invalid version '$VERSION'. Expected vX.Y.Z or vX.Y.Z-xxx, for example v1.2.3 or v1.2.3-rc1." >&2
             exit 1
           fi
           git fetch origin main
