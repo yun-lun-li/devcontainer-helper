@@ -15,6 +15,7 @@ const (
 	actionStart   projectAction = "Start"
 	actionStop    projectAction = "Stop"
 	actionBuild   projectAction = "Build"
+	actionConfig  projectAction = "Show config"
 	actionRemove  projectAction = "Remove Project"
 	actionBack    projectAction = "Back to projects"
 )
@@ -92,6 +93,8 @@ func projectMenu(path string) error {
 			err = stopProject(p)
 		case actionBuild:
 			err = buildProject(p)
+		case actionConfig:
+			err = showProjectConfig(p)
 		case actionRemove:
 			err = common.RemoveProjectRegistration(p.Path)
 			if err == nil {
@@ -122,6 +125,8 @@ func chooseProject(p Project, actions []projectAction) (int, error) {
 			options[i] = "■ Stop  Stop the running container"
 		case actionBuild:
 			options[i] = "▣ Build  Rebuild container or image"
+		case actionConfig:
+			options[i] = "⚙ Show config  Preview merged devcontainer settings"
 		case actionRemove:
 			options[i] = "✕ Remove Project  Unregister only; keep files and containers"
 		case actionBack:
@@ -142,5 +147,5 @@ func availableProjectActions(p Project, dockerAvailable bool) []projectAction {
 		}
 		actions = append(actions, actionBuild)
 	}
-	return append(actions, actionRemove, actionBack)
+	return append(actions, actionConfig, actionRemove, actionBack)
 }

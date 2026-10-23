@@ -32,11 +32,13 @@ dch console                    # Open the Projects console
 
 | Project state | Available actions |
 | --- | --- |
-| `RUNNING` | **Connect**, **Stop**, **Build**, **Remove Project** |
-| `STOPPED` or `NOT CREATED` | **Start**, **Build**, **Remove Project** |
-| `UNKNOWN` or `CONFIG MISSING/INVALID` | **Remove Project**; container actions require Docker and a valid configuration |
+| `RUNNING` | **Connect**, **Stop**, **Build**, **Show config**, **Remove Project** |
+| `STOPPED` or `NOT CREATED` | **Start**, **Build**, **Show config**, **Remove Project** |
+| `UNKNOWN` or `CONFIG MISSING/INVALID` | **Show config**, **Remove Project**; container actions require Docker and a valid configuration |
 
 **Connect** opens a shell through `devcontainer exec`, which applies the Dev Container CLI's `remoteUser` and `remoteEnv` settings. It starts bash when available and falls back to sh. **Start** runs `devcontainer up`. The project and action screens refresh Docker status after an operation.
+
+**Show config** previews the merged configuration in a scrollable view. Each project may have a `.devcontainer/devcontainer.local.json` for per-user settings. dch recursively merges objects, lets local values override base values, and appends unique array entries. Without the local file, the base configuration is used. Start, Build, and rebuild pass a temporary merged config to the Dev Container CLI; the original `devcontainer.json` is left untouched. dch does not edit `.gitignore`, so keep `devcontainer.local.json` out of version control yourself.
 
 **Stop** stops the project's running containers, then asks whether to delete any matching containers that remain. Answer No to keep them in the `STOPPED` state so **Start** can run them again. Answer Yes to remove them; changes stored only in a container's writable layer are lost. If Docker has already removed a container after stopping it, there is nothing further to delete. **Remove Project** immediately unregisters the path without another prompt. It never deletes project files, containers, or images.
 
@@ -55,7 +57,7 @@ dch help                  # Show command help
 
 ### Configuration file
 
-`~/.dch/config` is JSON without a `.json` extension. It stores **only project paths**. `dch` reads each project's name from `.devcontainer/devcontainer.json` every time; comments and trailing commas in that file are supported. If `name` is missing, the directory name is used.
+`~/.dch/config` is JSON without a `.json` extension. It stores **only project paths**. dch reads each project's name from the merged `.devcontainer/devcontainer.json` and optional `.devcontainer/devcontainer.local.json`; comments and trailing commas are supported in both. If `name` is missing, the directory name is used.
 
 ```json
 {
@@ -90,7 +92,7 @@ Possible states include `RUNNING`, `STOPPED`, `NOT CREATED`, and `CONFIG MISSING
 
 ## Limitations
 
-- Only `.devcontainer/devcontainer.json` at the project root is supported. Multiple configuration files and a root-level `.devcontainer.json` are not supported.
+- `.devcontainer/devcontainer.json` and its optional `.devcontainer/devcontainer.local.json` are supported. Other configuration locations, multiple base configurations, and a root-level `.devcontainer.json` are not supported.
 - Status matching uses local absolute paths. A container created through a different symlink or Windows/VS Code path may have a different Docker label and fail to match.
 - The official `devcontainer` CLI supports Docker Compose devcontainers, but labels vary by configuration. A Compose service without a matching label may not appear in `dch list`.
 

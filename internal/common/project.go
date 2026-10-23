@@ -103,20 +103,15 @@ func ProjectName(path string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("not a directory: %s", path)
 	}
-	p := filepath.Join(path, ".devcontainer", "devcontainer.json")
-	data, err := os.ReadFile(p)
+	data, err := MergedDevcontainerConfig(path)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", p, err)
-	}
-	data, err = jsoncToJSON(data)
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", p, err)
+		return "", err
 	}
 	var cfg struct {
 		Name string `json:"name"`
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return "", fmt.Errorf("invalid devcontainer.json: %w", err)
+		return "", fmt.Errorf("invalid merged devcontainer config: %w", err)
 	}
 	if strings.TrimSpace(cfg.Name) == "" {
 		return filepath.Base(path), nil

@@ -20,7 +20,7 @@ func buildProject(p Project) error {
 		if !useCache {
 			args = append(args, "--no-cache")
 		}
-		return invokeDevcontainer(args...)
+		return invokeProjectDevcontainer(p, args...)
 	}
 	ok, err := confirm("Remove the existing devcontainer (if any) and rebuild from scratch? Unsaved changes inside the container may be lost.", false)
 	if err != nil {
@@ -33,5 +33,5 @@ func buildProject(p Project) error {
 	if !useCache {
 		args = append(args, "--build-no-cache")
 	}
-	return invokeDevcontainer(args...)
+	return invokeProjectDevcontainer(p, args...)
 }
