@@ -1,0 +1,26 @@
+{
+	"name": "dch-dev-container",
+	"build": {
+		"dockerfile": "Dockerfile",
+		"context": "..",
+		"args": {
+			"VARIANT": "14",
+			"USERNAME": "${localEnv:USER}"
+		}
+	},
+	"features": {
+		"./features/codex-cli": {}
+	},
+	"runArgs": [],
+	"remoteUser": "${localEnv:USER}",
+	"mounts": [
+		"source=${localEnv:HOME}/.codex,target=${localEnv:HOME}/.codex,type=bind,consistency=cached",
+		"source=dch-go-mod,target=${localEnv:HOME}/go/pkg/mod,type=volume",
+		"source=dch-go-sumdb,target=${localEnv:HOME}/go/pkg/sumdb,type=volume"
+	],
+	"forwardPorts": [],
+	"postCreateCommand": "go mod tidy",
+	"shutdownAction": "stopContainer",
+	"portsAttributes": {
+	}
+}
