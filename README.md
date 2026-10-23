@@ -108,4 +108,4 @@ make test
 
 ## Releases
 
-Releases are created manually from the `main` branch in GitHub Actions by running the **Release** workflow. Enter a version in `vX.Y.Z-xxx` format, such as `v1.2.3-rc1`. The workflow creates and pushes the matching Git tag, then publishes `.tar.gz` archives containing the `dch` binary and README for Linux and macOS on amd64 and arm64. Windows builds are not provided.
+Run `.agents/skills/release/release.sh vX.Y.Z-xxx [release-notes]` from a clean, up-to-date `main` branch, for example `.agents/skills/release/release.sh v1.2.3-rc1 "Fix project registration"`. The script creates and pushes an annotated tag; pushing it triggers the **Release** workflow. The workflow uses the tag annotation as the GitHub Release notes and attaches `.tar.gz` archives containing the `dch` binary and README for Linux and macOS on amd64 and arm64. If notes are omitted, the annotation is `Release <version>`. Windows builds are not provided. The script requires Git and permission to push tags to the repository.
