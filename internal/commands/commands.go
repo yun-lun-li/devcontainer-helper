@@ -10,6 +10,7 @@ func Run(args []string, openConsole func() error) error {
 		if openConsole == nil {
 			return fmt.Errorf("console is unavailable")
 		}
+		checkForStartupUpdate()
 		return openConsole()
 	}
 
@@ -27,6 +28,7 @@ func Run(args []string, openConsole func() error) error {
 		if openConsole == nil {
 			return fmt.Errorf("console is unavailable")
 		}
+		checkForStartupUpdate()
 		return openConsole()
 	case "register":
 		if len(args) != 3 || args[1] != "--path" || args[2] == "" {
