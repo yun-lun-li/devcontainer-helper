@@ -21,6 +21,10 @@ func requireExecutable(name string) error {
 }
 
 func invokeDevcontainer(args ...string) error {
+	return invokeDevcontainerWithCleanup(nil, args...)
+}
+
+func invokeDevcontainerCommand(cleanup func(), args ...string) error {
 	action := args[0]
 	if action == "up" && hasArgument(args, "--remove-existing-container") {
 		action = "build"
@@ -35,13 +39,16 @@ func invokeDevcontainer(args ...string) error {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		err := cmd.Run()
+		if cleanup != nil {
+			cleanup()
+		}
 		screenWait()
 		if err != nil {
 			return fmt.Errorf("devcontainer command failed: %w", err)
 		}
 		return nil
 	}
-	err := runDevcontainerWithLogs(cmd, title, command)
+	err := runDevcontainerWithLogs(cmd, title, command, cleanup)
 	if err != nil {
 		return fmt.Errorf("devcontainer command failed: %w", err)
 	}
@@ -69,21 +76,18 @@ func invokeProjectDevcontainer(p Project, args ...string) error {
 		}
 	}
 	configDir := filepath.Join(p.Path, ".devcontainer")
-	// The Dev Container CLI only accepts configuration files with one of these
-	// two basenames. Keep the merged file beside the source config so relative
-	// paths in the configuration retain their existing meaning.
-	mergedPath := filepath.Join(configDir, ".devcontainer.json")
-	mergedFile, err := os.OpenFile(mergedPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	tempDir, err := os.MkdirTemp("", "dch-devcontainer-")
 	if err != nil {
-		return fmt.Errorf("create temporary merged devcontainer config: %w", err)
+		return fmt.Errorf("create temporary devcontainer directory: %w", err)
 	}
-	defer os.Remove(mergedPath)
-	if _, err := mergedFile.Write(config); err != nil {
-		mergedFile.Close()
+	defer os.RemoveAll(tempDir)
+	config, err = rebaseConfigPaths(config, configDir, tempDir)
+	if err != nil {
+		return err
+	}
+	mergedPath := filepath.Join(tempDir, "devcontainer.json")
+	if err := os.WriteFile(mergedPath, config, 0o600); err != nil {
 		return fmt.Errorf("write temporary merged devcontainer config: %w", err)
-	}
-	if err := mergedFile.Close(); err != nil {
-		return fmt.Errorf("close temporary merged devcontainer config: %w", err)
 	}
 
 	args = append(args, "--config", mergedPath)
@@ -101,7 +105,61 @@ func invokeProjectDevcontainer(p Project, args ...string) error {
 			"--id-label", "devcontainer.config_file="+basePath,
 		)
 	}
-	return invokeDevcontainer(args...)
+	return invokeDevcontainerWithCleanup(func() { _ = os.RemoveAll(tempDir) }, args...)
+}
+
+func invokeDevcontainerWithCleanup(cleanup func(), args ...string) error {
+	return invokeDevcontainerCommand(cleanup, args...)
+}
+
+func rebaseConfigPaths(config []byte, sourceDir, targetDir string) ([]byte, error) {
+	var settings map[string]any
+	if err := json.Unmarshal(config, &settings); err != nil {
+		return nil, fmt.Errorf("decode merged devcontainer config: %w", err)
+	}
+	rebase := func(path string) string {
+		if path == "" || filepath.IsAbs(path) || strings.Contains(path, "${") || strings.Contains(path, "$LOCAL_") {
+			return path
+		}
+		absolute := filepath.Join(sourceDir, filepath.FromSlash(path))
+		relative, err := filepath.Rel(targetDir, absolute)
+		if err != nil {
+			return path
+		}
+		return filepath.ToSlash(relative)
+	}
+	if build, ok := settings["build"].(map[string]any); ok {
+		for _, key := range []string{"dockerfile", "context"} {
+			if path, ok := build[key].(string); ok {
+				build[key] = rebase(path)
+			}
+		}
+	}
+	switch compose := settings["dockerComposeFile"].(type) {
+	case string:
+		settings["dockerComposeFile"] = rebase(compose)
+	case []any:
+		for i, value := range compose {
+			if path, ok := value.(string); ok {
+				compose[i] = rebase(path)
+			}
+		}
+	}
+	if features, ok := settings["features"].(map[string]any); ok {
+		rebased := make(map[string]any, len(features))
+		for feature, options := range features {
+			if strings.HasPrefix(feature, "./") || strings.HasPrefix(feature, "../") {
+				feature = rebase(feature)
+			}
+			rebased[feature] = options
+		}
+		settings["features"] = rebased
+	}
+	updated, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode merged devcontainer config: %w", err)
+	}
+	return updated, nil
 }
 
 func withStableContainerName(config []byte, p Project) ([]byte, error) {

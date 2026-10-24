@@ -35,16 +35,22 @@ func (w *liveLogWriter) String() string {
 }
 
 // runDevcontainerWithLogs streams build output into a bounded, bordered viewport.
-func runDevcontainerWithLogs(cmd *exec.Cmd, title, command string) error {
+func runDevcontainerWithLogs(cmd *exec.Cmd, title, command string, onExit func()) error {
 	rows, width, _ := terminalSize()
 	writer := &liveLogWriter{title: title, rows: rows, width: width}
 	_, _ = writer.Write([]byte(command))
 	cmd.Stdout = writer
 	cmd.Stderr = writer
 	if err := cmd.Start(); err != nil {
+		if onExit != nil {
+			onExit()
+		}
 		return err
 	}
 	err := cmd.Wait()
+	if onExit != nil {
+		onExit()
+	}
 	showLogs(title, []byte(writer.String()))
 	return err
 }
