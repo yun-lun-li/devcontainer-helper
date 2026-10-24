@@ -2,6 +2,7 @@ package commands
 
 import (
 	"archive/tar"
+	"bufio"
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
@@ -25,31 +26,9 @@ type githubRelease struct {
 }
 
 func update() error {
-	var release githubRelease
 	fmt.Printf("Installed Version: %s\n", strings.TrimPrefix(version, "v"))
-	if err := withSpinner("Checking for the latest dch release", func() error {
-		client := &http.Client{Timeout: 2 * time.Minute}
-		request, err := http.NewRequest(http.MethodGet, releaseAPI, nil)
-		if err != nil {
-			return err
-		}
-		request.Header.Set("Accept", "application/vnd.github+json")
-		response, err := client.Do(request)
-		if err != nil {
-			return fmt.Errorf("could not check the latest release: %w", err)
-		}
-		defer response.Body.Close()
-		if response.StatusCode != http.StatusOK {
-			return fmt.Errorf("could not check the latest release: GitHub returned %s", response.Status)
-		}
-		if err := json.NewDecoder(response.Body).Decode(&release); err != nil {
-			return fmt.Errorf("could not read latest release information: %w", err)
-		}
-		if release.TagName == "" {
-			return fmt.Errorf("latest release did not include a version tag")
-		}
-		return nil
-	}); err != nil {
+	release, err := latestRelease(2 * time.Minute)
+	if err != nil {
 		return err
 	}
 	if version == release.TagName {
@@ -147,6 +126,66 @@ func update() error {
 	}
 	fmt.Printf("Updated dch %s → %s\n", strings.TrimPrefix(version, "v"), strings.TrimPrefix(release.TagName, "v"))
 	return nil
+}
+
+func latestRelease(timeout time.Duration) (githubRelease, error) {
+	var release githubRelease
+	if err := withSpinner("Checking for the latest dch release", func() error {
+		client := &http.Client{Timeout: timeout}
+		request, err := http.NewRequest(http.MethodGet, releaseAPI, nil)
+		if err != nil {
+			return err
+		}
+		request.Header.Set("Accept", "application/vnd.github+json")
+		response, err := client.Do(request)
+		if err != nil {
+			return fmt.Errorf("could not check the latest release: %w", err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			return fmt.Errorf("could not check the latest release: GitHub returned %s", response.Status)
+		}
+		if err := json.NewDecoder(response.Body).Decode(&release); err != nil {
+			return fmt.Errorf("could not read latest release information: %w", err)
+		}
+		if release.TagName == "" {
+			return fmt.Errorf("latest release did not include a version tag")
+		}
+		return nil
+	}); err != nil {
+		return githubRelease{}, err
+	}
+	return release, nil
+}
+
+func checkForStartupUpdate() {
+	if version == "dev" {
+		return
+	}
+	info, err := os.Stdin.Stat()
+	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
+		return
+	}
+
+	release, err := latestRelease(5 * time.Second)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Could not check for dch updates: %v\n", err)
+		return
+	}
+	if strings.TrimPrefix(version, "v") == strings.TrimPrefix(release.TagName, "v") {
+		return
+	}
+
+	fmt.Printf("A new dch version is available: %s → %s. Update now? [y/N] ", strings.TrimPrefix(version, "v"), strings.TrimPrefix(release.TagName, "v"))
+	answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && len(answer) == 0 {
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(answer), "y") || strings.EqualFold(strings.TrimSpace(answer), "yes") {
+		if err := update(); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+		}
+	}
 }
 
 func withSpinner(label string, action func() error) error {
