@@ -173,7 +173,6 @@ func checkForStartupUpdate() {
 		return
 	}
 	if normalizeVersion(version) == normalizeVersion(release.TagName) {
-		fmt.Printf("dch %s is up to date\n", normalizeVersion(version))
 		return
 	}
 
