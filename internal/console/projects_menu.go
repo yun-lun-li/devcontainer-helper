@@ -148,15 +148,8 @@ func removeProject(p Project) error {
 		return err
 	}
 	projectPlugins := config.ProjectPlugins[path]
-	for id := range projectPlugins.Enabled {
-		if id != "github-app" {
-			return fmt.Errorf("unknown enabled plugin %q", id)
-		}
-	}
-	for id := range projectPlugins.States {
-		if id != "github-app" {
-			return fmt.Errorf("unknown plugin state %q", id)
-		}
+	if err := common.ValidateProjectPlugins(projectPlugins, map[string]struct{}{"github-app": {}}); err != nil {
+		return err
 	}
 	manager := plugins.NewManager()
 	status, err := manager.Status(context.Background(), path)
