@@ -33,7 +33,7 @@ download() {
 	url=$1
 	output=$2
 	if [ "$DOWNLOADER" = curl ]; then
-		curl -fSL --retry 3 "$url" -o "$output"
+		curl -fsSL --retry 3 "$url" -o "$output"
 	else
 		wget --tries=3 -q -O "$output" "$url"
 	fi
@@ -59,7 +59,12 @@ install_devcontainer_cli() {
 	installer="$TMP_DIR/devcontainer-install.sh"
 	log "Installing Dev Container CLI first"
 	download "$DEVCONTAINER_INSTALLER_URL" "$installer"
-	sh "$installer" --prefix "$PREFIX"
+	if sh "$installer" --prefix "$PREFIX" 2>"$TMP_DIR/devcontainer-install.stderr"; then
+		:
+	else
+		cat "$TMP_DIR/devcontainer-install.stderr" >&2
+		fail "Dev Container CLI installation failed"
+	fi
 }
 
 install_dch() {
