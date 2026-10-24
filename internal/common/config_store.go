@@ -7,12 +7,31 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"dch/internal/githubapp"
 )
 
 type Config struct {
-	Version  int      `json:"version"`
-	Projects []string `json:"projects"`
+	Version        int                       `json:"version"`
+	Projects       []string                  `json:"projects"`
+	ProjectPlugins map[string]ProjectPlugins `json:"project_plugins,omitempty"`
 }
+
+// ProjectPlugins stores host-side configuration and ownership state for one project.
+type ProjectPlugins struct {
+	Enabled map[string]githubapp.Config `json:"enabled,omitempty"`
+	States  map[string]PluginState      `json:"states,omitempty"`
+}
+
+// PluginState tracks generated-file ownership and whether containers need a Build.
+type PluginState struct {
+	FragmentDigest   string `json:"fragment_digest,omitempty"`
+	BuildFingerprint string `json:"build_fingerprint,omitempty"`
+	BuildPending     bool   `json:"build_pending,omitempty"`
+}
+
+// ConfigPath returns the absolute path used to load and save the host configuration.
+func ConfigPath() (string, error) { return configPath() }
 
 func configPath() (string, error) {
 	if p := os.Getenv("DCH_CONFIG"); p != "" {
