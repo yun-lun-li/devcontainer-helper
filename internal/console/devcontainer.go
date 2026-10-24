@@ -38,11 +38,14 @@ func invokeProjectDevcontainer(p Project, args ...string) error {
 		return err
 	}
 	configDir := filepath.Join(p.Path, ".devcontainer")
-	mergedFile, err := os.CreateTemp(configDir, ".dch-merged-*.json")
+	// The Dev Container CLI only accepts configuration files with one of these
+	// two basenames. Keep the merged file beside the source config so relative
+	// paths in the configuration retain their existing meaning.
+	mergedPath := filepath.Join(configDir, ".devcontainer.json")
+	mergedFile, err := os.OpenFile(mergedPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return fmt.Errorf("create temporary merged devcontainer config: %w", err)
 	}
-	mergedPath := mergedFile.Name()
 	defer os.Remove(mergedPath)
 	if _, err := mergedFile.Write(config); err != nil {
 		mergedFile.Close()
