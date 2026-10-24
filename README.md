@@ -38,8 +38,6 @@ dch version                    # Show the installed version
 
 `dch register --path PATH` is the only registration command. Relative paths are resolved against the current directory and stored as absolute paths; `~` is also supported. The project must contain `.devcontainer/devcontainer.json`. Registering the same path again is safe and does not create a duplicate.
 
-When `dch` opens the interactive console, it checks GitHub for the latest release. The check runs only for release builds in an interactive terminal; source builds (`dev`) and non-interactive runs skip it. The console reports when the installed version is already up to date.
-
 ### Commands
 
 Container operations are available inside the console.
