@@ -16,6 +16,18 @@
 
 ## Install
 
+Install the latest release and the Dev Container CLI with POSIX `sh` (no Node.js installation is needed):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/yun-lun-li/devcontainer-helper/main/install.sh | sh
+```
+
+The installer puts both commands in `~/.local/bin`, creates `~/.dch/config`, and adds the binary directory to the detected shell profile (`~/.bashrc`, `~/.zshrc`, or `~/.profile`). Set `DCH_VERSION` to install a specific release tag, or `DCH_PREFIX` and `DCH_INSTALL_DIR` to change the installation locations.
+
+The Dev Container CLI is installed first using its official standalone installer, which includes its own Node.js runtime. Docker CLI and an accessible Docker daemon are still needed for container operations.
+
+To build and install from source instead:
+
 ```bash
 make install
 # Ensure ~/.local/bin is on PATH:
