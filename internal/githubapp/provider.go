@@ -243,13 +243,18 @@ type boundedBuffer struct {
 
 func securePassEnvironment(env []string) []string {
 	filtered := make([]string, 0, len(env)+2)
+	var gpgOptions string
 	for _, item := range env {
-		if strings.HasPrefix(item, "GPG_TTY=") || strings.HasPrefix(item, "PASSWORD_STORE_GPG_OPTS=") {
+		if strings.HasPrefix(item, "GPG_TTY=") {
+			continue
+		}
+		if strings.HasPrefix(item, "PASSWORD_STORE_GPG_OPTS=") {
+			gpgOptions = strings.TrimPrefix(item, "PASSWORD_STORE_GPG_OPTS=")
 			continue
 		}
 		filtered = append(filtered, item)
 	}
-	return append(filtered, "GPG_TTY=", "PASSWORD_STORE_GPG_OPTS=--batch --pinentry-mode error")
+	return append(filtered, "GPG_TTY=", "PASSWORD_STORE_GPG_OPTS="+strings.TrimSpace(gpgOptions+" --batch --pinentry-mode error"))
 }
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {

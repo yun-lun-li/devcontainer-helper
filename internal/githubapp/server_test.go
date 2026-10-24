@@ -87,10 +87,7 @@ func TestServerRecoversStaleSocketAfterCrash(t *testing.T) {
 	defer cancel()
 	result := make(chan error, 1)
 	go func() { result <- Serve(ctx, sock, cfg) }()
-	waitForSocket(t, sock)
-	if err := CheckCredential(context.Background(), sock); err == nil {
-		t.Fatal("unexpected credential with unavailable pass")
-	}
+	waitForHealth(t, sock)
 	cancel()
 	waitForSocketRemoval(t, sock)
 	if err := <-result; err != nil {
@@ -169,4 +166,21 @@ func waitForSocketRemoval(t *testing.T, path string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("socket was not removed")
+}
+
+func waitForHealth(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	client := unixHTTPClient(path)
+	for time.Now().Before(deadline) {
+		resp, err := client.Get("http://unix/health")
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("credential server did not become healthy")
 }

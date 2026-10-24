@@ -33,6 +33,8 @@ func testPrivateKey(t *testing.T) string {
 
 func TestProviderMintsScopedTokenAndCachesIt(t *testing.T) {
 	key := testPrivateKey(t)
+	t.Setenv("GPG_TTY", "/dev/pts/9")
+	t.Setenv("PASSWORD_STORE_GPG_OPTS", "--no-tty --pinentry-mode loopback")
 	privateKey, err := parsePrivateKey([]byte(key))
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +88,8 @@ func TestProviderMintsScopedTokenAndCachesIt(t *testing.T) {
 	}))
 	defer srv.Close()
 	pass := filepath.Join(t.TempDir(), "pass")
-	if err := os.WriteFile(pass, []byte("#!/bin/sh\ncat <<'KEY'\n"+key+"\nKEY\n"), 0700); err != nil {
+	fakePass := "#!/bin/sh\n[ \"$1\" = show ] && [ \"$2\" = key ] || exit 9\n[ -z \"$GPG_TTY\" ] || exit 10\n[ \"$PASSWORD_STORE_GPG_OPTS\" = '--no-tty --pinentry-mode loopback --batch --pinentry-mode error' ] || exit 11\ncat <<'KEY'\n" + key + "\nKEY\n"
+	if err := os.WriteFile(pass, []byte(fakePass), 0700); err != nil {
 		t.Fatal(err)
 	}
 	cfg := Config{AppID: 12, InstallationID: 34, PrivateKeyPassEntry: "key", Repository: "octo/repo", Permissions: map[string]string{"contents": "read"}}
