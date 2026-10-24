@@ -42,6 +42,14 @@ func TestProviderMintsScopedTokenAndCachesIt(t *testing.T) {
 	now := time.Date(2029, 12, 31, 0, 0, 0, 0, time.UTC)
 	var tokenCalls, repoCalls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/octo/repo/installation" {
+			repoCalls++
+			if r.Header.Get("Authorization") == "" || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+				t.Error("installation lookup did not use App JWT")
+			}
+			_, _ = w.Write([]byte(`{"id":34}`))
+			return
+		}
 		if r.URL.Path == "/app/installations/34/access_tokens" {
 			tokenCalls++
 			jwt := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -76,14 +84,6 @@ func TestProviderMintsScopedTokenAndCachesIt(t *testing.T) {
 			_, _ = w.Write([]byte(`{"token":"opaque-token","expires_at":"2030-01-01T00:00:00Z"}`))
 			return
 		}
-		if r.URL.Path == "/repos/octo/repo" {
-			repoCalls++
-			if r.Header.Get("Authorization") != "Bearer opaque-token" {
-				t.Errorf("missing scoped token")
-			}
-			_, _ = w.Write([]byte(`{"full_name":"octo/repo"}`))
-			return
-		}
 		http.NotFound(w, r)
 	}))
 	defer srv.Close()
@@ -104,7 +104,88 @@ func TestProviderMintsScopedTokenAndCachesIt(t *testing.T) {
 		}
 	}
 	if tokenCalls != 1 || repoCalls != 1 {
-		t.Fatalf("calls token=%d repo=%d", tokenCalls, repoCalls)
+		t.Fatalf("calls token=%d installation=%d", tokenCalls, repoCalls)
+	}
+}
+
+func TestProviderRejectsWrongRepositoryInstallationBeforeMinting(t *testing.T) {
+	key := testPrivateKey(t)
+	var tokenCalls, lookupCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/octo/repo/installation" {
+			lookupCalls.Add(1)
+			_, _ = w.Write([]byte(`{"id":99}`))
+			return
+		}
+		if r.URL.Path == "/app/installations/34/access_tokens" {
+			tokenCalls.Add(1)
+			_, _ = w.Write([]byte(`{"token":"wrong-installation-token","expires_at":"2030-01-01T00:00:00Z"}`))
+			return
+		}
+		if r.URL.Path == "/repos/octo/repo" {
+			// GitHub returns public repository metadata without installation scope.
+			_, _ = w.Write([]byte(`{"full_name":"octo/repo"}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	pass := filepath.Join(t.TempDir(), "pass")
+	if err := os.WriteFile(pass, []byte("#!/bin/sh\ncat <<'KEY'\n"+key+"\nKEY\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewProvider(Config{AppID: 1, InstallationID: 34, PrivateKeyPassEntry: "key", Repository: "octo/repo", Permissions: map[string]string{"contents": "read"}}, ProviderOptions{PassPath: pass, APIBaseURL: srv.URL, HTTPClient: srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token, err := p.Token(context.Background()); err == nil || token != "" {
+		t.Fatalf("Token() = %q, %v; want rejected installation", token, err)
+	}
+	if tokenCalls.Load() != 0 {
+		t.Fatalf("minted %d tokens for wrong installation", tokenCalls.Load())
+	}
+	if lookupCalls.Load() != 1 {
+		t.Fatalf("installation lookup calls=%d; want 1", lookupCalls.Load())
+	}
+}
+
+func TestProviderRejectsFailedRepositoryInstallationLookup(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		status     int
+	}{{"not found", `{"message":"Not Found"}`, http.StatusNotFound}, {"malformed", `{"id":"bad"}`, http.StatusOK}} {
+		t.Run(tc.name, func(t *testing.T) {
+			key := testPrivateKey(t)
+			var tokenCalls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/repos/octo/repo/installation" {
+					w.WriteHeader(tc.status)
+					_, _ = w.Write([]byte(tc.body))
+					return
+				}
+				if strings.HasSuffix(r.URL.Path, "/access_tokens") {
+					tokenCalls.Add(1)
+					_, _ = w.Write([]byte(`{"token":"must-not-mint","expires_at":"2030-01-01T00:00:00Z"}`))
+					return
+				}
+				http.NotFound(w, r)
+			}))
+			defer srv.Close()
+			pass := filepath.Join(t.TempDir(), "pass")
+			if err := os.WriteFile(pass, []byte("#!/bin/sh\ncat <<'KEY'\n"+key+"\nKEY\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			p, err := NewProvider(Config{AppID: 1, InstallationID: 34, PrivateKeyPassEntry: "key", Repository: "octo/repo", Permissions: map[string]string{"contents": "read"}}, ProviderOptions{PassPath: pass, APIBaseURL: srv.URL, HTTPClient: srv.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if token, err := p.Token(context.Background()); err == nil || token != "" {
+				t.Fatalf("Token() = %q, %v; want lookup failure", token, err)
+			}
+			if tokenCalls.Load() != 0 {
+				t.Fatalf("minted %d tokens after failed lookup", tokenCalls.Load())
+			}
+		})
 	}
 }
 
@@ -123,7 +204,7 @@ func TestProviderRejectsMalformedOrExpiredResponsesAndRetries(t *testing.T) {
 					_, _ = w.Write([]byte(`{"token":"retry-token","expires_at":"2030-01-01T00:00:00Z"}`))
 					return
 				}
-				_, _ = w.Write([]byte(`{"full_name":"octo/repo"}`))
+				_, _ = w.Write([]byte(`{"id":2}`))
 			}))
 			defer srv.Close()
 			pass := filepath.Join(t.TempDir(), "pass")
@@ -158,7 +239,7 @@ func TestProviderSanitizesAPIErrorAndRetriesNextRequest(t *testing.T) {
 			_, _ = w.Write([]byte(`{"token":"retry-token","expires_at":"2030-01-01T00:00:00Z"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"full_name":"octo/repo"}`))
+		_, _ = w.Write([]byte(`{"id":2}`))
 	}))
 	defer srv.Close()
 	pass := filepath.Join(t.TempDir(), "pass")
@@ -192,7 +273,7 @@ func TestProviderCoalescesConcurrentMints(t *testing.T) {
 			_, _ = w.Write([]byte(`{"token":"shared-token","expires_at":"2030-01-01T00:00:00Z"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"full_name":"octo/repo"}`))
+		_, _ = w.Write([]byte(`{"id":2}`))
 	}))
 	defer srv.Close()
 	pass := filepath.Join(t.TempDir(), "pass")
@@ -242,7 +323,7 @@ func TestProviderCoalescesConcurrentFailureAndAllowsLaterRetry(t *testing.T) {
 			_, _ = w.Write([]byte(`{"token":"recovered-token","expires_at":"2030-01-01T00:00:00Z"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"full_name":"octo/repo"}`))
+		_, _ = w.Write([]byte(`{"id":2}`))
 	}))
 	defer srv.Close()
 	pass := filepath.Join(t.TempDir(), "pass")
@@ -289,7 +370,7 @@ func testProviderRefresh(t *testing.T, now time.Time, expectedCalls int32) {
 			}
 			return
 		}
-		_, _ = w.Write([]byte(`{"full_name":"octo/repo"}`))
+		_, _ = w.Write([]byte(`{"id":2}`))
 	}))
 	defer srv.Close()
 	pass := filepath.Join(t.TempDir(), "pass")

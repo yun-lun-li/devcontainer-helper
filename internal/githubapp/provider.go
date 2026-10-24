@@ -161,12 +161,29 @@ func (p *Provider) mint(ctx context.Context) (string, time.Time, error) {
 		return "", time.Time{}, err
 	}
 	jwt := unsigned + "." + base64.RawURLEncoding.EncodeToString(signature)
+	owner, repo, _ := strings.Cut(p.cfg.Repository, "/")
+	verifyURL := strings.TrimRight(p.opts.APIBaseURL, "/") + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/installation"
+	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, verifyURL, nil)
+	verifyReq.Header.Set("Authorization", "Bearer "+jwt)
+	verifyReq.Header.Set("Accept", "application/vnd.github+json")
+	verifyReq.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	verifyResp, err := p.opts.HTTPClient.Do(verifyReq)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("repository installation verification failed")
+	}
+	defer verifyResp.Body.Close()
+	verifyData, err := io.ReadAll(io.LimitReader(verifyResp.Body, maxResponseBytes+1))
+	var installation struct {
+		ID int64 `json:"id"`
+	}
+	if err != nil || len(verifyData) > maxResponseBytes || verifyResp.StatusCode != http.StatusOK || json.Unmarshal(verifyData, &installation) != nil || installation.ID != p.cfg.InstallationID {
+		return "", time.Time{}, fmt.Errorf("repository installation verification failed")
+	}
 	var body bytes.Buffer
 	permissions := make(map[string]string, len(p.cfg.Permissions))
 	for k, v := range p.cfg.Permissions {
 		permissions[k] = v
 	}
-	owner, repo, _ := strings.Cut(p.cfg.Repository, "/")
 	if err := json.NewEncoder(&body).Encode(map[string]any{"repositories": []string{repo}, "permissions": permissions}); err != nil {
 		return "", time.Time{}, err
 	}
@@ -195,24 +212,6 @@ func (p *Provider) mint(ctx context.Context) (string, time.Time, error) {
 	expires, err := time.Parse(time.RFC3339, minted.ExpiresAt)
 	if err != nil || !expires.After(p.opts.Now().Add(5*time.Minute)) {
 		return "", time.Time{}, fmt.Errorf("invalid GitHub token expiry")
-	}
-	// A repository-scoped installation token must also resolve to the requested canonical owner/repository.
-	verifyURL := strings.TrimRight(p.opts.APIBaseURL, "/") + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo)
-	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, verifyURL, nil)
-	verifyReq.Header.Set("Authorization", "Bearer "+minted.Token)
-	verifyReq.Header.Set("Accept", "application/vnd.github+json")
-	verifyReq.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	verifyResp, err := p.opts.HTTPClient.Do(verifyReq)
-	if err != nil {
-		return "", time.Time{}, fmt.Errorf("repository verification failed")
-	}
-	defer verifyResp.Body.Close()
-	verifyData, err := io.ReadAll(io.LimitReader(verifyResp.Body, maxResponseBytes+1))
-	var repoInfo struct {
-		FullName string `json:"full_name"`
-	}
-	if err != nil || len(verifyData) > maxResponseBytes || verifyResp.StatusCode != http.StatusOK || json.Unmarshal(verifyData, &repoInfo) != nil || !strings.EqualFold(repoInfo.FullName, p.cfg.Repository) {
-		return "", time.Time{}, fmt.Errorf("repository verification failed")
 	}
 	return minted.Token, expires, nil
 }
