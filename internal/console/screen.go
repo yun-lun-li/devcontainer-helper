@@ -41,12 +41,16 @@ func screenHeading(title string) {
 	clearScreen()
 	if screenActive {
 		fmt.Print("\x1b[?25h")
-		if menuColorEnabled() {
-			fmt.Printf("\x1b[1;35m%s\x1b[0m\n\n", title)
-		} else {
-			fmt.Printf("%s\n\n", title)
-		}
+		printDCHHeader(title)
 	}
+}
+
+func printDCHHeader(title string) {
+	if menuColorEnabled() {
+		fmt.Printf("\x1b[1;35m dch \x1b[0m  \x1b[2m%s\x1b[0m\n\n", title)
+		return
+	}
+	fmt.Printf("dch  |  %s\n\n", title)
 }
 
 func screenNotice(title string, message string) {
