@@ -21,7 +21,7 @@ func TestConfigRoundTripsProjectPluginsAndLoadsLegacyConfig(t *testing.T) {
 	cfg.ProjectPlugins = map[string]ProjectPlugins{}
 	cfg.ProjectPlugins["/project"] = ProjectPlugins{
 		Enabled: map[string]githubapp.Config{"github-app": {AppID: 7, InstallationID: 8, PrivateKeyPassEntry: "key", Repository: "owner/repo", Permissions: map[string]string{"contents": "read"}}},
-		States:  map[string]PluginState{"github-app": {FragmentDigest: "digest", BuildPending: true}},
+		States:  map[string]PluginState{"github-app": {FragmentDigest: "digest", UnitDigest: "unit-digest", UnitPath: "/home/user/.config/systemd/user/dch.service", BuildPending: true}},
 	}
 	if err := SaveConfig(cfg); err != nil {
 		t.Fatal(err)
@@ -31,7 +31,7 @@ func TestConfigRoundTripsProjectPluginsAndLoadsLegacyConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := loaded.ProjectPlugins["/project"]
-	if got.Enabled["github-app"].AppID != 7 || got.States["github-app"].FragmentDigest != "digest" || !got.States["github-app"].BuildPending {
+	if got.Enabled["github-app"].AppID != 7 || got.States["github-app"].FragmentDigest != "digest" || got.States["github-app"].UnitDigest != "unit-digest" || got.States["github-app"].UnitPath != "/home/user/.config/systemd/user/dch.service" || !got.States["github-app"].BuildPending {
 		t.Fatalf("plugin state did not round trip: %#v", got)
 	}
 }
