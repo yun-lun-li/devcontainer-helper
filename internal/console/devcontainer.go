@@ -37,8 +37,7 @@ func invokeDevcontainer(args ...string) error {
 		}
 		return nil
 	}
-	output, err := cmd.CombinedOutput()
-	showLogs(title, append([]byte(command), output...))
+	err := runDevcontainerWithLogs(cmd, title, command)
 	if err != nil {
 		return fmt.Errorf("devcontainer command failed: %w", err)
 	}

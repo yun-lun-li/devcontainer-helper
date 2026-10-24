@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 var screenActive bool
@@ -46,11 +47,21 @@ func screenHeading(title string) {
 }
 
 func printDCHHeader(title string) {
+	_, width, _ := terminalSize()
+	printDCHHeaderWidth(title, width)
+}
+
+func printDCHHeaderWidth(title string, width int) {
+	label := " dch  /  " + title + " "
+	if len([]rune(label)) > width-2 {
+		label = string([]rune(label)[:width-3]) + "…"
+	}
+	bar := "╭─" + label + strings.Repeat("─", max(0, width-len([]rune(label))-3)) + "╮"
 	if menuColorEnabled() {
-		fmt.Printf("\x1b[1;35m dch \x1b[0m  \x1b[2m%s\x1b[0m\n\n", title)
+		fmt.Printf("\x1b[1;35m%s\x1b[0m\n", bar)
 		return
 	}
-	fmt.Printf("dch  |  %s\n\n", title)
+	fmt.Println(bar)
 }
 
 func screenNotice(title string, message string) {
