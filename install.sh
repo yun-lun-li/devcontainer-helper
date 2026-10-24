@@ -134,6 +134,10 @@ main() {
 		*) fail "Unknown argument: $1 (see --help)" ;;
 	esac
 
+	if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+		fail "Docker runtime is unavailable. Please install Docker first."
+	fi
+
 	if command -v curl >/dev/null 2>&1; then
 		DOWNLOADER=curl
 	elif command -v wget >/dev/null 2>&1; then
