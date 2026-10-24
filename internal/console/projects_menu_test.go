@@ -38,8 +38,8 @@ func TestStopOffersOptionalDeleteForMatchingContainers(t *testing.T) {
 	for _, tc := range []struct {
 		name, answer, want string
 	}{
-		{"keep", "n\n", "stop running\n"},
-		{"delete", "y\n", "stop running\nrm running\nrm stopped\n"},
+		{"keep", "1\n", "stop running\n"},
+		{"delete", "2\n", "stop running\nrm running\nrm stopped\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			testStopProject(t, tc.answer, tc.want)
@@ -95,8 +95,8 @@ func testStopProject(t *testing.T, answer, want string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(output), "Delete all 2 matching container(s)") {
-		t.Fatalf("missing post-stop delete prompt: %s", output)
+	if !strings.Contains(string(output), "Keep containers") || !strings.Contains(string(output), "Delete all 2 matching containers") {
+		t.Fatalf("missing post-stop menu options: %s", output)
 	}
 	got, err := os.ReadFile(logPath)
 	if err != nil {
@@ -159,7 +159,7 @@ esac
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 			t.Setenv("DCH_TEST_MODE", tc.mode)
 			previous := input
-			input = bufio.NewReader(strings.NewReader("y\n"))
+			input = bufio.NewReader(strings.NewReader("2\n"))
 			defer func() { input = previous }()
 			r, w, err := os.Pipe()
 			if err != nil {
