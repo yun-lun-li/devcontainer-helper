@@ -42,6 +42,7 @@ To install elsewhere, run `make install PREFIX=/your/prefix`. The executable is 
 dch register --path .          # Register the current directory
 dch console                    # Open the Projects console
 dch update                     # Update dch to the latest release
+dch version                    # Show the installed version
 ```
 
 `dch register --path PATH` is the only registration command. Relative paths are resolved against the current directory and stored as absolute paths; `~` is also supported. The project must contain `.devcontainer/devcontainer.json`. Registering the same path again is safe and does not create a duplicate.
@@ -55,6 +56,7 @@ dch register --path PATH  # Register one project; accepts relative paths
 dch list                  # Print projects, status, paths, and container IDs
 dch console               # Open the interactive Projects console
 dch update                # Update dch to the latest release
+dch version               # Show the installed version
 dch help                  # Show command help
 ```
 
