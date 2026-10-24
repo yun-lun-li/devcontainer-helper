@@ -3,13 +3,19 @@ package console
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 )
 
+var logANSISequence = regexp.MustCompile("\\x1b\\[[0-?]*[ -/]*[@-~]")
+
 // showLogs keeps the application header fixed and scrolls only the log viewport.
 func showLogs(title string, output []byte) {
-	lines := strings.Split(strings.ReplaceAll(string(output), "\r\n", "\n"), "\n")
+	plainOutput := logANSISequence.ReplaceAllString(string(output), "")
+	plainOutput = strings.ReplaceAll(plainOutput, "\r\n", "\n")
+	plainOutput = strings.ReplaceAll(plainOutput, "\r", "\n")
+	lines := strings.Split(plainOutput, "\n")
 	if len(lines) == 0 {
 		lines = []string{""}
 	}
@@ -152,6 +158,13 @@ func showLogs(title string, output []byte) {
 				if start+pageSize > len(wrapped) {
 					start = len(wrapped) - pageSize
 				}
+				if start < 0 {
+					start = 0
+				}
+			case 'H':
+				start = 0
+			case 'F':
+				start = len(wrapped) - pageSize
 				if start < 0 {
 					start = 0
 				}
