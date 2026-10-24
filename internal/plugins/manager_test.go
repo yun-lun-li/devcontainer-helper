@@ -16,7 +16,7 @@ import (
 
 func TestEnableValidatesCredentialOverUnixSocketAndMarksBuildPending(t *testing.T) {
 	env := setupManagerTest(t, "ok")
-	projectPath := filepath.Join(env.root, "project")
+	projectPath := filepath.Join(env.root, "project$workspace")
 	if err := os.MkdirAll(filepath.Join(projectPath, ".devcontainer"), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -33,6 +33,13 @@ func TestEnableValidatesCredentialOverUnixSocketAndMarksBuildPending(t *testing.
 	state := loaded.ProjectPlugins[normalized]
 	if state.Enabled[githubAppID].AppID != cfg.AppID || !state.States[githubAppID].BuildPending || state.States[githubAppID].FragmentDigest == "" {
 		t.Fatalf("enable did not persist config and Build state: %+v", state)
+	}
+	unit, err := os.ReadFile(state.States[githubAppID].UnitPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(unit), strings.ReplaceAll(projectPath, "$", "$$")) {
+		t.Fatalf("ExecStart does not escape dollar in project path: %s", unit)
 	}
 	if _, err := os.Stat(managedFragment(normalized)); err != nil {
 		t.Fatalf("managed fragment missing: %v", err)
@@ -155,6 +162,191 @@ func TestEnableRestartsActiveServiceWhenConfigurationChanges(t *testing.T) {
 	}
 	if got := loaded.ProjectPlugins[normalized].States[githubAppID].BuildFingerprint; got == firstFingerprint {
 		t.Fatal("configuration change did not update Build fingerprint")
+	}
+}
+
+func TestEnsureUpdatesOwnedUnitAfterProcessEnvironmentChanges(t *testing.T) {
+	env := setupManagerTest(t, "ok")
+	projectPath := filepath.Join(env.root, "project")
+	if err := os.MkdirAll(filepath.Join(projectPath, ".devcontainer"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	env.setSocket(t, projectPath)
+	manager := NewManager()
+	if err := manager.Enable(context.Background(), projectPath, validConfig()); err != nil {
+		t.Fatal(err)
+	}
+	normalized, _ := common.NormalizePath(projectPath)
+	before, err := common.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldUnitPath := before.ProjectPlugins[normalized].States[githubAppID].UnitPath
+	oldUnitDigest := before.ProjectPlugins[normalized].States[githubAppID].UnitDigest
+	oldPath := os.Getenv("PATH")
+	extra := filepath.Join(env.root, "extra-bin")
+	if err := os.Mkdir(extra, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", extra+":"+oldPath)
+	newConfigHome := filepath.Join(env.root, "new-config")
+	if err := os.Mkdir(newConfigHome, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", newConfigHome)
+	if err := manager.Ensure(context.Background(), projectPath); err != nil {
+		t.Fatalf("Ensure after PATH change: %v", err)
+	}
+	after, err := common.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterState := after.ProjectPlugins[normalized].States[githubAppID]
+	if afterState.UnitPath != oldUnitPath || afterState.UnitDigest == oldUnitDigest {
+		t.Fatalf("unit metadata was not updated at stored path: before=%+v after=%+v", before.ProjectPlugins[normalized].States[githubAppID], afterState)
+	}
+	newUnitPath, err := unitPath(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(newUnitPath); !os.IsNotExist(err) {
+		t.Fatalf("Ensure created a duplicate unit under changed XDG_CONFIG_HOME: %v", err)
+	}
+	if err := manager.Disable(context.Background(), projectPath); err != nil {
+		t.Fatalf("Disable after PATH change: %v", err)
+	}
+	if _, err := os.Stat(oldUnitPath); !os.IsNotExist(err) {
+		t.Fatalf("Disable left the stored service unit behind: %v", err)
+	}
+}
+
+func TestEnsureRetriesRestartAfterSystemctlRestartFailure(t *testing.T) {
+	env := setupManagerTest(t, "ok")
+	projectPath := filepath.Join(env.root, "project")
+	if err := os.MkdirAll(filepath.Join(projectPath, ".devcontainer"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	env.setSocket(t, projectPath)
+	manager := NewManager()
+	if err := manager.Enable(context.Background(), projectPath, validConfig()); err != nil {
+		t.Fatal(err)
+	}
+	normalized, _ := common.NormalizePath(projectPath)
+	config, err := common.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateBefore := config.ProjectPlugins[normalized].States[githubAppID]
+	unitBefore, err := os.ReadFile(stateBefore.UnitPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", filepath.Join(env.root, "new-path")+":"+os.Getenv("PATH"))
+	t.Setenv("DCH_TEST_FAIL_RESTART_ONCE", filepath.Join(env.root, "restart-failed"))
+	if err := manager.Ensure(context.Background(), projectPath); err == nil {
+		t.Fatal("Ensure succeeded despite failed restart")
+	}
+	unitAfterFailure, err := os.ReadFile(stateBefore.UnitPath)
+	if err != nil || string(unitAfterFailure) != string(unitBefore) {
+		t.Fatalf("failed restart did not restore unit: %v", err)
+	}
+	configAfterFailure, err := common.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := configAfterFailure.ProjectPlugins[normalized].States[githubAppID].UnitDigest; got != stateBefore.UnitDigest {
+		t.Fatalf("failed restart persisted digest %q, want %q", got, stateBefore.UnitDigest)
+	}
+	if err := manager.Ensure(context.Background(), projectPath); err != nil {
+		t.Fatalf("Ensure retry: %v", err)
+	}
+	log, err := os.ReadFile(filepath.Join(env.root, "systemctl.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(log), "restart") < 2 {
+		t.Fatalf("Ensure retry did not retry restart: %s", log)
+	}
+}
+
+func TestDisableRefusesManuallyModifiedUnit(t *testing.T) {
+	env := setupManagerTest(t, "ok")
+	projectPath := filepath.Join(env.root, "project")
+	if err := os.MkdirAll(filepath.Join(projectPath, ".devcontainer"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	env.setSocket(t, projectPath)
+	manager := NewManager()
+	if err := manager.Enable(context.Background(), projectPath, validConfig()); err != nil {
+		t.Fatal(err)
+	}
+	normalized, _ := common.NormalizePath(projectPath)
+	config, err := common.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unitPath := config.ProjectPlugins[normalized].States[githubAppID].UnitPath
+	manual := []byte("\n# user change\n")
+	file, err := os.OpenFile(unitPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(manual); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Disable(context.Background(), projectPath); err == nil {
+		t.Fatal("Disable accepted a manually edited unit")
+	}
+	data, err := os.ReadFile(unitPath)
+	if err != nil || !strings.HasSuffix(string(data), string(manual)) {
+		t.Fatalf("manual unit edit changed: %q, %v", data, err)
+	}
+}
+
+func TestFailedReconfigureRestoresPriorUnitAndConfig(t *testing.T) {
+	env := setupManagerTest(t, "ok")
+	projectPath := filepath.Join(env.root, "project")
+	if err := os.MkdirAll(filepath.Join(projectPath, ".devcontainer"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	env.setSocket(t, projectPath)
+	manager := NewManager()
+	oldConfig := validConfig()
+	if err := manager.Enable(context.Background(), projectPath, oldConfig); err != nil {
+		t.Fatal(err)
+	}
+	normalized, _ := common.NormalizePath(projectPath)
+	stored, err := common.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := stored.ProjectPlugins[normalized].States[githubAppID]
+	unitBefore, err := os.ReadFile(state.UnitPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newPath := filepath.Join(env.root, "changed-path")
+	t.Setenv("PATH", newPath+":"+os.Getenv("PATH"))
+	t.Setenv("DCH_TEST_MODE", "fail")
+	updated := oldConfig
+	updated.AppID++
+	if err := manager.Enable(context.Background(), projectPath, updated); err == nil {
+		t.Fatal("Enable succeeded despite credential validation failure")
+	}
+	unitAfter, err := os.ReadFile(state.UnitPath)
+	if err != nil || string(unitAfter) != string(unitBefore) {
+		t.Fatalf("rollback did not restore unit: %v", err)
+	}
+	loaded, err := common.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := loaded.ProjectPlugins[normalized]
+	if got.Enabled[githubAppID].AppID != oldConfig.AppID || got.States[githubAppID].UnitDigest != state.UnitDigest {
+		t.Fatalf("rollback did not restore config state: %+v", got)
 	}
 }
 
@@ -310,6 +502,7 @@ case "$action" in
   stop) if [ -n "$DCH_TEST_FAIL_STOP_ONCE" ] && [ ! -f "$DCH_TEST_FAIL_STOP_ONCE.done" ]; then touch "$DCH_TEST_FAIL_STOP_ONCE.done"; exit 1; fi; if [ -f "$DCH_TEST_PID" ]; then kill "$(cat "$DCH_TEST_PID")" 2>/dev/null || true; rm -f "$DCH_TEST_PID"; fi; exit 0 ;;
   disable) if [ -f "$DCH_TEST_PID" ]; then kill "$(cat "$DCH_TEST_PID")" 2>/dev/null || true; rm -f "$DCH_TEST_PID"; fi; exit 0 ;;
   enable|restart|start)
+    if [ "$action" = "restart" ] && [ -n "$DCH_TEST_FAIL_RESTART_ONCE" ] && [ ! -f "$DCH_TEST_FAIL_RESTART_ONCE.done" ]; then touch "$DCH_TEST_FAIL_RESTART_ONCE.done"; exit 1; fi
     if [ -f "$DCH_TEST_PID" ]; then kill "$(cat "$DCH_TEST_PID")" 2>/dev/null || true; rm -f "$DCH_TEST_PID"; fi
     DCH_TEST_HELPER=1 "$DCH_TEST_BINARY" -test.run '^TestCredentialServiceHelper$' >> "$DCH_TEST_DEBUG" 2>&1 &
     echo $! > "$DCH_TEST_PID"
@@ -331,6 +524,7 @@ exit 1
 	t.Setenv("DCH_TEST_LOG", logPath)
 	t.Setenv("DCH_TEST_DEBUG", debugPath)
 	t.Setenv("DCH_TEST_FAIL_STOP_ONCE", "")
+	t.Setenv("DCH_TEST_FAIL_RESTART_ONCE", "")
 	t.Setenv("DCH_TEST_SOCKET", "")
 	t.Setenv("DCH_TEST_MODE", mode)
 	t.Setenv("DCH_TEST_HELPER", "")

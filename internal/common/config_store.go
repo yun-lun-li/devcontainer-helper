@@ -26,6 +26,8 @@ type ProjectPlugins struct {
 // PluginState tracks generated-file ownership and whether containers need a Build.
 type PluginState struct {
 	FragmentDigest   string `json:"fragment_digest,omitempty"`
+	UnitDigest       string `json:"unit_digest,omitempty"`
+	UnitPath         string `json:"unit_path,omitempty"`
 	BuildFingerprint string `json:"build_fingerprint,omitempty"`
 	BuildPending     bool   `json:"build_pending,omitempty"`
 }

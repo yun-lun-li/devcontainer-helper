@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -37,10 +38,6 @@ func (m *Manager) Enable(ctx context.Context, projectPath string, cfg githubapp.
 		return err
 	}
 	path, err := common.NormalizePath(projectPath)
-	if err != nil {
-		return err
-	}
-	unitFile, err := unitPath(path)
 	if err != nil {
 		return err
 	}
@@ -87,7 +84,7 @@ func (m *Manager) Enable(ctx context.Context, projectPath string, cfg githubapp.
 	if err := githubapp.WriteAdapterScripts(runtimeDir); err != nil {
 		return errors.Join(err, restoreFile(fragmentPath, oldBytes, oldFileExists))
 	}
-	unitCreated, err := m.writeService(path)
+	unit, err := m.prepareServiceUnit(path, old.States[githubAppID])
 	if err != nil {
 		return errors.Join(err, restoreFile(fragmentPath, oldBytes, oldFileExists))
 	}
@@ -98,6 +95,8 @@ func (m *Manager) Enable(ctx context.Context, projectPath string, cfg githubapp.
 	}
 	state := old.States[githubAppID]
 	state.FragmentDigest = newDigest
+	state.UnitDigest = unit.digest
+	state.UnitPath = unit.path
 	state.BuildFingerprint = buildFingerprint(cfg, newDigest)
 	state.BuildPending = true
 	project := cloneProjectPlugins(old)
@@ -112,11 +111,7 @@ func (m *Manager) Enable(ctx context.Context, projectPath string, cfg githubapp.
 	config.ProjectPlugins[path] = project
 	if err := common.SaveConfig(config); err != nil {
 		cleanupErr := restoreFile(fragmentPath, oldBytes, oldFileExists)
-		if unitCreated {
-			if removeErr := os.Remove(unitFile); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-				cleanupErr = errors.Join(cleanupErr, removeErr)
-			}
-		}
+		cleanupErr = errors.Join(cleanupErr, unit.restore())
 		return errors.Join(err, cleanupErr)
 	}
 
@@ -130,8 +125,8 @@ func (m *Manager) Enable(ctx context.Context, projectPath string, cfg githubapp.
 				}
 			}
 		}
-		if unitCreated && len(cleanup) == 0 {
-			if err := os.Remove(unitFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if len(cleanup) == 0 {
+			if err := unit.restore(); err != nil {
 				cleanup = append(cleanup, err)
 			}
 		}
@@ -224,14 +219,47 @@ func (m *Manager) Ensure(ctx context.Context, projectPath string) error {
 	if err := githubapp.WriteAdapterScripts(runtimeDir); err != nil {
 		return err
 	}
-	if _, err := m.writeService(path); err != nil {
+	unit, err := m.prepareServiceUnit(path, project.States[githubAppID])
+	if err != nil {
 		return err
+	}
+	oldState := project.States[githubAppID]
+	state := oldState
+	state.UnitDigest = unit.digest
+	state.UnitPath = unit.path
+	metadataChanged := state != oldState
+	if metadataChanged {
+		project.States[githubAppID] = state
+		config.ProjectPlugins[path] = project
+		if err := common.SaveConfig(config); err != nil {
+			return errors.Join(err, unit.restore())
+		}
+	}
+	active, _ := m.serviceActive(ctx, path)
+	restoreUnit := func(cause error) error {
+		if !metadataChanged {
+			return cause
+		}
+		var restoreErr error
+		restoreErr = errors.Join(restoreErr, unit.restore())
+		project.States[githubAppID] = oldState
+		config.ProjectPlugins[path] = project
+		restoreErr = errors.Join(restoreErr, common.SaveConfig(config))
+		restoreErr = errors.Join(restoreErr, runSystemctl(context.Background(), "daemon-reload"))
+		if restoreErr != nil {
+			return fmt.Errorf("%w; previous unit restore failed: %w", cause, restoreErr)
+		}
+		return cause
 	}
 	if err := runSystemctl(ctx, "daemon-reload"); err != nil {
-		return err
+		return restoreUnit(err)
 	}
-	if err := runSystemctl(ctx, "enable", "--now", unitName(path)); err != nil {
-		return err
+	if active && unit.changed {
+		if err := runSystemctl(ctx, "restart", unitName(path)); err != nil {
+			return restoreUnit(err)
+		}
+	} else if err := runSystemctl(ctx, "enable", "--now", unitName(path)); err != nil {
+		return restoreUnit(err)
 	}
 	return m.checkReady(ctx, runtimeDir)
 }
@@ -324,19 +352,25 @@ func (m *Manager) Disable(ctx context.Context, projectPath string) error {
 	if _, enabled := project.Enabled[githubAppID]; !enabled {
 		return nil
 	}
-	unitFile, err := unitPath(path)
-	if err != nil {
+	unitFile := project.States[githubAppID].UnitPath
+	if unitFile == "" {
+		unitFile, err = unitPath(path)
+		if err != nil {
+			return err
+		}
+	} else if err := validateUnitPath(unitFile, path); err != nil {
 		return err
 	}
 	if info, err := os.Lstat(unitFile); err == nil {
 		if !info.Mode().IsRegular() || !ownedByCurrentUser(info) {
 			return fmt.Errorf("systemd unit is unsafe")
 		}
-		if created, err := m.writeService(path); err != nil || created {
-			if err != nil {
-				return err
-			}
-			return fmt.Errorf("systemd unit ownership changed during cleanup")
+		data, err := os.ReadFile(unitFile)
+		if err != nil {
+			return err
+		}
+		if project.States[githubAppID].UnitDigest == "" || digest(data) != project.States[githubAppID].UnitDigest {
+			return fmt.Errorf("systemd unit was modified; refusing to remove it")
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -374,6 +408,8 @@ func (m *Manager) Disable(ctx context.Context, projectPath string) error {
 	delete(project.Enabled, githubAppID)
 	state := project.States[githubAppID]
 	state.FragmentDigest = ""
+	state.UnitDigest = ""
+	state.UnitPath = ""
 	state.BuildFingerprint = ""
 	state.BuildPending = true
 	project.States[githubAppID] = state
@@ -458,12 +494,6 @@ func (m *Manager) startAndCheck(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	if err := githubapp.WriteAdapterScripts(runtimeDir); err != nil {
-		return err
-	}
-	if _, err := m.writeService(path); err != nil {
-		return err
-	}
 	if err := runSystemctl(ctx, "daemon-reload"); err != nil {
 		return err
 	}
@@ -473,23 +503,90 @@ func (m *Manager) startAndCheck(ctx context.Context, path string) error {
 	return m.checkReady(ctx, runtimeDir)
 }
 
-func (m *Manager) writeService(projectPath string) (bool, error) {
+type serviceUnitChange struct {
+	path    string
+	digest  string
+	changed bool
+	before  []byte
+	existed bool
+}
+
+func (change serviceUnitChange) restore() error {
+	if change.existed {
+		return writePrivateFile(change.path, change.before)
+	}
+	if err := os.Remove(change.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func (m *Manager) prepareServiceUnit(projectPath string, previous common.PluginState) (serviceUnitChange, error) {
+	var change serviceUnitChange
+	unit, err := unitPath(projectPath)
+	if previous.UnitPath != "" {
+		unit = previous.UnitPath
+		if err := validateUnitPath(unit, projectPath); err != nil {
+			return change, err
+		}
+	} else if err != nil {
+		return change, err
+	}
+	content, err := m.serviceUnitContent(projectPath)
+	if err != nil {
+		return change, err
+	}
+	change = serviceUnitChange{path: unit, digest: digest(content)}
+	if info, err := os.Lstat(unit); err == nil {
+		if !info.Mode().IsRegular() || !ownedByCurrentUser(info) {
+			return change, fmt.Errorf("systemd unit is unsafe")
+		}
+		existing, err := os.ReadFile(unit)
+		if err != nil {
+			return change, err
+		}
+		if previous.UnitDigest == "" || digest(existing) != previous.UnitDigest {
+			return change, fmt.Errorf("systemd unit was modified; refusing to replace it")
+		}
+		change.before = existing
+		change.existed = true
+		change.changed = !bytes.Equal(existing, content)
+		if change.changed {
+			if err := writePrivateFile(unit, content); err != nil {
+				return change, err
+			}
+		}
+	} else if errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(filepath.Dir(unit), 0700); err != nil {
+			return change, err
+		}
+		if err := writePrivateFile(unit, content); err != nil {
+			return change, err
+		}
+		change.changed = true
+	} else {
+		return change, err
+	}
+	return change, nil
+}
+
+func validateUnitPath(path, projectPath string) error {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || filepath.Base(path) != unitName(projectPath) || filepath.Base(filepath.Dir(path)) != "user" || filepath.Base(filepath.Dir(filepath.Dir(path))) != "systemd" {
+		return fmt.Errorf("stored systemd unit path is invalid")
+	}
+	return nil
+}
+
+func (m *Manager) serviceUnitContent(projectPath string) ([]byte, error) {
 	configPath, err := common.ConfigPath()
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	bin, err := os.Executable()
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	unit, err := unitPath(projectPath)
-	if err != nil {
-		return false, err
-	}
-	if err := os.MkdirAll(filepath.Dir(unit), 0700); err != nil {
-		return false, err
-	}
-	content := "[Unit]\nDescription=dch GitHub App credential service\n\n[Service]\nType=simple\nExecStart=" + systemdArg(bin) + " _github-app-serve --project " + systemdArg(projectPath) + "\nRestart=on-failure\n"
+	content := "[Unit]\nDescription=dch GitHub App credential service\n\n[Service]\nType=simple\nExecStart=" + systemdExecArg(bin) + " _github-app-serve --project " + systemdExecArg(projectPath) + "\nRestart=on-failure\n"
 	for _, key := range []string{"DCH_CONFIG", "XDG_RUNTIME_DIR", "PATH", "GNUPGHOME", "PASSWORD_STORE_DIR"} {
 		value := os.Getenv(key)
 		if key == "DCH_CONFIG" {
@@ -500,25 +597,7 @@ func (m *Manager) writeService(projectPath string) (bool, error) {
 		}
 	}
 	content += "\n[Install]\nWantedBy=default.target\n"
-	if info, err := os.Lstat(unit); err == nil {
-		if !info.Mode().IsRegular() || !ownedByCurrentUser(info) {
-			return false, fmt.Errorf("systemd unit is unsafe")
-		}
-		existing, err := os.ReadFile(unit)
-		if err != nil {
-			return false, err
-		}
-		if string(existing) != content {
-			return false, fmt.Errorf("systemd unit exists and is not managed by dch")
-		}
-		return false, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return false, err
-	}
-	if err := writePrivateFile(unit, []byte(content)); err != nil {
-		return false, err
-	}
-	return true, nil
+	return []byte(content), nil
 }
 
 func ownedByCurrentUser(info os.FileInfo) bool {
@@ -528,16 +607,38 @@ func ownedByCurrentUser(info os.FileInfo) bool {
 
 func runSystemctl(ctx context.Context, args ...string) error {
 	args = append([]string{"--user"}, args...)
-	cmd := exec.CommandContext(ctx, "systemctl", args...)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("systemctl %s failed: %s", args[1], strings.TrimSpace(string(output)))
+	commandCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(commandCtx, "systemctl", args...)
+	var output limitedOutput
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("systemctl %s failed: %s", args[1], strings.TrimSpace(output.String()))
 	}
 	return nil
 }
 
+type limitedOutput struct{ buffer bytes.Buffer }
+
+func (output *limitedOutput) Write(data []byte) (int, error) {
+	const limit = 4096
+	originalLength := len(data)
+	remaining := limit - output.buffer.Len()
+	if remaining > 0 {
+		if len(data) > remaining {
+			data = data[:remaining]
+		}
+		_, _ = output.buffer.Write(data)
+	}
+	return originalLength, nil
+}
+func (output *limitedOutput) String() string { return output.buffer.String() }
+
 func systemdArg(s string) string {
 	return "\"" + strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "\n", "\\n", "\r", "\\r", "%", "%%").Replace(s) + "\""
 }
+func systemdExecArg(s string) string      { return systemdArg(strings.ReplaceAll(s, "$", "$$")) }
 func systemdEnv(key, value string) string { return systemdArg(key + "=" + value) }
 
 func unitName(path string) string { return "dch-github-app-" + digest([]byte(path))[:16] + ".service" }
