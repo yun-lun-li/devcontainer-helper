@@ -36,15 +36,15 @@ func showConfigPages(content string) error {
 	}
 	defer runStty(strings.TrimSpace(string(original)))
 
-	lines := strings.Split(content, "\n")
-	rows := 24
-	if size, err := runStty("size"); err == nil {
-		var terminalRows, columns int
-		if _, err := fmt.Sscan(string(size), &terminalRows, &columns); err == nil && terminalRows > 6 {
-			rows = terminalRows
-		}
+	rows, width, _ := terminalSize()
+	if rows < 8 {
+		rows = 8
 	}
-	pageSize := rows - 5
+	if width < 30 {
+		width = 30
+	}
+	pageSize := rows - 6
+	lines := wrappedLogLines(content, width)
 	maxOffset := len(lines) - pageSize
 	if maxOffset < 0 {
 		maxOffset = 0
@@ -55,16 +55,24 @@ func showConfigPages(content string) error {
 	defer signal.Stop(interrupt)
 
 	render := func() {
-		screenHeading("Show config")
+		clearScreen()
+		printDCHHeaderWidth("Show config", width)
+		fmt.Printf("  ╭%s╮\n", strings.Repeat("─", width-4))
 		end := offset + pageSize
 		if end > len(lines) {
 			end = len(lines)
 		}
-		for _, line := range lines[offset:end] {
-			fmt.Println(line)
+		innerWidth := width - 6
+		for i := 0; i < pageSize; i++ {
+			line := ""
+			if offset+i < end {
+				line = lines[offset+i]
+			}
+			fmt.Printf("  │ %-*s │\n", innerWidth, line)
 		}
-		fmt.Printf("\nLines %d-%d of %d  ·  ↑/↓ or j/k scroll  ·  q/Esc back\n", offset+1, end, len(lines))
-		fmt.Println("Keep .devcontainer/devcontainer.local.json out of version control.")
+		fmt.Printf("  ╰%s╯\n", strings.Repeat("─", width-4))
+		fmt.Printf("  Lines %d-%d of %d  ·  ↑/↓ or j/k scroll  ·  q/Esc back\n", offset+1, end, len(lines))
+		fmt.Println("  Keep .devcontainer/devcontainer.local.json out of version control.")
 	}
 	render()
 	for {
