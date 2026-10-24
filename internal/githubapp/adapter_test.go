@@ -3,6 +3,7 @@ package githubapp
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -132,6 +133,76 @@ func TestAdapterInstallCommandChecksRuntimeAndConfiguresScopedHelper(t *testing.
 	}
 	if strings.Index(script, "PATH=$clean_path") > strings.Index(script, "command -v \"$dependency\"") {
 		t.Fatal("install command checks gh before removing the adapter wrapper from PATH")
+	}
+}
+
+func TestAdapterInstallCommandReportsUIDAndServicePermissionFailures(t *testing.T) {
+	for _, testCase := range []struct {
+		name         string
+		dirMode      os.FileMode
+		socketMode   os.FileMode
+		curlExit     int
+		wantMessage  string
+		wantCurlCall bool
+	}{
+		{name: "runtime directory", dirMode: 0600, socketMode: 0600, wantMessage: "align the container UID with the host user"},
+		{name: "socket permissions", dirMode: 0700, socketMode: 0400, wantMessage: "align the container UID with the host user"},
+		{name: "health request", dirMode: 0700, socketMode: 0600, curlExit: 22, wantMessage: "service unavailable or socket permission denied", wantCurlCall: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if os.Geteuid() == 0 && testCase.name != "health request" {
+				t.Skip("root can bypass Unix DAC permission checks")
+			}
+			root := t.TempDir()
+			runtimeDir := filepath.Join(root, "runtime")
+			if err := os.Mkdir(runtimeDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := WriteAdapterScripts(runtimeDir); err != nil {
+				t.Fatal(err)
+			}
+			socketPath := filepath.Join(runtimeDir, "credential.sock")
+			listener, err := net.Listen("unix", socketPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			listener.(*net.UnixListener).SetUnlinkOnClose(false)
+			if err := listener.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(socketPath, testCase.socketMode); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(runtimeDir, 0700) })
+			if err := os.Chmod(runtimeDir, testCase.dirMode); err != nil {
+				t.Fatal(err)
+			}
+			bin := filepath.Join(root, "bin")
+			if err := os.Mkdir(bin, 0700); err != nil {
+				t.Fatal(err)
+			}
+			curlLog := filepath.Join(root, "curl.log")
+			writeExecutable(t, filepath.Join(bin, "git"), "#!/bin/sh\nexit 0\n")
+			writeExecutable(t, filepath.Join(bin, "gh"), "#!/bin/sh\nexit 0\n")
+			writeExecutable(t, filepath.Join(bin, "sh"), "#!/bin/sh\nexit 0\n")
+			writeExecutable(t, filepath.Join(bin, "curl"), fmt.Sprintf("#!/bin/sh\nprintf called > %q\nexit %d\n", curlLog, testCase.curlExit))
+
+			command := AdapterInstallCommand()
+			script := strings.ReplaceAll(command[2], "/run/dch-github", runtimeDir)
+			cmd := exec.Command(command[0], command[1], script)
+			cmd.Env = []string{"PATH=" + filepath.Join(runtimeDir, "bin") + ":" + bin}
+			output, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), testCase.wantMessage) {
+				t.Fatalf("installer output = %q, error %v; want failure mentioning %q", output, err, testCase.wantMessage)
+			}
+			_, curlErr := os.Stat(curlLog)
+			if testCase.wantCurlCall && curlErr != nil {
+				t.Fatalf("curl was not called, stat error %v", curlErr)
+			}
+			if !testCase.wantCurlCall && !os.IsNotExist(curlErr) {
+				t.Fatalf("curl was called before permission checks, stat error %v", curlErr)
+			}
+		})
 	}
 }
 

@@ -183,8 +183,10 @@ export PATH
 for dependency in git gh curl sh; do
 	command -v "$dependency" >/dev/null 2>&1 || { echo "dch: required command missing: $dependency" >&2; exit 1; }
 done
-[ -S /run/dch-github/credential.sock ] || { echo 'dch: GitHub credential socket unavailable' >&2; exit 1; }
-curl --disable --noproxy '*' --unix-socket /run/dch-github/credential.sock --fail --silent --show-error --max-time 20 http://localhost/health >/dev/null || { echo 'dch: GitHub credential service unavailable' >&2; exit 1; }
+[ -x /run/dch-github ] || { echo 'dch: cannot access GitHub runtime directory; verify the bind mount and align the container UID with the host user' >&2; exit 1; }
+[ -S /run/dch-github/credential.sock ] || { echo 'dch: credential socket unavailable; verify the runtime mount and align the container UID with the host user' >&2; exit 1; }
+[ -w /run/dch-github/credential.sock ] || { echo 'dch: no permission to connect to the credential socket; align the container UID with the host user' >&2; exit 1; }
+curl --disable --noproxy '*' --unix-socket /run/dch-github/credential.sock --fail --silent --show-error --max-time 20 http://localhost/health >/dev/null || { echo 'dch: credential service unavailable or socket permission denied; check the host service and align the container UID with the host user' >&2; exit 1; }
 include=/run/dch-github/gitconfig
 if ! git config --global --fixed-value --get-all include.path "$include" >/dev/null 2>&1; then
 	git config --global --add include.path "$include"
