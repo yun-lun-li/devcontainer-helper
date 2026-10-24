@@ -21,7 +21,11 @@ func requireExecutable(name string) error {
 }
 
 func invokeDevcontainer(args ...string) error {
-	title := "devcontainer " + args[0]
+	action := args[0]
+	if action == "up" && hasArgument(args, "--remove-existing-container") {
+		action = "build"
+	}
+	title := "devcontainer " + action
 	command := "$ devcontainer " + strings.Join(args, " ") + "\n\n"
 	cmd := exec.Command("devcontainer", args...)
 	cmd.Stdin = os.Stdin
@@ -42,6 +46,15 @@ func invokeDevcontainer(args ...string) error {
 		return fmt.Errorf("devcontainer command failed: %w", err)
 	}
 	return nil
+}
+
+func hasArgument(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
 }
 
 func invokeProjectDevcontainer(p Project, args ...string) error {
