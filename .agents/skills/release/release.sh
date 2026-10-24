@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 vX.Y.Z-xxx [release-notes]" >&2
+  echo "Usage: $0 vX.Y.Z[-xxx] [release-notes]" >&2
   exit 2
 }
 
@@ -10,8 +10,8 @@ usage() {
 version=$1
 notes=${2:-"Release $version"}
 
-if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[A-Za-z0-9]+([.-][A-Za-z0-9]+)*$ ]]; then
-  echo "Invalid version '$version'. Expected vX.Y.Z-xxx, for example v1.2.3-rc1." >&2
+if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9]+([.-][A-Za-z0-9]+)*)?$ ]]; then
+  echo "Invalid version '$version'. Expected vX.Y.Z or vX.Y.Z-xxx, for example v1.2.3 or v1.2.3-rc1." >&2
   exit 2
 fi
 
