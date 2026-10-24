@@ -31,8 +31,8 @@ func update() error {
 	if err != nil {
 		return err
 	}
-	if version == release.TagName {
-		fmt.Printf("dch %s is already up to date\n", version)
+	if normalizeVersion(version) == normalizeVersion(release.TagName) {
+		fmt.Printf("dch %s is already up to date\n", normalizeVersion(version))
 		return nil
 	}
 
@@ -172,11 +172,12 @@ func checkForStartupUpdate() {
 		fmt.Fprintf(os.Stderr, "Could not check for dch updates: %v\n", err)
 		return
 	}
-	if strings.TrimPrefix(version, "v") == strings.TrimPrefix(release.TagName, "v") {
+	if normalizeVersion(version) == normalizeVersion(release.TagName) {
+		fmt.Printf("dch %s is up to date\n", normalizeVersion(version))
 		return
 	}
 
-	fmt.Printf("A new dch version is available: %s → %s. Update now? [y/N] ", strings.TrimPrefix(version, "v"), strings.TrimPrefix(release.TagName, "v"))
+	fmt.Printf("A new dch version is available: %s → %s. Update now? [y/N] ", normalizeVersion(version), normalizeVersion(release.TagName))
 	answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil && len(answer) == 0 {
 		return
@@ -186,6 +187,10 @@ func checkForStartupUpdate() {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 		}
 	}
+}
+
+func normalizeVersion(value string) string {
+	return strings.TrimPrefix(value, "v")
 }
 
 func withSpinner(label string, action func() error) error {
