@@ -96,9 +96,17 @@ func projectMenu(path string) error {
 		case actionConfig:
 			err = showProjectConfig(p)
 		case actionRemove:
-			err = common.RemoveProjectRegistration(p.Path)
-			if err == nil {
-				return nil
+			removeChoice, chooseErr := choose("Remove project?", []string{
+				"Remove project registration  Keep files and containers",
+				"Cancel",
+			})
+			if chooseErr != nil {
+				err = chooseErr
+			} else if removeChoice == 0 {
+				err = common.RemoveProjectRegistration(p.Path)
+				if err == nil {
+					return nil
+				}
 			}
 		case actionBack:
 			return nil
