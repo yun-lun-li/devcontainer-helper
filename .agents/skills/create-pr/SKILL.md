@@ -11,7 +11,7 @@ Prepare a clear PR title and body from the final changes on the current branch r
 
 1. Use the target branch named by the user. Use `main` when the user does not name a target branch.
 2. Confirm that the current branch is not the target branch. Compare the current branch with the target branch using the merge base and inspect the final diff (`target...HEAD`). Use the commit list and PR history to understand the changes, but write only about behavior present in that final diff.
-3. Check the working tree. If uncommitted changes are part of the requested PR, stop and ask the user to commit them. Do not commit or stage changes unless the user asks. If the changes are unrelated, state that they are not part of the PR.
+3. Check the working tree. If uncommitted changes are part of the requested PR, stop and ask the user to commit them. Do not commit or stage changes unless the user asks. If changes are unrelated, state that they are excluded from the PR. Pass `--allow-dirty` to the helper only after confirming all uncommitted changes are unrelated.
 4. Read the changed code and existing tests. Report test status only when the user or current task has run those tests.
 5. Describe changes that are present in the diff. Do not infer features or claim behavior that the changes do not support.
 
@@ -54,10 +54,18 @@ Use this Markdown structure:
 
 If the user asks only for a draft, show the title and body, then stop. If the user asks to open the PR:
 
-1. Check whether a PR already exists for the current branch. If one exists, report its URL instead of creating a duplicate.
-2. Show the proposed title and body. The user's request to create the PR authorizes the `git push` and `gh pr create` actions.
-3. Push the current branch to `origin` if it is not already pushed.
-4. Create the PR with the selected base branch, title, and body. Use `gh pr create --title ... --body-file ...` so Markdown formatting stays intact.
-5. Report the PR URL and the test status that is supported by the available evidence.
+1. Show the proposed title and body. The user's request to create the PR authorizes the push and PR creation.
+2. Write the body to a temporary Markdown file.
+3. Run the helper with Bash. Keep `create-pr.sh` in LF format; it may not have executable permission, and CRLF line endings can break Bash.
+
+   ```bash
+   bash .agents/skills/create-pr/create-pr.sh \
+     --base "$base" \
+     --title "$title" \
+     --body-file "$body_file"
+   ```
+
+   Omit `--base` when the target is `main`. If unrelated local changes remain, add `--allow-dirty` after stating that they are excluded. The helper checks for an existing PR before it pushes, then pushes the branch if needed and creates the PR with `gh pr create --body-file`.
+4. Report the PR URL and the test status that is supported by the available evidence.
 
 Use GitHub CLI (`gh`) for PR operations. Do not commit, amend, rebase, or force-push as part of PR creation.

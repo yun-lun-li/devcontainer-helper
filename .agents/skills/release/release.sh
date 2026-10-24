@@ -41,7 +41,7 @@ if git ls-remote --exit-code --tags origin "refs/tags/$version" >/dev/null 2>&1;
   exit 1
 fi
 
-git tag -a "$version" -m "$notes"
+git tag --cleanup=verbatim -a "$version" -m "$notes"
 git push origin "refs/tags/$version"
 
 echo "Pushed tag $version. The tag push triggered the release workflow."
