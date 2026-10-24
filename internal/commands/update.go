@@ -26,7 +26,7 @@ type githubRelease struct {
 
 func update() error {
 	var release githubRelease
-	fmt.Printf("Installed version: %s\n", strings.TrimPrefix(version, "v"))
+	fmt.Printf("Installed Version: %s\n", strings.TrimPrefix(version, "v"))
 	if err := withSpinner("Checking for the latest dch release", func() error {
 		client := &http.Client{Timeout: 2 * time.Minute}
 		request, err := http.NewRequest(http.MethodGet, releaseAPI, nil)
@@ -52,7 +52,6 @@ func update() error {
 	}); err != nil {
 		return err
 	}
-	fmt.Printf("Latest version: %s\n", strings.TrimPrefix(release.TagName, "v"))
 	if version == release.TagName {
 		fmt.Printf("dch %s is already up to date\n", version)
 		return nil
