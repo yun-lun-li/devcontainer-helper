@@ -69,7 +69,7 @@ jobs:
           set -euo pipefail
           archive="dch-${VERSION}-${GOOS}-${GOARCH}"
           mkdir -p "dist/$archive"
-          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "dist/$archive/dch" .
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X dch/internal/commands.version=${VERSION}" -o "dist/$archive/dch" .
           cp README.md "dist/$archive/README.md"
           tar -C dist -czf "dist/$archive.tar.gz" "$archive"
 

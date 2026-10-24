@@ -38,6 +38,11 @@ func Run(args []string, openConsole func() error) error {
 			return fmt.Errorf("list does not accept arguments")
 		}
 		return list()
+	case "update":
+		if len(args) != 1 {
+			return fmt.Errorf("update does not accept arguments")
+		}
+		return update()
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -51,6 +56,7 @@ Usage:
   dch console               Open the Projects console
   dch register --path PATH  Register a project (relative paths accepted)
   dch list                  Show registered projects and Docker status
+  dch update                Update dch to the latest release
   dch help                  Show this help
 
 Container actions: devcontainer CLI and Docker daemon required
