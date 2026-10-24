@@ -21,14 +21,24 @@ func requireExecutable(name string) error {
 }
 
 func invokeDevcontainer(args ...string) error {
-	screenHeading("devcontainer " + args[0])
-	fmt.Printf("$ devcontainer %s\n\n", strings.Join(args, " "))
+	title := "devcontainer " + args[0]
+	command := "$ devcontainer " + strings.Join(args, " ") + "\n\n"
 	cmd := exec.Command("devcontainer", args...)
 	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	err := cmd.Run()
-	screenWait()
+	if args[0] == "exec" || !screenActive {
+		screenHeading(title)
+		fmt.Print(command)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		err := cmd.Run()
+		screenWait()
+		if err != nil {
+			return fmt.Errorf("devcontainer command failed: %w", err)
+		}
+		return nil
+	}
+	output, err := cmd.CombinedOutput()
+	showLogs(title, append([]byte(command), output...))
 	if err != nil {
 		return fmt.Errorf("devcontainer command failed: %w", err)
 	}
