@@ -1,7 +1,13 @@
 package commands
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"dch/internal/plugins"
 )
 
 // Run dispatches a CLI command. The console is also the default command.
@@ -51,6 +57,13 @@ func Run(args []string, openConsole func() error) error {
 		}
 		fmt.Printf("dch %s\n", version)
 		return nil
+	case "_github-app-serve":
+		if len(args) != 3 || args[1] != "--project" || args[2] == "" {
+			return fmt.Errorf("usage: dch _github-app-serve --project PATH")
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return plugins.NewManager().ServeProject(ctx, args[2])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -69,7 +82,7 @@ Usage:
   dch help                  Show this help
 
 Container actions: devcontainer CLI and Docker daemon required
-Config file:   ~/.dch/config (JSON; stores only workspace paths)
+Config file:   ~/.dch/config (JSON; stores project paths and plugin settings)
 Navigation:    ↑ / ↓ + Enter, q/Esc to go back (or numbered selection if not a TTY)
 `)
 }

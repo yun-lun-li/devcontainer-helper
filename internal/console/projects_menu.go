@@ -1,11 +1,13 @@
 package console
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 
 	"dch/internal/common"
+	"dch/internal/plugins"
 )
 
 type projectAction string
@@ -15,6 +17,7 @@ const (
 	actionStart   projectAction = "Start"
 	actionStop    projectAction = "Stop"
 	actionBuild   projectAction = "Build"
+	actionPlugins projectAction = "Plugins"
 	actionConfig  projectAction = "Show config"
 	actionRemove  projectAction = "Remove Project"
 	actionBack    projectAction = "Back to projects"
@@ -36,7 +39,15 @@ func projectsMenu() error {
 		statusErr := common.UpdateStatuses(projects)
 		options := make([]string, 0, len(projects)+1)
 		for _, p := range projects {
-			options = append(options, fmt.Sprintf("%s  [%s]  %s", p.Name, p.State, p.Path))
+			status, statusErr := plugins.NewManager().Status(context.Background(), p.Path)
+			if statusErr != nil {
+				return statusErr
+			}
+			state := p.State
+			if status.PendingBuild {
+				state += " · Build required"
+			}
+			options = append(options, fmt.Sprintf("%s  [%s]  %s", p.Name, state, p.Path))
 		}
 		options = append(options, "Quit console")
 		title := "Projects"
@@ -76,8 +87,12 @@ func projectMenu(path string) error {
 		current := []Project{p}
 		statusErr := common.UpdateStatuses(current)
 		p = current[0]
-		actions := availableProjectActions(p, statusErr == nil)
-		choice, err := chooseProject(p, actions)
+		pluginStatus, err := plugins.NewManager().Status(context.Background(), p.Path)
+		if err != nil {
+			return err
+		}
+		actions := availableProjectActions(p, statusErr == nil, pluginStatus.PendingBuild)
+		choice, err := chooseProject(p, actions, pluginStatus.PendingBuild)
 		if errors.Is(err, errCancelled) {
 			return nil
 		}
@@ -93,6 +108,8 @@ func projectMenu(path string) error {
 			err = stopProject(p)
 		case actionBuild:
 			err = buildProject(p)
+		case actionPlugins:
+			err = pluginsMenu(p)
 		case actionConfig:
 			err = showProjectConfig(p)
 		case actionRemove:
@@ -103,7 +120,7 @@ func projectMenu(path string) error {
 			if chooseErr != nil {
 				err = chooseErr
 			} else if removeChoice == 0 {
-				err = common.RemoveProjectRegistration(p.Path)
+				err = removeProject(p)
 				if err == nil {
 					return nil
 				}
@@ -121,7 +138,40 @@ func projectMenu(path string) error {
 	}
 }
 
-func chooseProject(p Project, actions []projectAction) (int, error) {
+func removeProject(p Project) error {
+	path, err := common.NormalizePath(p.Path)
+	if err != nil {
+		return err
+	}
+	config, err := common.LoadConfig()
+	if err != nil {
+		return err
+	}
+	projectPlugins := config.ProjectPlugins[path]
+	for id := range projectPlugins.Enabled {
+		if id != "github-app" {
+			return fmt.Errorf("unknown enabled plugin %q", id)
+		}
+	}
+	for id := range projectPlugins.States {
+		if id != "github-app" {
+			return fmt.Errorf("unknown plugin state %q", id)
+		}
+	}
+	manager := plugins.NewManager()
+	status, err := manager.Status(context.Background(), path)
+	if err != nil {
+		return err
+	}
+	if status.Enabled {
+		if err := manager.Disable(context.Background(), path); err != nil {
+			return fmt.Errorf("disable project plugins before removal: %w", err)
+		}
+	}
+	return common.RemoveProjectRegistration(path)
+}
+
+func chooseProject(p Project, actions []projectAction, pendingBuild bool) (int, error) {
 	options := make([]string, len(actions))
 	for i, action := range actions {
 		switch action {
@@ -133,6 +183,11 @@ func chooseProject(p Project, actions []projectAction) (int, error) {
 			options[i] = "■ Stop  Stop the running container"
 		case actionBuild:
 			options[i] = "▣ Build  Rebuild container or image"
+			if pendingBuild {
+				options[i] = "▣ Build required  Apply project plugin changes"
+			}
+		case actionPlugins:
+			options[i] = "⚙ Plugins  Configure project plugins"
 		case actionConfig:
 			options[i] = "⚙ Show config  Preview merged devcontainer settings"
 		case actionRemove:
@@ -144,16 +199,21 @@ func chooseProject(p Project, actions []projectAction) (int, error) {
 	return chooseView(menuView{project: &p, options: options})
 }
 
-func availableProjectActions(p Project, dockerAvailable bool) []projectAction {
-	actions := make([]projectAction, 0, 5)
+func availableProjectActions(p Project, dockerAvailable, pendingBuild bool) []projectAction {
+	actions := make([]projectAction, 0, 6)
 	if p.Valid && dockerAvailable {
 		switch {
 		case strings.HasPrefix(p.State, "RUNNING"):
-			actions = append(actions, actionConnect, actionStop)
+			if !pendingBuild {
+				actions = append(actions, actionConnect)
+			}
+			actions = append(actions, actionStop)
 		case strings.HasPrefix(p.State, "STOPPED"), p.State == "NOT CREATED":
-			actions = append(actions, actionStart)
+			if !pendingBuild || p.State == "NOT CREATED" {
+				actions = append(actions, actionStart)
+			}
 		}
 		actions = append(actions, actionBuild)
 	}
-	return append(actions, actionConfig, actionRemove, actionBack)
+	return append(actions, actionPlugins, actionConfig, actionRemove, actionBack)
 }

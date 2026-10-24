@@ -10,28 +10,116 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"dch/internal/common"
+	"dch/internal/githubapp"
 )
 
 func TestAvailableProjectActions(t *testing.T) {
 	cases := []struct {
-		state  string
-		valid  bool
-		docker bool
-		want   []projectAction
+		state   string
+		valid   bool
+		docker  bool
+		pending bool
+		want    []projectAction
 	}{
-		{"RUNNING", true, true, []projectAction{actionConnect, actionStop, actionBuild, actionConfig, actionRemove, actionBack}},
-		{"RUNNING (2)", true, true, []projectAction{actionConnect, actionStop, actionBuild, actionConfig, actionRemove, actionBack}},
-		{"STOPPED", true, true, []projectAction{actionStart, actionBuild, actionConfig, actionRemove, actionBack}},
-		{"NOT CREATED", true, true, []projectAction{actionStart, actionBuild, actionConfig, actionRemove, actionBack}},
-		{"UNKNOWN", true, false, []projectAction{actionConfig, actionRemove, actionBack}},
-		{"CONFIG MISSING/INVALID", false, true, []projectAction{actionConfig, actionRemove, actionBack}},
+		{"RUNNING", true, true, false, []projectAction{actionConnect, actionStop, actionBuild, actionPlugins, actionConfig, actionRemove, actionBack}},
+		{"RUNNING pending", true, true, true, []projectAction{actionStop, actionBuild, actionPlugins, actionConfig, actionRemove, actionBack}},
+		{"STOPPED", true, true, false, []projectAction{actionStart, actionBuild, actionPlugins, actionConfig, actionRemove, actionBack}},
+		{"STOPPED pending", true, true, true, []projectAction{actionBuild, actionPlugins, actionConfig, actionRemove, actionBack}},
+		{"NOT CREATED", true, true, true, []projectAction{actionStart, actionBuild, actionPlugins, actionConfig, actionRemove, actionBack}},
+		{"UNKNOWN", true, false, false, []projectAction{actionPlugins, actionConfig, actionRemove, actionBack}},
+		{"CONFIG MISSING/INVALID", false, true, false, []projectAction{actionPlugins, actionConfig, actionRemove, actionBack}},
 	}
 	for _, tc := range cases {
-		got := availableProjectActions(Project{State: tc.state, Valid: tc.valid}, tc.docker)
+		got := availableProjectActions(Project{State: tc.state, Valid: tc.valid}, tc.docker, tc.pending)
 		if !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("state %q: got %v, want %v", tc.state, got, tc.want)
 		}
 	}
+}
+
+func TestProjectMenuShowsPendingBuildAndPluginsWithoutConnect(t *testing.T) {
+	actions := availableProjectActions(Project{Name: "demo", State: "RUNNING", Valid: true}, true, true)
+	previousInput := input
+	input = bufio.NewReader(strings.NewReader("6\n"))
+	defer func() { input = previousInput }()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	previousStdout := os.Stdout
+	os.Stdout = w
+	_, chooseErr := chooseProject(Project{Name: "demo", State: "RUNNING"}, actions, true)
+	w.Close()
+	os.Stdout = previousStdout
+	if chooseErr != nil {
+		t.Fatal(chooseErr)
+	}
+	output, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(output)
+	if !strings.Contains(got, "Build required") || !strings.Contains(got, "Plugins") || strings.Contains(got, "Connect") {
+		t.Fatalf("unexpected pending menu: %s", got)
+	}
+}
+
+func TestPluginsStatusIsReachableWithFakeDockerAndSystemctl(t *testing.T) {
+	root := t.TempDir()
+	project, err := os.MkdirTemp("/tmp", "dchp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(project) })
+	if err := os.MkdirAll(filepath.Join(project, ".devcontainer"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, ".devcontainer", "devcontainer.json"), []byte(`{"name":"demo","image":"example:latest"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(root, "bin")
+	if err := os.Mkdir(bin, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, script := range map[string]string{"docker": "#!/bin/sh\nexit 0\n", "systemctl": "#!/bin/sh\nexit 0\n"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("DCH_CONFIG", filepath.Join(root, "dch-config"))
+	config := common.Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]common.ProjectPlugins{project: {Enabled: map[string]githubapp.Config{"github-app": {AppID: 1}}, States: map[string]common.PluginState{"github-app": {BuildPending: true}}}}}
+	if err := common.SaveConfig(config); err != nil {
+		t.Fatal(err)
+	}
+	previousInput := input
+	input = bufio.NewReader(strings.NewReader("1\n3\n1\n4\n6\n2\n"))
+	defer func() { input = previousInput }()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	previousStdout := os.Stdout
+	os.Stdout = w
+	menuErr := projectsMenu()
+	w.Close()
+	os.Stdout = previousStdout
+	if menuErr != nil {
+		t.Fatal(menuErr)
+	}
+	output, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(output)
+	if !strings.Contains(got, "Build required") || !strings.Contains(got, "Plugins") || !strings.Contains(got, "GitHub App: enabled · service active · Build required") {
+		t.Fatalf("missing plugin state in menu output: %s", got)
+	}
+	t.Logf("console status capture:\n%s", strings.ReplaceAll(got, project, "/workspace/demo"))
 }
 
 func TestStopOffersOptionalDeleteForMatchingContainers(t *testing.T) {

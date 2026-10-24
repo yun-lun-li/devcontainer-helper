@@ -3,3 +3,4 @@
 .DS_Store
 
 .devcontainer/devcontainer.local.json
+.devcontainer/devcontainer.local.d/

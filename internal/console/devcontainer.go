@@ -1,6 +1,8 @@
 package console
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,8 +11,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"dch/internal/common"
+	"dch/internal/githubapp"
+	"dch/internal/plugins"
 )
 
 func requireExecutable(name string) error {
@@ -65,9 +70,30 @@ func hasArgument(args []string, want string) bool {
 }
 
 func invokeProjectDevcontainer(p Project, args ...string) error {
+	return invokeProjectDevcontainerMode(p, false, args...)
+}
+
+func invokeProjectDevcontainerQuiet(p Project, args ...string) error {
+	return invokeProjectDevcontainerMode(p, true, args...)
+}
+
+func invokeProjectDevcontainerMode(p Project, quiet bool, args ...string) error {
 	config, err := common.MergedDevcontainerConfig(p.Path)
 	if err != nil {
 		return err
+	}
+	status, err := plugins.NewManager().Status(context.Background(), p.Path)
+	if err != nil {
+		return err
+	}
+	if status.Enabled {
+		runtimeDir, err := githubapp.RuntimeDir(p.Path)
+		if err != nil {
+			return err
+		}
+		if err := validateGitHubAppConfig(config, runtimeDir); err != nil {
+			return err
+		}
 	}
 	if len(args) > 0 && args[0] == "up" {
 		config, err = withStableContainerName(config, p)
@@ -90,8 +116,8 @@ func invokeProjectDevcontainer(p Project, args ...string) error {
 		return fmt.Errorf("write temporary merged devcontainer config: %w", err)
 	}
 
-	args = append(args, "--config", mergedPath)
-	if args[0] == "up" {
+	extraArgs := []string{"--config", mergedPath}
+	if args[0] == "up" || args[0] == "exec" {
 		basePath, err := filepath.Abs(filepath.Join(configDir, "devcontainer.json"))
 		if err != nil {
 			return fmt.Errorf("resolve devcontainer config path: %w", err)
@@ -100,12 +126,73 @@ func invokeProjectDevcontainer(p Project, args ...string) error {
 		if err != nil {
 			return fmt.Errorf("resolve workspace path: %w", err)
 		}
-		args = append(args,
+		extraArgs = append(extraArgs,
 			"--id-label", "devcontainer.local_folder="+workspacePath,
 			"--id-label", "devcontainer.config_file="+basePath,
 		)
 	}
-	return invokeDevcontainerWithCleanup(func() { _ = os.RemoveAll(tempDir) }, args...)
+	if args[0] == "exec" && len(args) >= 4 && args[1] == "--workspace-folder" {
+		args = append(args[:3], append(extraArgs, args[3:]...)...)
+	} else {
+		args = append(args, extraArgs...)
+	}
+	cleanup := func() { _ = os.RemoveAll(tempDir) }
+	if quiet {
+		err = invokeDevcontainerQuiet(args...)
+		cleanup()
+		return err
+	}
+	return invokeDevcontainerWithCleanup(cleanup, args...)
+}
+
+func invokeDevcontainerQuiet(args ...string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("devcontainer command is required")
+	}
+	screenHeading("Configure GitHub App authentication")
+	cmd := exec.Command("devcontainer", args...)
+	var output diagnosticCapture
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, &output, &output
+	if err := cmd.Run(); err != nil {
+		detail := strings.TrimSpace(output.String())
+		if output.truncated {
+			detail += " (diagnostic output truncated)"
+		}
+		if detail != "" {
+			return fmt.Errorf("GitHub App container setup failed: %s", detail)
+		}
+		return fmt.Errorf("GitHub App container setup failed: %w", err)
+	}
+	return nil
+}
+
+type diagnosticCapture struct {
+	mu        sync.Mutex
+	buffer    bytes.Buffer
+	truncated bool
+}
+
+func (capture *diagnosticCapture) Write(data []byte) (int, error) {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	const maxDiagnosticBytes = 4096
+	remaining := maxDiagnosticBytes - capture.buffer.Len()
+	if remaining > 0 {
+		if len(data) > remaining {
+			_, _ = capture.buffer.Write(data[:remaining])
+			capture.truncated = true
+		} else {
+			_, _ = capture.buffer.Write(data)
+		}
+	} else {
+		capture.truncated = true
+	}
+	return len(data), nil
+}
+func (capture *diagnosticCapture) String() string {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	return capture.buffer.String()
 }
 
 func invokeDevcontainerWithCleanup(cleanup func(), args ...string) error {
