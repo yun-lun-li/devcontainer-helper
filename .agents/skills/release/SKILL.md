@@ -47,13 +47,13 @@ When the user asks to publish the release:
 
 1. Confirm that the working tree is clean, the current branch is `main`, and local `main` matches `origin/main`. The script checks these conditions too. Confirm that the target commit is the intended release point and that the notes cover only changes since the previous release tag.
 2. Present the release notes and version. If the user has not authorized publishing, ask for approval before pushing the tag.
-3. Run the co-located helper with the version and the full notes as its second argument:
+3. Run the co-located helper with Bash, the version, and the full notes as its second argument. Keep `release.sh` in LF format; CRLF line endings break Bash options such as `set -o pipefail`, and the helper may not have executable permission.
 
    ```bash
-   .agents/skills/release/release.sh "v1.2.3-rc1" "$release_notes"
+   bash .agents/skills/release/release.sh "v1.2.3-rc1" "$release_notes"
    ```
 
-   Pass the multi-line notes as one quoted shell argument. Do not create the tag or GitHub Release by another method.
+   Pass the multi-line notes as one quoted shell argument. Preserve Markdown headings in the annotated tag message by using `git tag --cleanup=verbatim` in the helper. Do not create the tag or GitHub Release by another method.
 4. Report whether the tag push succeeded. Explain that GitHub Actions will create the Release and upload the binaries.
 
 The helper requires Git and permission to push tags to `origin`. It does not create a GitHub Release. The workflow reads the annotated tag message for the Release notes.
