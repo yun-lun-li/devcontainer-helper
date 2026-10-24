@@ -3,7 +3,6 @@ package common
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,7 +10,7 @@ import (
 )
 
 // MergedDevcontainerConfig returns the project's base configuration merged with
-// its optional per-user devcontainer.local.json file.
+// its optional first-level JSON fragments from devcontainer.local.d, in filename order.
 func MergedDevcontainerConfig(projectPath string) ([]byte, error) {
 	configDir := filepath.Join(projectPath, ".devcontainer")
 	basePath := filepath.Join(configDir, "devcontainer.json")
@@ -20,16 +19,31 @@ func MergedDevcontainerConfig(projectPath string) ([]byte, error) {
 		return nil, err
 	}
 
-	localPath := filepath.Join(configDir, "devcontainer.local.json")
-	local, err := readJSONCObject(localPath)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
+	merged := base
+	localDir := filepath.Join(configDir, "devcontainer.local.d")
+	entries, err := os.ReadDir(localDir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("%s: %w", localDir, err)
+	}
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(localDir, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		fragment, err := readJSONCObject(path)
+		if err != nil {
 			return nil, err
 		}
-		local = map[string]any{}
+		merged = mergeConfigValues(merged, fragment).(map[string]any)
 	}
 
-	merged := mergeConfigValues(base, local).(map[string]any)
 	var out bytes.Buffer
 	encoder := json.NewEncoder(&out)
 	encoder.SetIndent("", "  ")

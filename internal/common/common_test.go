@@ -65,6 +65,120 @@ func TestInvalidJSONC(t *testing.T) {
 	}
 }
 
+func TestMergedDevcontainerConfigUsesSortedLocalFragments(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, ".devcontainer")
+	localDir := filepath.Join(configDir, "devcontainer.local.d")
+	if err := os.MkdirAll(localDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"devcontainer.json":                   `{"customizations":{"vscode":{"extensions":["base","shared"]}},"name":"base"}`,
+		"devcontainer.local.json":             `{"name":"legacy"}`,
+		"devcontainer.local.d/20-user.json":   `{"name":"user","customizations":{"vscode":{"extensions":["shared","user",],},},}`,
+		"devcontainer.local.d/10-plugin.json": `{"customizations":{"vscode":{"extensions":["plugin","shared"]}}}`,
+	}
+	for name, contents := range files {
+		if err := os.WriteFile(filepath.Join(configDir, filepath.FromSlash(name)), []byte(contents), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := MergedDevcontainerConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(got, &config); err != nil {
+		t.Fatal(err)
+	}
+	if config["name"] != "user" {
+		t.Fatalf("name = %v, want user", config["name"])
+	}
+	customizations := config["customizations"].(map[string]any)
+	vscode := customizations["vscode"].(map[string]any)
+	if want := []any{"base", "shared", "plugin", "user"}; !reflect.DeepEqual(vscode["extensions"], want) {
+		t.Fatalf("extensions = %#v, want %#v", vscode["extensions"], want)
+	}
+}
+
+func TestMergedDevcontainerConfigIgnoresLegacyFileWithoutLocalDirectory(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, ".devcontainer")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "devcontainer.json"), []byte(`{"name":"base"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "devcontainer.local.json"), []byte(`this legacy file is invalid`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := MergedDevcontainerConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(got, &config); err != nil {
+		t.Fatal(err)
+	}
+	if config["name"] != "base" {
+		t.Fatalf("name = %v, want base", config["name"])
+	}
+}
+
+func TestMergedDevcontainerConfigUsesOnlyRegularFirstLevelJSONFragments(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, ".devcontainer")
+	localDir := filepath.Join(configDir, "devcontainer.local.d")
+	if err := os.MkdirAll(filepath.Join(localDir, "nested"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "devcontainer.json"), []byte(`{"name":"base"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localDir, "valid.json"), []byte(`{"name":"valid"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localDir, "ignored.txt"), []byte(`not json`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localDir, "nested", "nested.json"), []byte(`{"name":"nested"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(localDir, "nested", "nested.json"), filepath.Join(localDir, "link.json")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := MergedDevcontainerConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(got, &config); err != nil {
+		t.Fatal(err)
+	}
+	if config["name"] != "valid" {
+		t.Fatalf("name = %v, want valid", config["name"])
+	}
+}
+
+func TestMergedDevcontainerConfigReportsInvalidFragmentName(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, ".devcontainer")
+	localDir := filepath.Join(configDir, "devcontainer.local.d")
+	if err := os.MkdirAll(localDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "devcontainer.json"), []byte(`{}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localDir, "broken.json"), []byte(`{`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MergedDevcontainerConfig(root); err == nil || !strings.Contains(err.Error(), "broken.json") {
+		t.Fatalf("error = %v, want broken.json path", err)
+	}
+}
+
 func TestSaveLoadConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".dch", "config")
 	t.Setenv("DCH_CONFIG", path)

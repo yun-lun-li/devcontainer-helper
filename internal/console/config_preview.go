@@ -18,7 +18,7 @@ func showProjectConfig(p Project) error {
 	content := strings.TrimSuffix(string(data), "\n")
 	if !screenActive {
 		fmt.Println(content)
-		fmt.Println("\nKeep .devcontainer/devcontainer.local.json out of version control.")
+		fmt.Println("\nKeep .devcontainer/devcontainer.local.d/ out of version control.")
 		return nil
 	}
 	return showConfigPages(content)
@@ -72,7 +72,7 @@ func showConfigPages(content string) error {
 		}
 		fmt.Printf("  ╰%s╯\n", strings.Repeat("─", width-4))
 		fmt.Printf("  Lines %d-%d of %d  ·  ↑/↓ or j/k scroll  ·  q/Esc back\n", offset+1, end, len(lines))
-		fmt.Println("  Keep .devcontainer/devcontainer.local.json out of version control.")
+		fmt.Println("  Keep .devcontainer/devcontainer.local.d/ out of version control.")
 	}
 	render()
 	for {
