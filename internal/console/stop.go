@@ -24,6 +24,23 @@ func stopProject(p Project) error {
 		}
 	}
 	screenHeading("Stop  /  " + p.Name)
+	running := 0
+	for _, c := range matched {
+		if c.State.Running {
+			running++
+		}
+	}
+	if running == 0 {
+		screenNotice("Already stopped", "No running containers were found for this project.")
+		return nil
+	}
+	choice, err := choose("Stop containers for "+p.Name, []string{
+		"Keep containers  Stop them and start again later",
+		fmt.Sprintf("Delete all %d matching containers  Stop them first; writable-layer changes will be lost", len(matched)),
+	})
+	if err != nil {
+		return err
+	}
 	stopped := 0
 	for _, c := range matched {
 		if c.State.Running {
@@ -34,10 +51,6 @@ func stopProject(p Project) error {
 			stopped++
 		}
 	}
-	if stopped == 0 {
-		screenNotice("Already stopped", "No running containers were found for this project.")
-		return nil
-	}
 	remaining, err := common.InspectContainers()
 	if err != nil {
 		return err
@@ -46,13 +59,6 @@ func stopProject(p Project) error {
 	if len(matched) == 0 {
 		screenNotice("Container stopped", "No matching containers remain to delete.")
 		return nil
-	}
-	choice, err := choose(fmt.Sprintf("Stopped %d container(s) for %s", stopped, p.Name), []string{
-		"Keep containers  Start them again later",
-		fmt.Sprintf("Delete all %d matching containers  Changes in their writable layers will be lost", len(matched)),
-	})
-	if err != nil {
-		return err
 	}
 	if choice == 0 {
 		screenNotice("Containers stopped", "The containers were kept and can be started again.")
