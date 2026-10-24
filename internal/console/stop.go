@@ -47,12 +47,14 @@ func stopProject(p Project) error {
 		screenNotice("Container stopped", "No matching containers remain to delete.")
 		return nil
 	}
-	question := fmt.Sprintf("Stopped %d container(s). Delete all %d matching container(s) for %s? Changes inside their writable layers will be lost.", stopped, len(matched), p.Name)
-	deleteContainers, err := confirm(question, false)
+	choice, err := choose(fmt.Sprintf("Stopped %d container(s) for %s", stopped, p.Name), []string{
+		"Keep containers  Start them again later",
+		fmt.Sprintf("Delete all %d matching containers  Changes in their writable layers will be lost", len(matched)),
+	})
 	if err != nil {
 		return err
 	}
-	if !deleteContainers {
+	if choice == 0 {
 		screenNotice("Containers stopped", "The containers were kept and can be started again.")
 		return nil
 	}

@@ -369,21 +369,3 @@ func readTTYByte(r io.Reader, timeout time.Duration, sig <-chan os.Signal) (byte
 		}
 	}
 }
-
-func confirm(question string, defaultYes bool) (bool, error) {
-	screenHeading("Confirm")
-	def := "y/N"
-	if defaultYes {
-		def = "Y/n"
-	}
-	fmt.Printf("%s [%s]: ", question, def)
-	line, err := input.ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return false, err
-	}
-	answer := strings.ToLower(strings.TrimSpace(line))
-	if answer == "" {
-		return defaultYes, nil
-	}
-	return answer == "y" || answer == "yes", nil
-}
