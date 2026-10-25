@@ -28,7 +28,7 @@ func TestRegisterRelativePathAndRejectExtraArguments(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
-		if err := Run([]string{"register", "--path", relative}, nil); err != nil {
+		if err := Run([]string{"register", "--path", relative}, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -44,7 +44,7 @@ func TestRegisterRelativePathAndRejectExtraArguments(t *testing.T) {
 		{"register", "--wrong", project}, {"register", "--path", " "},
 		{"config"}, {"build"}, {"up"}, {"connect"},
 	} {
-		if err := Run(args, nil); err == nil {
+		if err := Run(args, nil, nil); err == nil {
 			t.Errorf("Run(%v) should reject this command", args)
 		}
 	}

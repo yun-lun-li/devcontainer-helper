@@ -23,7 +23,7 @@ const (
 	actionBack    projectAction = "Back to projects"
 )
 
-func projectsMenu() error {
+func projectsMenu(manager *plugins.Manager) error {
 	for {
 		projects, err := common.LoadProjects()
 		if err != nil {
@@ -33,7 +33,7 @@ func projectsMenu() error {
 			return chooseEmptyProjects()
 		}
 		statusErr := common.UpdateStatuses(projects)
-		options, err := projectOptions(projects)
+		options, err := projectOptions(manager, projects)
 		if err != nil {
 			return err
 		}
@@ -45,7 +45,7 @@ func projectsMenu() error {
 		if err != nil {
 			return err
 		}
-		if err := projectMenu(projects[choice].Path); err != nil {
+		if err := projectMenu(manager, projects[choice].Path); err != nil {
 			return err
 		}
 	}
@@ -67,9 +67,9 @@ func chooseProjectList(options []string, statusErr error) (int, error) {
 	return choose(title, options)
 }
 
-func projectMenu(path string) error {
+func projectMenu(manager *plugins.Manager, path string) error {
 	for {
-		p, found, statusErr, pluginStatus, err := loadProjectMenuState(path)
+		p, found, statusErr, pluginStatus, err := loadProjectMenuState(manager, path)
 		if err != nil {
 			return err
 		}
@@ -84,7 +84,7 @@ func projectMenu(path string) error {
 		if err != nil {
 			return err
 		}
-		done, actionErr := performProjectMenuAction(actions[choice], p)
+		done, actionErr := performProjectMenuAction(manager, actions[choice], p)
 		if done {
 			return nil
 		}
@@ -98,17 +98,17 @@ func projectMenu(path string) error {
 	}
 }
 
-func performProjectMenuAction(action projectAction, p Project) (bool, error) {
+func performProjectMenuAction(manager *plugins.Manager, action projectAction, p Project) (bool, error) {
 	if action == actionBack {
 		return true, nil
 	}
 	if action == actionRemove {
-		return confirmProjectRemoval(p)
+		return confirmProjectRemoval(manager, p)
 	}
-	return false, runProjectAction(action, p)
+	return false, runProjectAction(manager, action, p)
 }
 
-func loadProjectMenuState(path string) (Project, bool, error, plugins.Status, error) {
+func loadProjectMenuState(manager *plugins.Manager, path string) (Project, bool, error, plugins.Status, error) {
 	projects, err := common.LoadProjects()
 	if err != nil {
 		return Project{}, false, nil, plugins.Status{}, err
@@ -120,7 +120,7 @@ func loadProjectMenuState(path string) (Project, bool, error, plugins.Status, er
 	current := []Project{p}
 	statusErr := common.UpdateStatuses(current)
 	p = current[0]
-	pluginStatus, err := plugins.NewManager().Status(context.Background(), p.Path)
+	pluginStatus, err := manager.Status(context.Background(), p.Path)
 	return p, true, statusErr, pluginStatus, err
 }
 
@@ -135,10 +135,10 @@ func reportProjectActionError(err error) error {
 	return err
 }
 
-func projectOptions(projects []Project) ([]string, error) {
+func projectOptions(manager *plugins.Manager, projects []Project) ([]string, error) {
 	options := make([]string, 0, len(projects)+1)
 	for _, project := range projects {
-		status, err := plugins.NewManager().Status(context.Background(), project.Path)
+		status, err := manager.Status(context.Background(), project.Path)
 		if err != nil {
 			return nil, err
 		}
@@ -160,57 +160,35 @@ func findProject(projects []Project, path string) (Project, bool) {
 	return Project{}, false
 }
 
-func runProjectAction(action projectAction, p Project) error {
+func runProjectAction(manager *plugins.Manager, action projectAction, p Project) error {
 	switch action {
 	case actionConnect:
-		return connectProject(p)
+		return connectProject(manager, p)
 	case actionStart:
-		return startProject(p)
+		return startProject(manager, p)
 	case actionStop:
 		return stopProject(p)
 	case actionBuild:
-		return buildProject(p)
+		return buildProject(manager, p)
 	case actionPlugins:
-		return pluginsMenu(p)
+		return pluginsMenu(p, manager)
 	case actionConfig:
 		return showProjectConfig(p)
 	}
 	return nil
 }
 
-func confirmProjectRemoval(p Project) (bool, error) {
+func confirmProjectRemoval(manager *plugins.Manager, p Project) (bool, error) {
 	choice, err := choose("Remove project?", []string{"Remove project registration  Keep files and containers", "Cancel"})
 	if err != nil || choice != 0 {
 		return false, err
 	}
-	err = removeProject(p)
+	err = removeProject(manager, p)
 	return err == nil, err
 }
 
-func removeProject(p Project) error {
-	path, err := common.NormalizePath(p.Path)
-	if err != nil {
-		return err
-	}
-	config, err := common.LoadConfig()
-	if err != nil {
-		return err
-	}
-	projectPlugins := config.ProjectPlugins[path]
-	if err := common.ValidateProjectPlugins(projectPlugins, map[string]struct{}{"github-app": {}}); err != nil {
-		return err
-	}
-	manager := plugins.NewManager()
-	status, err := manager.Status(context.Background(), path)
-	if err != nil {
-		return err
-	}
-	if status.Enabled {
-		if err := manager.Disable(context.Background(), path); err != nil {
-			return fmt.Errorf("disable project plugins before removal: %w", err)
-		}
-	}
-	return common.RemoveProjectRegistration(path)
+func removeProject(manager *plugins.Manager, p Project) error {
+	return manager.RemoveProject(context.Background(), p.Path)
 }
 
 func chooseProject(p Project, actions []projectAction, pendingBuild bool) (int, error) {

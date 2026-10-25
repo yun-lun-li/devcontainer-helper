@@ -19,19 +19,22 @@ func registerProject(rawPath string) error {
 	if err != nil {
 		return fmt.Errorf("cannot register %s: %w", path, err)
 	}
-	cfg, err := common.LoadConfig()
-	if err != nil {
-		return err
-	}
-	for _, existing := range cfg.Projects {
-		if existing == path {
-			fmt.Printf("Already registered %q (%s)\n", name, path)
-			return nil
+	alreadyRegistered := false
+	if err := common.UpdateConfig(func(cfg *common.Config) error {
+		for _, existing := range cfg.Projects {
+			if existing == path {
+				alreadyRegistered = true
+				return nil
+			}
 		}
-	}
-	cfg.Projects = append(cfg.Projects, path)
-	if err := common.SaveConfig(cfg); err != nil {
+		cfg.Projects = append(cfg.Projects, path)
+		return nil
+	}); err != nil {
 		return err
+	}
+	if alreadyRegistered {
+		fmt.Printf("Already registered %q (%s)\n", name, path)
+		return nil
 	}
 	fmt.Printf("Registered %q (%s)\n", name, path)
 	return nil

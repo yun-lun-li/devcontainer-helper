@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"dch/internal/common"
-	"dch/internal/githubapp"
+	"dch/internal/plugins/githubapp"
 )
 
 func TestAvailableProjectActions(t *testing.T) {
@@ -91,12 +91,12 @@ func TestPluginsStatusIsReachableWithFakeDockerAndSystemctl(t *testing.T) {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("DCH_CONFIG", filepath.Join(root, "dch-config"))
-	config := common.Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]common.ProjectPlugins{project: {Enabled: map[string]githubapp.Config{"github-app": {AppID: 1}}, States: map[string]common.PluginState{"github-app": {BuildPending: true}}}}}
+	config := common.Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]common.ProjectPlugins{project: {Enabled: map[string]json.RawMessage{"github-app": rawPluginConfig(t, githubapp.Config{AppID: 1})}, States: map[string]common.PluginState{"github-app": {BuildPending: true}}}}}
 	if err := common.SaveConfig(config); err != nil {
 		t.Fatal(err)
 	}
 	previousInput := input
-	input = bufio.NewReader(strings.NewReader("1\n3\n1\n4\n6\n2\n"))
+	input = bufio.NewReader(strings.NewReader("1\n3\n1\n1\n2\n6\n2\n"))
 	defer func() { input = previousInput }()
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -105,7 +105,7 @@ func TestPluginsStatusIsReachableWithFakeDockerAndSystemctl(t *testing.T) {
 	defer r.Close()
 	previousStdout := os.Stdout
 	os.Stdout = w
-	menuErr := projectsMenu()
+	menuErr := projectsMenu(newConsoleTestManager(t))
 	w.Close()
 	os.Stdout = previousStdout
 	output, err := io.ReadAll(r)
@@ -116,7 +116,7 @@ func TestPluginsStatusIsReachableWithFakeDockerAndSystemctl(t *testing.T) {
 		t.Fatalf("projects menu: %v\n%s", menuErr, output)
 	}
 	got := string(output)
-	if !strings.Contains(got, "Build required") || !strings.Contains(got, "Plugins") || !strings.Contains(got, "GitHub App: enabled · service active · Build required") {
+	if !strings.Contains(got, "Build required") || !strings.Contains(got, "Plugins") || !strings.Contains(got, "GitHub App: enabled · Build required") {
 		t.Fatalf("missing plugin state in menu output: %s", got)
 	}
 	t.Logf("console status capture:\n%s", strings.ReplaceAll(got, project, "/workspace/demo"))

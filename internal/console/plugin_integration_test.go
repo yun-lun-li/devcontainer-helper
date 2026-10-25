@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"os"
@@ -10,8 +11,8 @@ import (
 	"testing"
 
 	"dch/internal/common"
-	"dch/internal/githubapp"
 	"dch/internal/plugins"
+	"dch/internal/plugins/githubapp"
 )
 
 func TestValidatePluginConfigRequiresExactSocketMountAndAdapterPath(t *testing.T) {
@@ -42,7 +43,7 @@ func TestValidatePluginConfigRequiresExactSocketMountAndAdapterPath(t *testing.T
 		t.Fatal(err)
 	}
 	t.Setenv("DCH_CONFIG", filepath.Join(root, "dch-config"))
-	if err := common.SaveConfig(common.Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]common.ProjectPlugins{project: {Enabled: map[string]githubapp.Config{"github-app": {AppID: 1}}}}}); err != nil {
+	if err := common.SaveConfig(common.Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]common.ProjectPlugins{project: {Enabled: map[string]json.RawMessage{"github-app": rawPluginConfig(t, githubapp.Config{AppID: 1})}}}}); err != nil {
 		t.Fatal(err)
 	}
 	bin := filepath.Join(root, "bin")
@@ -55,22 +56,23 @@ func TestValidatePluginConfigRequiresExactSocketMountAndAdapterPath(t *testing.T
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if err := invokeProjectDevcontainer(Project{Name: "demo", Path: project}, "exec", "--workspace-folder", project, "true"); err != nil {
+	manager := newConsoleTestManager(t)
+	if err := invokeProjectDevcontainer(context.Background(), manager, Project{Name: "demo", Path: project}, "exec", "--workspace-folder", project, "true"); err != nil {
 		t.Fatalf("valid merged config: %v", err)
 	}
 	if err := os.Remove(marker); err != nil {
 		t.Fatal(err)
 	}
-	assertInvalidPluginConfigsRejected(t, devcontainerDir, project, marker)
+	assertInvalidPluginConfigsRejected(t, manager, devcontainerDir, project, marker)
 	if err := os.WriteFile(filepath.Join(devcontainerDir, "devcontainer.json"), []byte(`{"dockerComposeFile":"compose.yaml"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := invokeProjectDevcontainer(Project{Name: "demo", Path: project}, "exec", "--workspace-folder", project, "true"); err == nil {
+	if err := invokeProjectDevcontainer(context.Background(), manager, Project{Name: "demo", Path: project}, "exec", "--workspace-folder", project, "true"); err == nil {
 		t.Fatal("Compose configuration was accepted")
 	}
 }
 
-func assertInvalidPluginConfigsRejected(t *testing.T, devcontainerDir, project, marker string) {
+func assertInvalidPluginConfigsRejected(t *testing.T, manager *plugins.Manager, devcontainerDir, project, marker string) {
 	t.Helper()
 	conflicts := []string{
 		`{"mounts":["type=bind,source=/evil,destination=/run/dch-github"]}`,
@@ -84,7 +86,7 @@ func assertInvalidPluginConfigsRejected(t *testing.T, devcontainerDir, project, 
 		if err := os.WriteFile(filepath.Join(devcontainerDir, "devcontainer.local.d", "99-conflict.json"), []byte(conflict), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if err := invokeProjectDevcontainer(Project{Name: "demo", Path: project}, "exec", "--workspace-folder", project, "true"); err == nil {
+		if err := invokeProjectDevcontainer(context.Background(), manager, Project{Name: "demo", Path: project}, "exec", "--workspace-folder", project, "true"); err == nil {
 			t.Errorf("conflicting merged config accepted: %s", conflict)
 		}
 		if _, err := os.Stat(marker); !os.IsNotExist(err) {
@@ -96,39 +98,9 @@ func assertInvalidPluginConfigsRejected(t *testing.T, devcontainerDir, project, 
 	}
 }
 
-func TestPluginRejectsRemoteDockerHostAndContext(t *testing.T) {
-	root := t.TempDir()
-	bin := filepath.Join(root, "bin")
-	if err := os.Mkdir(bin, 0700); err != nil {
-		t.Fatal(err)
-	}
-	docker := filepath.Join(bin, "docker")
-	if err := os.WriteFile(docker, []byte("#!/bin/sh\nprintf '%s' '[{\"Endpoints\":{\"docker\":{\"Host\":\"tcp://remote:2375\"}}}]'\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("DOCKER_HOST", "")
-	t.Setenv("DOCKER_CONTEXT", "")
-	if err := requireLocalDocker(); err == nil || !strings.Contains(err.Error(), "local Docker") {
-		t.Fatalf("remote context error=%v", err)
-	}
-	t.Setenv("DOCKER_HOST", "tcp://remote:2375")
-	if err := requireLocalDocker(); err == nil || !strings.Contains(err.Error(), "local Docker") {
-		t.Fatalf("remote DOCKER_HOST error=%v", err)
-	}
-	t.Setenv("DOCKER_HOST", "unix:///run/user/1000/docker.sock")
-	if err := requireLocalDocker(); err != nil {
-		t.Fatalf("local socket rejected: %v", err)
-	}
-	t.Setenv("DOCKER_CONTEXT", "remote")
-	if err := requireLocalDocker(); err == nil || !strings.Contains(err.Error(), "local Docker") {
-		t.Fatalf("remote context did not override local DOCKER_HOST: %v", err)
-	}
-}
-
 func TestStartRunsAdapterInstallAfterUpAndMarksBuildApplied(t *testing.T) {
 	fixture := setupStartPluginFixture(t)
-	if err := startProject(Project{Name: "demo", Path: fixture.project, State: "NOT CREATED"}); err != nil {
+	if err := startProject(fixture.manager, Project{Name: "demo", Path: fixture.project, State: "NOT CREATED"}); err != nil {
 		t.Fatal(err)
 	}
 	assertSuccessfulPluginStart(t, fixture)
@@ -138,6 +110,7 @@ func TestStartRunsAdapterInstallAfterUpAndMarksBuildApplied(t *testing.T) {
 type startPluginFixture struct {
 	project, configDir, argsLog, configLog, labelsLog string
 	cfg                                               githubapp.Config
+	manager                                           *plugins.Manager
 }
 
 func setupStartPluginFixture(t *testing.T) startPluginFixture {
@@ -198,7 +171,11 @@ func setupStartPluginFixture(t *testing.T) startPluginFixture {
 	go credentialServer.Serve(listener)
 	t.Cleanup(func() { _ = credentialServer.Close() })
 	cfg := githubapp.Config{AppID: 1, InstallationID: 2, PrivateKeyPassEntry: "test/key", Repository: "octo/repo", Permissions: map[string]string{"contents": "read"}}
-	if err := plugins.NewManager().Enable(context.Background(), project, cfg); err != nil {
+	manager := newConsoleTestManager(t)
+	if err := common.SaveConfig(common.Config{Version: 1, Projects: []string{project}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Enable(context.Background(), project, "github-app", rawPluginConfig(t, cfg)); err != nil {
 		t.Fatal(err)
 	}
 	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
@@ -208,19 +185,19 @@ func setupStartPluginFixture(t *testing.T) startPluginFixture {
 	oldStdout := os.Stdout
 	os.Stdout = devNull
 	t.Cleanup(func() { os.Stdout = oldStdout; _ = devNull.Close() })
-	return startPluginFixture{project: project, configDir: configDir, argsLog: argsLog, configLog: configLog, labelsLog: labelsLog, cfg: cfg}
+	return startPluginFixture{project: project, configDir: configDir, argsLog: argsLog, configLog: configLog, labelsLog: labelsLog, cfg: cfg, manager: manager}
 }
 
 func assertSuccessfulPluginStart(t *testing.T, fixture startPluginFixture) {
 	t.Helper()
-	status, err := plugins.NewManager().Status(context.Background(), fixture.project)
+	status, err := fixture.manager.Status(context.Background(), fixture.project)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if status.PendingBuild {
 		t.Fatal("pending Build remained after successful create and adapter install")
 	}
-	if err := connectProject(Project{Name: "demo", Path: fixture.project, State: "RUNNING", ID: "container-id"}); err != nil {
+	if err := connectProject(fixture.manager, Project{Name: "demo", Path: fixture.project, State: "RUNNING", ID: "container-id"}); err != nil {
 		t.Fatal(err)
 	}
 	args, err := os.ReadFile(fixture.argsLog)
@@ -251,15 +228,15 @@ func assertSuccessfulPluginStart(t *testing.T, fixture startPluginFixture) {
 
 func assertFailedAdapterInstall(t *testing.T, fixture startPluginFixture) {
 	t.Helper()
-	if err := plugins.NewManager().Enable(context.Background(), fixture.project, fixture.cfg); err != nil {
+	if err := fixture.manager.Enable(context.Background(), fixture.project, "github-app", rawPluginConfig(t, fixture.cfg)); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("DCH_TEST_FAIL_INSTALL", "yes")
-	err := startProject(Project{Name: "demo", Path: fixture.project, State: "NOT CREATED"})
+	err := startProject(fixture.manager, Project{Name: "demo", Path: fixture.project, State: "NOT CREATED"})
 	if err == nil || !strings.Contains(err.Error(), "required command missing: gh") {
 		t.Fatalf("start error = %v, want actionable adapter install diagnostic", err)
 	}
-	status, err := plugins.NewManager().Status(context.Background(), fixture.project)
+	status, err := fixture.manager.Status(context.Background(), fixture.project)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,11 +271,11 @@ func TestRemoveProjectPreservesRegistrationWhenDisableFails(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", runtime)
 	t.Setenv("XDG_CONFIG_HOME", configHome)
 	t.Setenv("DCH_CONFIG", filepath.Join(root, "dch-config"))
-	config := common.Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]common.ProjectPlugins{project: {Enabled: map[string]githubapp.Config{"github-app": {AppID: 1}}, States: map[string]common.PluginState{"github-app": {BuildPending: true}}}}}
+	config := common.Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]common.ProjectPlugins{project: {Enabled: map[string]json.RawMessage{"github-app": rawPluginConfig(t, githubapp.Config{AppID: 1})}, States: map[string]common.PluginState{"github-app": {BuildPending: true}}}}}
 	if err := common.SaveConfig(config); err != nil {
 		t.Fatal(err)
 	}
-	err = removeProject(Project{Name: "demo", Path: project})
+	err = removeProject(newConsoleTestManager(t), Project{Name: "demo", Path: project})
 	if err == nil || !strings.Contains(err.Error(), "stop-denied") {
 		t.Fatalf("remove error=%v", err)
 	}
@@ -325,7 +302,7 @@ func TestRemoveProjectRefusesUnknownPluginMetadata(t *testing.T) {
 	if err := common.SaveConfig(config); err != nil {
 		t.Fatal(err)
 	}
-	err := removeProject(Project{Name: "demo", Path: project})
+	err := removeProject(newConsoleTestManager(t), Project{Name: "demo", Path: project})
 	if err == nil || !strings.Contains(err.Error(), "unknown plugin state") {
 		t.Fatalf("remove error=%v", err)
 	}

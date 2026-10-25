@@ -14,7 +14,6 @@ import (
 	"sync"
 
 	"dch/internal/common"
-	"dch/internal/githubapp"
 	"dch/internal/plugins"
 )
 
@@ -69,73 +68,108 @@ func hasArgument(args []string, want string) bool {
 	return false
 }
 
-func invokeProjectDevcontainer(p Project, args ...string) error {
-	return invokeProjectDevcontainerMode(p, false, args...)
+func invokeProjectDevcontainer(ctx context.Context, manager *plugins.Manager, p Project, args ...string) error {
+	return invokeProjectDevcontainerMode(ctx, manager, p, false, args...)
 }
 
-func invokeProjectDevcontainerQuiet(p Project, args ...string) error {
-	return invokeProjectDevcontainerMode(p, true, args...)
+func invokeProjectDevcontainerQuiet(ctx context.Context, manager *plugins.Manager, p Project, args ...string) error {
+	return invokeProjectDevcontainerMode(ctx, manager, p, true, args...)
 }
 
-func invokeProjectDevcontainerMode(p Project, quiet bool, args ...string) error {
-	config, err := prepareMergedProjectConfig(p)
+type projectExecutor struct {
+	manager *plugins.Manager
+	project Project
+}
+
+func (executor projectExecutor) Exec(ctx context.Context, args ...string) ([]byte, error) {
+	command := append([]string{"exec", "--workspace-folder", executor.project.Path}, args...)
+	prepared, cleanup, err := prepareProjectDevcontainer(ctx, executor.manager, executor.project, command...)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	cmd := exec.CommandContext(ctx, "devcontainer", prepared...)
+	cmd.Stdin = os.Stdin
+	var stdout, stderr diagnosticCapture
+	stdout.limit = 1024 * 1024
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if stderr.truncated {
+			detail += " (diagnostic output truncated)"
+		}
+		if detail != "" {
+			return nil, fmt.Errorf("project plugin container setup failed: %s", detail)
+		}
+		return nil, fmt.Errorf("project plugin container setup failed: %w", err)
+	}
+	if stdout.truncated {
+		return nil, fmt.Errorf("project plugin command stdout output exceeded %d bytes", stdout.limit)
+	}
+	return []byte(stdout.String()), nil
+}
+
+func invokeProjectDevcontainerMode(ctx context.Context, manager *plugins.Manager, p Project, quiet bool, args ...string) error {
+	prepared, cleanup, err := prepareProjectDevcontainer(ctx, manager, p, args...)
 	if err != nil {
 		return err
+	}
+	if quiet {
+		err = invokeDevcontainerQuiet(prepared...)
+		cleanup()
+		return err
+	}
+	return invokeDevcontainerWithCleanup(cleanup, prepared...)
+}
+
+func prepareProjectDevcontainer(ctx context.Context, manager *plugins.Manager, p Project, args ...string) ([]string, func(), error) {
+	config, err := mergedProjectConfig(p)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := validateMergedProjectConfig(ctx, manager, p, config); err != nil {
+		return nil, nil, err
 	}
 	if len(args) > 0 && args[0] == "up" {
 		config, err = withStableContainerName(config, p)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 	}
 	configDir := filepath.Join(p.Path, ".devcontainer")
 	tempDir, err := os.MkdirTemp("", "dch-devcontainer-")
 	if err != nil {
-		return fmt.Errorf("create temporary devcontainer directory: %w", err)
+		return nil, nil, fmt.Errorf("create temporary devcontainer directory: %w", err)
 	}
-	defer os.RemoveAll(tempDir)
+	cleanup := func() { _ = os.RemoveAll(tempDir) }
 	config, err = rebaseConfigPaths(config, configDir, tempDir)
 	if err != nil {
-		return err
+		cleanup()
+		return nil, nil, err
 	}
 	mergedPath := filepath.Join(tempDir, "devcontainer.json")
 	if err := os.WriteFile(mergedPath, config, 0o600); err != nil {
-		return fmt.Errorf("write temporary merged devcontainer config: %w", err)
-	}
-
-	args, err = appendDevcontainerConfigArgs(args, p, configDir, mergedPath)
-	if err != nil {
-		return err
-	}
-	cleanup := func() { _ = os.RemoveAll(tempDir) }
-	if quiet {
-		err = invokeDevcontainerQuiet(args...)
 		cleanup()
-		return err
+		return nil, nil, fmt.Errorf("write temporary merged devcontainer config: %w", err)
 	}
-	return invokeDevcontainerWithCleanup(cleanup, args...)
+	prepared, err := appendDevcontainerConfigArgs(args, p, configDir, mergedPath)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	return prepared, cleanup, nil
 }
 
-func prepareMergedProjectConfig(p Project) ([]byte, error) {
-	config, err := common.MergedDevcontainerConfig(p.Path)
-	if err != nil {
-		return nil, err
+func validateMergedProjectConfig(ctx context.Context, manager *plugins.Manager, p Project, config []byte) error {
+	var merged map[string]json.RawMessage
+	if err := json.Unmarshal(config, &merged); err != nil {
+		return fmt.Errorf("decode merged devcontainer config: %w", err)
 	}
-	status, err := plugins.NewManager().Status(context.Background(), p.Path)
-	if err != nil {
-		return nil, err
-	}
-	if !status.Enabled {
-		return config, nil
-	}
-	runtimeDir, err := githubapp.RuntimeDir(p.Path)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateGitHubAppConfig(config, runtimeDir); err != nil {
-		return nil, err
-	}
-	return config, nil
+	return manager.ValidateMergedConfig(ctx, p.Path, merged)
+}
+
+func mergedProjectConfig(p Project) ([]byte, error) {
+	return common.MergedDevcontainerConfig(p.Path)
 }
 
 func appendDevcontainerConfigArgs(args []string, p Project, configDir, mergedPath string) ([]string, error) {
@@ -165,7 +199,7 @@ func invokeDevcontainerQuiet(args ...string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("devcontainer command is required")
 	}
-	screenHeading("Configure GitHub App authentication")
+	screenHeading("Configure project plugin")
 	cmd := exec.Command("devcontainer", args...)
 	var output diagnosticCapture
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, &output, &output
@@ -175,9 +209,9 @@ func invokeDevcontainerQuiet(args ...string) error {
 			detail += " (diagnostic output truncated)"
 		}
 		if detail != "" {
-			return fmt.Errorf("GitHub App container setup failed: %s", detail)
+			return fmt.Errorf("project plugin container setup failed: %s", detail)
 		}
-		return fmt.Errorf("GitHub App container setup failed: %w", err)
+		return fmt.Errorf("project plugin container setup failed: %w", err)
 	}
 	return nil
 }
@@ -186,13 +220,17 @@ type diagnosticCapture struct {
 	mu        sync.Mutex
 	buffer    bytes.Buffer
 	truncated bool
+	limit     int
 }
 
 func (capture *diagnosticCapture) Write(data []byte) (int, error) {
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
-	const maxDiagnosticBytes = 4096
-	remaining := maxDiagnosticBytes - capture.buffer.Len()
+	limit := capture.limit
+	if limit == 0 {
+		limit = 4096
+	}
+	remaining := limit - capture.buffer.Len()
 	if remaining > 0 {
 		if len(data) > remaining {
 			_, _ = capture.buffer.Write(data[:remaining])

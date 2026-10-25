@@ -30,7 +30,7 @@ func TestReadTTYByteWaitsAfterTemporaryEOF(t *testing.T) {
 
 func TestRunWithNoRegisteredProjects(t *testing.T) {
 	t.Setenv("DCH_CONFIG", filepath.Join(t.TempDir(), "config"))
-	if err := Run(); err != nil {
+	if err := Run(newConsoleTestManager(t)); err != nil {
 		t.Fatalf("console returned %v", err)
 	}
 }

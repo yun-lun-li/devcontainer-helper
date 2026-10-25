@@ -34,7 +34,7 @@ func TestBuildRequiresConfirmationBeforeReplacingExistingContainer(t *testing.T)
 	oldInput := input
 	input = bufio.NewReader(strings.NewReader("2\n"))
 	defer func() { input = oldInput }()
-	err := buildProject(Project{Name: "project", Path: project, State: "RUNNING"})
+	err := buildProject(newConsoleTestManager(t), Project{Name: "project", Path: project, State: "RUNNING"})
 	if !errors.Is(err, errCancelled) {
 		t.Fatalf("build error=%v, want cancellation", err)
 	}
@@ -72,7 +72,7 @@ func TestBuildAfterDisableAppliesConfigAndClearsPending(t *testing.T) {
 	oldInput := input
 	input = bufio.NewReader(strings.NewReader("1\n"))
 	defer func() { input = oldInput }()
-	if err := buildProject(Project{Name: "project", Path: project, State: "NOT CREATED"}); err != nil {
+	if err := buildProject(newConsoleTestManager(t), Project{Name: "project", Path: project, State: "NOT CREATED"}); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := common.LoadConfig()

@@ -1,38 +1,157 @@
 package console
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"sort"
-	"strconv"
 	"strings"
 
-	"dch/internal/githubapp"
 	"dch/internal/plugins"
 )
 
-func pluginsMenu(project Project) error {
-	manager := plugins.NewManager()
+func pluginsMenu(project Project, manager *plugins.Manager) error {
 	for {
-		status, err := manager.Status(context.Background(), project.Path)
+		definitions := manager.Definitions()
+		statuses, err := manager.Statuses(context.Background(), project.Path)
 		if err != nil {
 			return err
 		}
-		choice, label, err := choosePluginAction(status)
-		if errors.Is(err, errCancelled) || choice == 3 {
+		options := pluginOptions(definitions, statuses)
+		choice, err := choose("Project plugins", append(options, "Back"))
+		if errors.Is(err, errCancelled) || choice == len(options) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		if err := handlePluginAction(choice, label, status, project, manager); err != nil {
+		if err := configurePlugin(project, manager, definitions[choice], statusFor(statuses, definitions[choice].ID)); err != nil {
 			if menuErr := reportPluginMenuError(err); menuErr != nil {
 				return menuErr
 			}
 		}
 	}
+}
+
+func pluginOptions(definitions []plugins.Definition, statuses []plugins.PluginStatus) []string {
+	options := make([]string, 0, len(definitions))
+	for _, definition := range definitions {
+		status := statusFor(statuses, definition.ID)
+		state := "disabled"
+		if status.Enabled {
+			state = "enabled"
+		}
+		if status.PendingBuild {
+			state += " · Build required"
+		}
+		if status.Message != "" {
+			state += " · " + status.Message
+		}
+		options = append(options, definition.Name+": "+state)
+	}
+	return options
+}
+
+func statusFor(statuses []plugins.PluginStatus, id string) plugins.PluginStatus {
+	for _, status := range statuses {
+		if status.ID == id {
+			return status
+		}
+	}
+	return plugins.PluginStatus{ID: id}
+}
+
+func configurePlugin(project Project, manager *plugins.Manager, definition plugins.Definition, status plugins.PluginStatus) error {
+	choice, err := choosePluginAction(definition, status)
+	if err != nil {
+		return err
+	}
+	if choice < 0 {
+		return errCancelled
+	}
+	if status.Enabled && choice == 0 {
+		return showPluginStatus(definition, status)
+	}
+	if status.Enabled && choice == 2 {
+		return disableProjectPlugin(project, manager, definition)
+	}
+	return enableProjectPlugin(project, manager, definition)
+}
+
+func choosePluginAction(definition plugins.Definition, status plugins.PluginStatus) (int, error) {
+	actions := []string{"Configure and enable"}
+	if status.Enabled {
+		actions = []string{"Show status", "Configure and enable", "Disable"}
+	}
+	actions = append(actions, "Back")
+	choice, err := choose(definition.Name, actions)
+	if err != nil {
+		if errors.Is(err, errCancelled) {
+			return -1, nil
+		}
+		return -1, err
+	}
+	if choice == len(actions)-1 {
+		return -1, nil
+	}
+	return choice, nil
+}
+
+func showPluginStatus(definition plugins.Definition, status plugins.PluginStatus) error {
+	message := definition.Name + " is enabled"
+	if status.Message != "" {
+		message += "\n" + status.Message
+	}
+	screenNotice(definition.Name, message)
+	return nil
+}
+
+func disableProjectPlugin(project Project, manager *plugins.Manager, definition plugins.Definition) error {
+	if err := manager.Disable(context.Background(), project.Path, definition.ID); err != nil {
+		return err
+	}
+	statuses, err := manager.Statuses(context.Background(), project.Path)
+	if err != nil {
+		return err
+	}
+	screenNotice(definition.Name, pluginSuccessMessage("Disabled.", statusFor(statuses, definition.ID).PendingBuild))
+	return nil
+}
+
+func enableProjectPlugin(project Project, manager *plugins.Manager, definition plugins.Definition) error {
+	current, err := manager.Config(context.Background(), project.Path, definition.ID)
+	if err != nil {
+		return err
+	}
+	raw, err := promptPluginConfig(definition, current)
+	if err != nil {
+		return err
+	}
+	if err := confirmPluginEnable(definition); err != nil {
+		return err
+	}
+	if err := manager.Enable(context.Background(), project.Path, definition.ID, raw); err != nil {
+		return err
+	}
+	statuses, err := manager.Statuses(context.Background(), project.Path)
+	if err != nil {
+		return err
+	}
+	screenNotice(definition.Name, pluginSuccessMessage("Enabled and verified.", statusFor(statuses, definition.ID).PendingBuild))
+	return nil
+}
+
+func confirmPluginEnable(definition plugins.Definition) error {
+	choice, err := choose("Enable "+definition.Name+"?", []string{"Enable and validate", "Cancel"})
+	if err != nil {
+		return err
+	}
+	if choice != 0 {
+		return errCancelled
+	}
+	return nil
 }
 
 func reportPluginMenuError(err error) error {
@@ -46,130 +165,144 @@ func reportPluginMenuError(err error) error {
 	return err
 }
 
-func choosePluginAction(status plugins.Status) (int, string, error) {
-	label := "GitHub App: disabled"
-	if status.Enabled {
-		label = "GitHub App: enabled"
-	}
-	if status.ServiceActive {
-		label += " · service active"
-	} else if status.Enabled {
-		label += " · service inactive"
-	}
-	if status.PendingBuild {
-		label += " · Build required"
-	}
-	choice, err := choose("Project plugins", []string{label, "Configure and enable GitHub App", "Disable GitHub App", "Back"})
-	return choice, label, err
-}
-
-func handlePluginAction(choice int, label string, status plugins.Status, project Project, manager *plugins.Manager) error {
-	switch choice {
-	case 0:
-		message := label
-		if status.Message != "" {
-			message += "\n" + status.Message
+func promptPluginConfig(definition plugins.Definition, current json.RawMessage) (json.RawMessage, error) {
+	config := map[string]any{}
+	if len(current) > 0 {
+		decoder := json.NewDecoder(bytes.NewReader(current))
+		decoder.UseNumber()
+		if err := decoder.Decode(&config); err != nil {
+			return nil, fmt.Errorf("decode %s configuration: %w", definition.Name, err)
 		}
-		screenNotice("Project plugins", message)
-	case 1:
-		return enableProjectPlugin(project, manager)
-	case 2:
-		if !status.Enabled {
-			return nil
+		if config == nil {
+			config = map[string]any{}
 		}
-		if err := manager.Disable(context.Background(), project.Path); err != nil {
-			return err
-		}
-		screenNotice("GitHub App", "Disabled. Build the project to remove its container settings.")
 	}
-	return nil
-}
-
-func enableProjectPlugin(project Project, manager *plugins.Manager) error {
-	screenHeading("Configure GitHub App")
-	cfg, err := promptGitHubAppConfig()
-	if err != nil {
-		return err
+	for _, notice := range definition.Notices {
+		fmt.Println(notice)
 	}
-	if err := manager.Enable(context.Background(), project.Path, cfg); err != nil {
-		return err
-	}
-	screenNotice("GitHub App", "Enabled and verified. Build the project to apply its container settings.")
-	return nil
-}
-
-func promptGitHubAppConfig() (githubapp.Config, error) {
-	var cfg githubapp.Config
-	appID, err := promptPositiveID("GitHub App ID")
-	if err != nil {
-		return cfg, err
-	}
-	cfg.AppID = appID
-	installationID, err := promptPositiveID("Installation ID")
-	if err != nil {
-		return cfg, err
-	}
-	cfg.InstallationID = installationID
-	cfg.PrivateKeyPassEntry, err = promptText("pass entry containing the private key")
-	if err != nil {
-		return cfg, err
-	}
-	cfg.Repository, err = promptText("GitHub repository (owner/repository)")
-	if err != nil {
-		return cfg, err
-	}
-	cfg.Permissions = map[string]string{}
-	for _, permission := range []string{"contents", "pull_requests"} {
-		choice, err := choose(permission+" permission", []string{"Read", "Write", "Disabled"})
+	for _, field := range definition.Fields {
+		value, err := promptPluginField(field, config)
 		if err != nil {
-			return cfg, err
+			return nil, err
 		}
-		if choice < 2 {
-			cfg.Permissions[permission] = []string{"read", "write"}[choice]
-		}
+		setPluginField(config, field, value)
 	}
-	if err := cfg.Validate(); err != nil {
-		return cfg, err
-	}
-	scopes := make([]string, 0, len(cfg.Permissions))
-	for name, level := range cfg.Permissions {
-		scopes = append(scopes, name+":"+level)
-	}
-	sort.Strings(scopes)
-	choice, err := choose("Authorize repository access: "+cfg.Repository+" ("+strings.Join(scopes, ", ")+")", []string{"Enable and verify", "Cancel"})
+	encoded, err := json.Marshal(config)
 	if err != nil {
-		return cfg, err
+		return nil, fmt.Errorf("encode %s configuration: %w", definition.Name, err)
 	}
-	if choice != 0 {
-		return cfg, errCancelled
-	}
-	return cfg, nil
+	return encoded, nil
 }
 
-func promptPositiveID(label string) (int64, error) {
-	value, err := promptText(label)
+func promptPluginField(field plugins.Field, config map[string]any) (any, error) {
+	current := getPluginField(config, field)
+	if field.Kind == plugins.FieldChoice {
+		labels := make([]string, len(field.Options))
+		for i, option := range field.Options {
+			labels[i] = option.Label
+			if option.Value == current {
+				labels[i] += " (current)"
+			}
+		}
+		choice, err := choose(field.Label, labels)
+		if err != nil {
+			return nil, err
+		}
+		selected := field.Options[choice].Value
+		if selected == "" {
+			if field.Required {
+				return nil, fmt.Errorf("%s is required", field.Label)
+			}
+			return nil, nil
+		}
+		return selected, nil
+	}
+	if field.Kind != plugins.FieldText {
+		return nil, fmt.Errorf("plugin field %q has unsupported kind %q", field.Name, field.Kind)
+	}
+	value, err := promptPluginText(field, current)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	id, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || id <= 0 {
-		return 0, fmt.Errorf("%s must be a positive number", label)
-	}
-	return id, nil
+	return value, nil
 }
 
-func promptText(label string) (string, error) {
-	fmt.Printf("%s (q to cancel): ", label)
+func getPluginField(config map[string]any, field plugins.Field) string {
+	path := field.Path
+	if len(path) == 0 {
+		path = []string{field.Name}
+	}
+	var current any = config
+	for _, key := range path {
+		nested, ok := current.(map[string]any)
+		if !ok {
+			return ""
+		}
+		current = nested[key]
+	}
+	switch value := current.(type) {
+	case string:
+		return value
+	case json.Number:
+		return value.String()
+	default:
+		return ""
+	}
+}
+
+func promptPluginText(field plugins.Field, current string) (any, error) {
+	label := field.Label
+	if current != "" {
+		label += " [" + current + "] (Enter to keep"
+	} else if !field.Required {
+		label += " (optional"
+	}
+	label += ", q to cancel): "
+	fmt.Print(label)
 	value, err := input.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
-		return "", err
+		return nil, err
 	}
 	value = strings.TrimSpace(value)
 	if value == "q" || value == "Q" || (errors.Is(err, io.EOF) && value == "") {
-		return "", errCancelled
+		return nil, errCancelled
 	}
 	if value == "" {
-		return "", fmt.Errorf("%s is required", label)
+		if current != "" {
+			return current, nil
+		}
+		if field.Required {
+			return nil, fmt.Errorf("%s is required", field.Label)
+		}
+		return nil, nil
 	}
 	return value, nil
+}
+
+func pluginSuccessMessage(message string, pendingBuild bool) string {
+	if pendingBuild {
+		return message + " Build the project to apply its container settings."
+	}
+	return message
+}
+
+func setPluginField(config map[string]any, field plugins.Field, value any) {
+	path := field.Path
+	if len(path) == 0 {
+		path = []string{field.Name}
+	}
+	current := config
+	for _, key := range path[:len(path)-1] {
+		nested, ok := current[key].(map[string]any)
+		if !ok {
+			nested = map[string]any{}
+			current[key] = nested
+		}
+		current = nested
+	}
+	if value == nil {
+		delete(current, path[len(path)-1])
+		return
+	}
+	current[path[len(path)-1]] = value
 }

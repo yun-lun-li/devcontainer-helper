@@ -5,22 +5,9 @@ import (
 	"dch/internal/plugins"
 )
 
-func buildProject(p Project) error {
+func buildProject(manager *plugins.Manager, p Project) error {
 	if err := confirmRebuild(p); err != nil {
 		return err
-	}
-	if err := requireExecutable("devcontainer"); err != nil {
-		return err
-	}
-	manager := plugins.NewManager()
-	status, err := manager.Status(context.Background(), p.Path)
-	if err != nil {
-		return err
-	}
-	if status.Enabled {
-		if err := prepareProjectPlugin(p); err != nil {
-			return err
-		}
 	}
 	cacheChoice, err := choose("Build cache", []string{
 		"Use build cache",
@@ -29,19 +16,29 @@ func buildProject(p Project) error {
 	if err != nil {
 		return err
 	}
+	return manager.WithProjectOperation(context.Background(), p.Path, func(ctx context.Context) error {
+		return buildProjectOperation(ctx, manager, p, cacheChoice)
+	})
+}
+
+func buildProjectOperation(ctx context.Context, manager *plugins.Manager, p Project, cacheChoice int) error {
+	if err := requireExecutable("devcontainer"); err != nil {
+		return err
+	}
+	if err := manager.Prepare(ctx, p.Path, plugins.EventBuild); err != nil {
+		return err
+	}
 	args := []string{"up", "--workspace-folder", p.Path, "--remove-existing-container"}
 	if cacheChoice == 1 {
 		args = append(args, "--build-no-cache")
 	}
-	if err := invokeProjectDevcontainer(p, args...); err != nil {
+	if err := invokeProjectDevcontainer(ctx, manager, p, args...); err != nil {
 		return err
 	}
-	if status.Enabled {
-		if err := runAdapterInstall(p); err != nil {
-			return err
-		}
+	if err := manager.HandleContainer(ctx, p.Path, plugins.EventBuild, projectExecutor{manager: manager, project: p}); err != nil {
+		return err
 	}
-	return manager.MarkBuilt(p.Path)
+	return manager.MarkBuilt(ctx, p.Path)
 }
 
 func confirmRebuild(p Project) error {

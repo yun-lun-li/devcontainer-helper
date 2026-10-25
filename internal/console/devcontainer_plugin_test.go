@@ -1,13 +1,15 @@
 package console
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"dch/internal/common"
-	"dch/internal/githubapp"
+	"dch/internal/plugins/githubapp"
 )
 
 func TestProjectExecUsesStableContainerLabelsAndLiveMergedConfig(t *testing.T) {
@@ -30,7 +32,7 @@ func TestProjectExecUsesStableContainerLabelsAndLiveMergedConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if err := invokeProjectDevcontainer(Project{Name: "project", Path: project}, "exec", "--workspace-folder", project, "true"); err != nil {
+	if err := invokeProjectDevcontainer(context.Background(), newConsoleTestManager(t), Project{Name: "project", Path: project}, "exec", "--workspace-folder", project, "true"); err != nil {
 		t.Fatal(err)
 	}
 	args, err := os.ReadFile(logPath)
@@ -53,12 +55,12 @@ func TestConnectRefusesExistingContainerWithPendingPluginBuild(t *testing.T) {
 	}
 	t.Setenv("DCH_CONFIG", filepath.Join(root, "dch-config"))
 	config := common.Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]common.ProjectPlugins{
-		project: {Enabled: map[string]githubapp.Config{"github-app": {AppID: 1}}, States: map[string]common.PluginState{"github-app": {BuildPending: true}}},
+		project: {Enabled: map[string]json.RawMessage{"github-app": rawPluginConfig(t, githubapp.Config{AppID: 1})}, States: map[string]common.PluginState{"github-app": {BuildPending: true}}},
 	}}
 	if err := common.SaveConfig(config); err != nil {
 		t.Fatal(err)
 	}
-	err := connectProject(Project{Name: "project", Path: project, State: "RUNNING"})
+	err := connectProject(newConsoleTestManager(t), Project{Name: "project", Path: project, State: "RUNNING"})
 	if err == nil || !strings.Contains(err.Error(), "Build") {
 		t.Fatalf("connect error = %v, want pending Build message", err)
 	}
@@ -75,7 +77,7 @@ func TestConnectAlsoBlocksAfterPluginWasDisabledUntilBuild(t *testing.T) {
 	if err := common.SaveConfig(config); err != nil {
 		t.Fatal(err)
 	}
-	err := connectProject(Project{Name: "project", Path: project, State: "RUNNING", ID: "container-id"})
+	err := connectProject(newConsoleTestManager(t), Project{Name: "project", Path: project, State: "RUNNING", ID: "container-id"})
 	if err == nil || !strings.Contains(err.Error(), "Build") {
 		t.Fatalf("connect error=%v, want Build requirement", err)
 	}
@@ -86,11 +88,11 @@ func TestStartRefusesExistingContainerWithPendingPluginBuild(t *testing.T) {
 	project := filepath.Join(root, "project")
 	_ = os.MkdirAll(filepath.Join(project, ".devcontainer"), 0700)
 	t.Setenv("DCH_CONFIG", filepath.Join(root, "dch-config"))
-	config := common.Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]common.ProjectPlugins{project: {Enabled: map[string]githubapp.Config{"github-app": {AppID: 1}}, States: map[string]common.PluginState{"github-app": {BuildPending: true}}}}}
+	config := common.Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]common.ProjectPlugins{project: {Enabled: map[string]json.RawMessage{"github-app": rawPluginConfig(t, githubapp.Config{AppID: 1})}, States: map[string]common.PluginState{"github-app": {BuildPending: true}}}}}
 	if err := common.SaveConfig(config); err != nil {
 		t.Fatal(err)
 	}
-	err := startProject(Project{Name: "project", Path: project, State: "STOPPED"})
+	err := startProject(newConsoleTestManager(t), Project{Name: "project", Path: project, State: "STOPPED"})
 	if err == nil || !strings.Contains(err.Error(), "Build") {
 		t.Fatalf("start error = %v, want pending Build message", err)
 	}

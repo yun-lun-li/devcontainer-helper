@@ -11,12 +11,12 @@ import (
 )
 
 // Run dispatches a CLI command. The console is also the default command.
-func Run(args []string, openConsole func() error) error {
+func Run(args []string, manager *plugins.Manager, openConsole func() error) error {
 	if len(args) == 0 {
 		return runConsole(openConsole)
 	}
 
-	return runCommand(args, openConsole)
+	return runCommand(args, manager, openConsole)
 }
 
 func runConsole(openConsole func() error) error {
@@ -27,7 +27,7 @@ func runConsole(openConsole func() error) error {
 	return openConsole()
 }
 
-func runCommand(args []string, openConsole func() error) error {
+func runCommand(args []string, manager *plugins.Manager, openConsole func() error) error {
 	switch args[0] {
 	case "help", "-h", "--help":
 		return runHelp(args)
@@ -41,10 +41,8 @@ func runCommand(args []string, openConsole func() error) error {
 		return runUpdate(args)
 	case "version":
 		return runVersion(args)
-	case "_github-app-serve":
-		return runGitHubAppServe(args)
 	default:
-		return fmt.Errorf("unknown command %q", args[0])
+		return runPluginService(args, manager)
 	}
 }
 
@@ -92,13 +90,35 @@ func runVersion(args []string) error {
 	return nil
 }
 
-func runGitHubAppServe(args []string) error {
-	if len(args) != 3 || args[1] != "--project" || args[2] == "" {
-		return fmt.Errorf("usage: dch _github-app-serve --project PATH")
+func runPluginService(args []string, manager *plugins.Manager) error {
+	if manager == nil {
+		return fmt.Errorf("unknown command %q", args[0])
+	}
+	id, project, err := parsePluginServeArgs(args, manager)
+	if err != nil {
+		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return plugins.NewManager().ServeProject(ctx, args[2])
+	return manager.Serve(ctx, project, id)
+}
+
+func parsePluginServeArgs(args []string, manager *plugins.Manager) (string, string, error) {
+	command := args[0]
+	if command == "_plugin-serve" {
+		if len(args) != 5 || args[1] != "--plugin" || args[2] == "" || args[3] != "--project" || args[4] == "" {
+			return "", "", fmt.Errorf("usage: dch _plugin-serve --plugin ID --project PATH")
+		}
+		return args[2], args[4], nil
+	}
+	id, ok := manager.ServiceAlias(command)
+	if !ok {
+		return "", "", fmt.Errorf("unknown command %q", command)
+	}
+	if len(args) != 3 || args[1] != "--project" || args[2] == "" {
+		return "", "", fmt.Errorf("usage: dch %s --project PATH", command)
+	}
+	return id, args[2], nil
 }
 
 func usage() {
