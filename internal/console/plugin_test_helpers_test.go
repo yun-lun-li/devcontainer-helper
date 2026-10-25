@@ -25,3 +25,8 @@ func rawPluginConfig(t *testing.T, value any) json.RawMessage {
 	}
 	return raw
 }
+
+func authorizedPluginConfig(t *testing.T, project string) json.RawMessage {
+	t.Helper()
+	return rawPluginConfig(t, githubapp.Config{ClientID: "Iv1_example", ProjectPath: project, UserID: 42, RepositoryID: 9, Repository: "octo/repo"})
+}

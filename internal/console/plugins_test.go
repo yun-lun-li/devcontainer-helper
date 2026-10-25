@@ -2,12 +2,16 @@ package console
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"dch/internal/common"
 	"dch/internal/plugins"
 	"dch/internal/plugins/githubapp"
 )
@@ -160,6 +164,83 @@ func TestInteractivePluginActionsAreIndependentOfSharedFieldMetadata(t *testing.
 	if len(got) != 3 || got[2] != "Disable" {
 		t.Fatalf("non-interactive actions = %v", got)
 	}
+}
+
+func TestCleanupActionDoesNotShiftEnabledInteractiveActions(t *testing.T) {
+	definition := plugins.Definition{ID: "sample", Name: "Sample"}
+	if got := choosePluginActions(definition, plugins.PluginStatus{}, false); len(got) != 1 || got[0] != "Configure and enable" {
+		t.Fatalf("clean disabled actions = %v", got)
+	}
+	got := choosePluginActions(definition, plugins.PluginStatus{CleanupPending: true}, true)
+	want := []string{"Show status", "Configure and enable", "Clean up"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("cleanup actions = %v, want %v", got, want)
+	}
+	got = choosePluginActions(definition, plugins.PluginStatus{Enabled: true}, true)
+	want = []string{"Show status", "Configure and enable", "Reauthorize", "Disable"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("enabled actions = %v, want %v", got, want)
+	}
+}
+
+func TestDisabledCleanupPendingPluginCanRunCleanupFromItsMenu(t *testing.T) {
+	project := t.TempDir()
+	t.Setenv("DCH_CONFIG", filepath.Join(t.TempDir(), "config"))
+	if err := common.SaveConfig(common.Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]common.ProjectPlugins{project: {States: map[string]common.PluginState{"sample": {Data: json.RawMessage(`{"retry":true}`)}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	manager := plugins.NewManager()
+	if err := manager.Register(&cleanupTestPlugin{called: &called}); err != nil {
+		t.Fatal(err)
+	}
+	previous := input
+	input = bufio.NewReader(strings.NewReader("3\n"))
+	defer func() { input = previous }()
+	status := plugins.PluginStatus{ID: "sample", CleanupPending: true}
+	if err := configurePlugin(Project{Path: project}, manager, manager.Definitions()[0], status); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("cleanup hook was not called")
+	}
+	remaining, err := manager.Statuses(context.Background(), project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remaining[0].CleanupPending {
+		t.Fatal("cleanup remains pending after cleanup hook")
+	}
+}
+
+func TestPluginStatusMessageDoesNotCallDisabledPluginEnabled(t *testing.T) {
+	message := pluginStatusMessage(plugins.Definition{Name: "Sample"}, plugins.PluginStatus{CleanupPending: true})
+	if strings.Contains(message, "enabled") || !strings.Contains(strings.ToLower(message), "cleanup") {
+		t.Fatalf("status message = %q", message)
+	}
+}
+
+type cleanupTestPlugin struct{ called *bool }
+
+func (p *cleanupTestPlugin) Definition() plugins.Definition {
+	return plugins.Definition{ID: "sample", Name: "Sample"}
+}
+func (p *cleanupTestPlugin) ValidateConfig(json.RawMessage) error { return nil }
+func (p *cleanupTestPlugin) HandleHost(_ context.Context, _ plugins.HostContext, event plugins.Event) (plugins.Result, error) {
+	if event == plugins.EventDisable {
+		*p.called = true
+		return plugins.Result{State: json.RawMessage{}}, nil
+	}
+	return plugins.Result{}, nil
+}
+func (p *cleanupTestPlugin) HandleContainer(context.Context, plugins.ContainerContext, plugins.Event) (plugins.Result, error) {
+	return plugins.Result{}, nil
+}
+func (p *cleanupTestPlugin) ValidateContainerConfig(context.Context, plugins.ContainerContext, map[string]json.RawMessage) error {
+	return nil
+}
+func (p *cleanupTestPlugin) Status(_ context.Context, host plugins.HostContext) (plugins.PluginStatus, error) {
+	return plugins.PluginStatus{CleanupPending: len(host.State) > 0}, nil
 }
 
 func TestPluginEnableConfirmationCanBeCancelled(t *testing.T) {

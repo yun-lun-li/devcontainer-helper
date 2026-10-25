@@ -82,7 +82,9 @@ type PluginStatus struct {
 	Name         string
 	Enabled      bool
 	PendingBuild bool
-	Message      string
+	// CleanupPending reports plugin-owned resources that still need cleanup.
+	CleanupPending bool
+	Message        string
 }
 
 // HostContext gives a plugin its project-scoped data and persistence capability.

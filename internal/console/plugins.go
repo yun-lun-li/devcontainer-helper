@@ -51,6 +51,9 @@ func pluginOptions(definitions []plugins.Definition, statuses []plugins.PluginSt
 		if status.PendingBuild {
 			state += " · Build required"
 		}
+		if status.CleanupPending {
+			state += " · Cleanup required"
+		}
 		if status.Message != "" {
 			state += " · " + status.Message
 		}
@@ -80,8 +83,14 @@ func configurePlugin(project Project, manager *plugins.Manager, definition plugi
 	if status.Enabled && choice == 0 {
 		return showPluginStatus(definition, status)
 	}
+	if !status.Enabled && status.CleanupPending && choice == 0 {
+		return showPluginStatus(definition, status)
+	}
 	if status.Enabled && choice == len(choosePluginActions(definition, status, interactive))-1 {
 		return disableProjectPlugin(project, manager, definition)
+	}
+	if !status.Enabled && status.CleanupPending && choice == len(choosePluginActions(definition, status, interactive))-1 {
+		return cleanupDisabledPlugin(project, manager, definition)
 	}
 	if interactive {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -114,6 +123,8 @@ func choosePluginActions(definition plugins.Definition, status plugins.PluginSta
 		if interactive {
 			actions = []string{"Show status", "Configure and enable", "Reauthorize", "Disable"}
 		}
+	} else if status.CleanupPending {
+		actions = []string{"Show status", "Configure and enable", "Clean up"}
 	}
 	return actions
 }
@@ -163,11 +174,33 @@ func (consoleInteraction) OpenBrowser(ctx context.Context, url string) error {
 }
 
 func showPluginStatus(definition plugins.Definition, status plugins.PluginStatus) error {
-	message := definition.Name + " is enabled"
+	screenNotice(definition.Name, pluginStatusMessage(definition, status))
+	return nil
+}
+
+func pluginStatusMessage(definition plugins.Definition, status plugins.PluginStatus) string {
+	message := definition.Name + " is disabled"
+	if status.Enabled {
+		message = definition.Name + " is enabled"
+	}
+	if status.CleanupPending {
+		message += "\nCleanup is required."
+	}
 	if status.Message != "" {
 		message += "\n" + status.Message
 	}
-	screenNotice(definition.Name, message)
+	return message
+}
+
+func cleanupDisabledPlugin(project Project, manager *plugins.Manager, definition plugins.Definition) error {
+	if err := manager.Disable(context.Background(), project.Path, definition.ID); err != nil {
+		return err
+	}
+	statuses, err := manager.Statuses(context.Background(), project.Path)
+	if err != nil {
+		return err
+	}
+	screenNotice(definition.Name, pluginSuccessMessage("Cleanup complete.", statusFor(statuses, definition.ID).PendingBuild))
 	return nil
 }
 
