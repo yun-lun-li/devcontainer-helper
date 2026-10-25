@@ -59,6 +59,33 @@ func invokeDevcontainerCommand(cleanup func(), args ...string) error {
 	return nil
 }
 
+func startDevcontainerWithCleanup(cleanup func(), args ...string) (func() error, error) {
+	action := args[0]
+	command := "$ devcontainer " + strings.Join(args, " ") + "\n\n"
+	screenHeading("devcontainer " + action)
+	fmt.Print(command)
+	cmd := exec.Command("devcontainer", args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Start(); err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		screenWait()
+		return nil, fmt.Errorf("devcontainer command failed: %w", err)
+	}
+	return func() error {
+		err := cmd.Wait()
+		if cleanup != nil {
+			cleanup()
+		}
+		screenWait()
+		if err != nil {
+			return fmt.Errorf("devcontainer command failed: %w", err)
+		}
+		return nil
+	}, nil
+}
+
 func hasArgument(args []string, want string) bool {
 	for _, arg := range args {
 		if arg == want {
