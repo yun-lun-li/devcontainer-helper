@@ -2967,10 +2967,10 @@ index 0000000..ac95b7b
 +}
 diff --git a/internal/console/plugins_test.go b/internal/console/plugins_test.go
 new file mode 100644
-index 0000000..6a3923d
+index 0000000..48ea040
 --- /dev/null
 +++ b/internal/console/plugins_test.go
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,194 @@
 +package console
 +
 +import (
@@ -2982,6 +2982,7 @@ index 0000000..6a3923d
 +	"testing"
 +
 +	"dch/internal/plugins"
++	"dch/internal/plugins/githubapp"
 +)
 +
 +func TestPromptPluginConfigUsesGenericFieldsAndNestedPaths(t *testing.T) {
@@ -3011,6 +3012,43 @@ index 0000000..6a3923d
 +	}
 +	if name != "Alice" || permissions["contents"] != "write" {
 +		t.Fatalf("config = %s, want generic fields and nested permissions", got)
++	}
++}
++
++func TestGitHubAppPromptOutputPassesPluginValidation(t *testing.T) {
++	tests := []struct {
++		name    string
++		current json.RawMessage
++		input   string
++		wantErr string
++	}{
++		{name: "text IDs", input: "123\n456\n2\n1\n"},
++		{name: "numeric current IDs", current: json.RawMessage(`{"app_id":123,"installation_id":456}`), input: "\n\n2\n1\n"},
++		{name: "App ID URL", input: "https://github.com/apps/example\n456\n2\n1\n", wantErr: "app_id must be a decimal numeric App ID (not Client ID)"},
++		{name: "Installation ID Client ID", input: "123\nIv1.example\n2\n1\n", wantErr: "installation_id must be the numeric installation ID from the installation settings URL, not the App ID or Client ID"},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			previous := input
++			input = bufio.NewReader(strings.NewReader(tt.input))
++			defer func() { input = previous }()
++
++			definition := githubapp.New().Definition()
++			got, err := promptPluginConfig(definition, tt.current)
++			if err != nil {
++				t.Fatalf("promptPluginConfig() error = %v", err)
++			}
++			err = githubapp.New().ValidateConfig(got)
++			if tt.wantErr != "" {
++				if err == nil || err.Error() != tt.wantErr {
++					t.Fatalf("GitHub App validation error = %v, want %q", err, tt.wantErr)
++				}
++				return
++			}
++			if err != nil {
++				t.Fatalf("GitHub App rejected prompt output %s: %v", got, err)
++			}
++		})
 +	}
 +}
 +
@@ -4341,15 +4379,17 @@ index 0000000..e78f083
 +}
 diff --git a/internal/plugins/githubapp/config.go b/internal/plugins/githubapp/config.go
 new file mode 100644
-index 0000000..e928f00
+index 0000000..860e04a
 --- /dev/null
 +++ b/internal/plugins/githubapp/config.go
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,184 @@
 +package githubapp
 +
 +import (
 +	"encoding/json"
++	"errors"
 +	"fmt"
++	"reflect"
 +	"regexp"
 +	"strconv"
 +	"strings"
@@ -4363,6 +4403,10 @@ index 0000000..e928f00
 +	Permissions         map[string]string `json:"permissions"`
 +}
 +
++type configFieldError string
++
++func (err configFieldError) Error() string { return string(err) }
++
 +func (c *Config) UnmarshalJSON(data []byte) error {
 +	type configAlias Config
 +	var fields map[string]json.RawMessage
@@ -4371,11 +4415,11 @@ index 0000000..e928f00
 +	}
 +	appID, err := decodeID(fields["app_id"])
 +	if err != nil {
-+		return err
++		return configFieldError("app_id must be a decimal numeric App ID (not Client ID)")
 +	}
 +	installationID, err := decodeID(fields["installation_id"])
 +	if err != nil {
-+		return err
++		return configFieldError("installation_id must be the numeric installation ID from the installation settings URL, not the App ID or Client ID")
 +	}
 +	delete(fields, "app_id")
 +	delete(fields, "installation_id")
@@ -4385,11 +4429,33 @@ index 0000000..e928f00
 +	}
 +	var decoded configAlias
 +	if err := json.Unmarshal(remaining, &decoded); err != nil {
-+		return err
++		return safeConfigTypeError(err)
 +	}
 +	decoded.AppID, decoded.InstallationID = appID, installationID
 +	*c = Config(decoded)
 +	return nil
++}
++
++func safeConfigTypeError(err error) error {
++	var typeErr *json.UnmarshalTypeError
++	if !errors.As(err, &typeErr) {
++		return err
++	}
++	switch strings.ToLower(typeErr.Field) {
++	case "repository":
++		return configFieldError("repository must be a string")
++	case "privatekeypassentry", "private_key_pass_entry":
++		return configFieldError("private_key_pass_entry must be a string")
++	case "permissions":
++		if typeErr.Type == reflect.TypeOf(map[string]string(nil)) {
++			return configFieldError("permissions must be an object")
++		}
++		return configFieldError("permissions values must be strings")
++	}
++	if strings.HasPrefix(strings.ToLower(typeErr.Field), "permissions.") {
++		return configFieldError("permissions values must be strings")
++	}
++	return err
 +}
 +
 +func decodeID(raw json.RawMessage) (int64, error) {
@@ -4436,8 +4502,11 @@ index 0000000..e928f00
 +}
 +
 +func validateIDs(c Config) error {
-+	if c.AppID <= 0 || c.InstallationID <= 0 {
-+		return fmt.Errorf("app and installation IDs must be positive")
++	if c.AppID <= 0 {
++		return configFieldError("app_id must be a positive numeric App ID")
++	}
++	if c.InstallationID <= 0 {
++		return configFieldError("installation_id must be a positive numeric installation ID")
 +	}
 +	return nil
 +}
@@ -4500,13 +4569,17 @@ index 0000000..e928f00
 +}
 diff --git a/internal/plugins/githubapp/config_test.go b/internal/plugins/githubapp/config_test.go
 new file mode 100644
-index 0000000..98f7585
+index 0000000..82e72d1
 --- /dev/null
 +++ b/internal/plugins/githubapp/config_test.go
-@@ -0,0 +1,41 @@
+@@ -0,0 +1,106 @@
 +package githubapp
 +
-+import "testing"
++import (
++	"encoding/json"
++	"strings"
++	"testing"
++)
 +
 +func TestConfigDefaultsPassEntryAndAllowsInstallationWideScope(t *testing.T) {
 +	cfg := Config{AppID: 12, InstallationID: 34, Permissions: map[string]string{"contents": "read"}}
@@ -4543,6 +4616,67 @@ index 0000000..98f7585
 +		if err := cfg.Validate(); err == nil {
 +			t.Errorf("Validate() accepted %#v", cfg)
 +		}
++	}
++}
++
++func TestValidateConfigReportsSafeIDFieldErrors(t *testing.T) {
++	cases := []struct {
++		name, raw, want string
++	}{
++		{"App ID URL", `{"app_id":"https://github.com/apps/example","installation_id":"34","permissions":{"contents":"read"}}`, "app_id must be a decimal numeric App ID (not Client ID)"},
++		{"App ID Client ID", `{"app_id":"Iv1.example","installation_id":"34","permissions":{"contents":"read"}}`, "app_id must be a decimal numeric App ID (not Client ID)"},
++		{"App ID nondecimal", `{"app_id":"12x","installation_id":"34","permissions":{"contents":"read"}}`, "app_id must be a decimal numeric App ID (not Client ID)"},
++		{"App ID overflow", `{"app_id":"9223372036854775808","installation_id":"34","permissions":{"contents":"read"}}`, "app_id must be a decimal numeric App ID (not Client ID)"},
++		{"App ID missing", `{"installation_id":"34","permissions":{"contents":"read"}}`, "app_id must be a positive numeric App ID"},
++		{"App ID zero", `{"app_id":"0","installation_id":"34","permissions":{"contents":"read"}}`, "app_id must be a positive numeric App ID"},
++		{"App ID negative", `{"app_id":"-1","installation_id":"34","permissions":{"contents":"read"}}`, "app_id must be a positive numeric App ID"},
++		{"Installation ID URL", `{"app_id":"12","installation_id":"https://github.com/settings/installations/34","permissions":{"contents":"read"}}`, "installation_id must be the numeric installation ID from the installation settings URL, not the App ID or Client ID"},
++		{"Installation ID Client ID", `{"app_id":"12","installation_id":"Iv1.example","permissions":{"contents":"read"}}`, "installation_id must be the numeric installation ID from the installation settings URL, not the App ID or Client ID"},
++		{"Installation ID nondecimal", `{"app_id":"12","installation_id":"34x","permissions":{"contents":"read"}}`, "installation_id must be the numeric installation ID from the installation settings URL, not the App ID or Client ID"},
++		{"Installation ID overflow", `{"app_id":"12","installation_id":"9223372036854775808","permissions":{"contents":"read"}}`, "installation_id must be the numeric installation ID from the installation settings URL, not the App ID or Client ID"},
++		{"Installation ID missing", `{"app_id":"12","permissions":{"contents":"read"}}`, "installation_id must be a positive numeric installation ID"},
++		{"Installation ID zero", `{"app_id":"12","installation_id":"0","permissions":{"contents":"read"}}`, "installation_id must be a positive numeric installation ID"},
++		{"Installation ID negative", `{"app_id":"12","installation_id":"-1","permissions":{"contents":"read"}}`, "installation_id must be a positive numeric installation ID"},
++	}
++	for _, tt := range cases {
++		t.Run(tt.name, func(t *testing.T) {
++			err := New().ValidateConfig(json.RawMessage(tt.raw))
++			if err == nil || err.Error() != tt.want {
++				t.Fatalf("ValidateConfig() error = %v, want %q", err, tt.want)
++			}
++			if strings.Contains(err.Error(), "https://") || strings.Contains(err.Error(), "Iv1.") || strings.Contains(err.Error(), "9223372036854775808") {
++				t.Fatalf("validation error exposed an input value: %v", err)
++			}
++		})
++	}
++}
++
++func TestValidateConfigReportsAllowlistedTypeErrors(t *testing.T) {
++	cases := []struct {
++		name, raw, want string
++	}{
++		{"repository", `{"app_id":"12","installation_id":"34","repository":12,"permissions":{"contents":"read"}}`, "repository must be a string"},
++		{"private key pass entry", `{"app_id":"12","installation_id":"34","private_key_pass_entry":12,"permissions":{"contents":"read"}}`, "private_key_pass_entry must be a string"},
++		{"permissions object", `{"app_id":"12","installation_id":"34","permissions":"contents"}`, "permissions must be an object"},
++		{"permission value", `{"app_id":"12","installation_id":"34","permissions":{"contents":12}}`, "permissions values must be strings"},
++	}
++	for _, tt := range cases {
++		t.Run(tt.name, func(t *testing.T) {
++			err := New().ValidateConfig(json.RawMessage(tt.raw))
++			if err == nil || err.Error() != tt.want {
++				t.Fatalf("ValidateConfig() error = %v, want %q", err, tt.want)
++			}
++			if strings.Contains(err.Error(), `12`) || strings.Contains(err.Error(), "contents") {
++				t.Fatalf("validation error exposed an input value or key: %v", err)
++			}
++		})
++	}
++}
++
++func TestValidateConfigHidesMalformedJSONDetails(t *testing.T) {
++	err := New().ValidateConfig(json.RawMessage(`{"app_id":"12", "private_key_pass_entry":`))
++	if err == nil || err.Error() != "invalid GitHub App configuration" {
++		t.Fatalf("ValidateConfig() error = %v, want sanitized malformed-config error", err)
 +	}
 +}
 diff --git a/internal/plugins/githubapp/container_config.go b/internal/plugins/githubapp/container_config.go
@@ -5374,15 +5508,16 @@ index 0000000..ce552e5
 +}
 diff --git a/internal/plugins/githubapp/plugin.go b/internal/plugins/githubapp/plugin.go
 new file mode 100644
-index 0000000..f6feddb
+index 0000000..62eeaae
 --- /dev/null
 +++ b/internal/plugins/githubapp/plugin.go
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,116 @@
 +package githubapp
 +
 +import (
 +	"context"
 +	"encoding/json"
++	"errors"
 +	"fmt"
 +	"strings"
 +
@@ -5402,6 +5537,7 @@ index 0000000..f6feddb
 +		Notices: []string{
 +			"Store the RSA private key with pass as dch/github-app/<AppID>/private-key.",
 +			"Without a legacy repository setting, tokens can access every repository in the GitHub App installation, limited by the selected permissions.",
++			"Use the numeric installation ID from the GitHub App installation settings URL; do not enter the App ID or Client ID.",
 +		},
 +		Fields: []plugins.Field{
 +			{Name: "app_id", Label: "App ID", Required: true, Kind: plugins.FieldText},
@@ -5427,6 +5563,10 @@ index 0000000..f6feddb
 +func decodeConfig(raw json.RawMessage) (Config, error) {
 +	var cfg Config
 +	if err := json.Unmarshal(raw, &cfg); err != nil {
++		var fieldErr configFieldError
++		if errors.As(err, &fieldErr) {
++			return Config{}, fieldErr
++		}
 +		return Config{}, fmt.Errorf("invalid GitHub App configuration")
 +	}
 +	for name, value := range cfg.Permissions {
@@ -8784,10 +8924,10 @@ index 7bcbf8a..62eece7 100644
  	}
 diff --git a/specs/2026-10-24-project-plugins-spec.html b/specs/2026-10-24-project-plugins-spec.html
 new file mode 100644
-index 0000000..60fce18
+index 0000000..645f902
 --- /dev/null
 +++ b/specs/2026-10-24-project-plugins-spec.html
-@@ -0,0 +1,3216 @@
+@@ -0,0 +1,3229 @@
 +<!doctype html>
 +<html lang="zh-Hant" data-theme="paper" data-mode="auto" data-style="80">
 +<head>
@@ -9659,7 +9799,7 @@ index 0000000..60fce18
 +<button class="am-btn" type="button" data-am="copy" data-done="已複製 ✓">複製源稿</button>
 +</div>
 +<main class="am-doc">
-+<header class="am-head"><p class="am-colophon">Generated by <a href="https://github.com/QingYunA/answer-me-with-html" target="_blank" rel="noopener">Answer me with HTML</a> 0.5.7 · 2026-10-25 09:01 · <a href="https://github.com/QingYunA/answer-me-with-html" target="_blank" rel="noopener">★ Star on GitHub</a></p><h1>Project Plugins 與 GitHub App 認證規格</h1><p class="am-sub">已核准：通用 plugin 架構修訂</p></header>
++<header class="am-head"><p class="am-colophon">Generated by <a href="https://github.com/QingYunA/answer-me-with-html" target="_blank" rel="noopener">Answer me with HTML</a> 0.5.7 · 2026-10-25 10:45 · <a href="https://github.com/QingYunA/answer-me-with-html" target="_blank" rel="noopener">★ Star on GitHub</a></p><h1>Project Plugins 與 GitHub App 認證規格</h1><p class="am-sub">已核准：通用 plugin 架構修訂</p></header>
 +<div class="am-doc-layout">
 +<nav class="am-toc" aria-label="目錄"><a href="#panel-A">A · 問題、目標與使用情境</a><a href="#panel-B">B · 通用架構與公開契約</a><a href="#panel-C">C · 生命週期、狀態與失敗策略</a><a href="#panel-D">D · Host JSON 與 local.d</a><a href="#panel-E">E · GitHub Unix Socket 與安全邊界</a><a href="#panel-F">F · GitHub Token、Git 與 gh</a><a href="#panel-G">G · GitHub 事件對應與常駐服務</a><a href="#panel-H">H · 驗收、測試與範圍外</a></nav><div class="am-doc-body">
 +<section class="am-panel" id="panel-A">
@@ -9903,7 +10043,8 @@ index 0000000..60fce18
 +<header class="am-panel-head"><span class="am-panel-id">E</span><h2>GitHub Unix Socket 與安全邊界</h2></header>
 +<div class="am-panel-body"><figure class="am-diagram am-flow"><svg viewBox="0 0 1010 147" width="1010" height="147" role="img" aria-label="流程圖：Git、Credential Helper、curl Unix Socket、GH、gh wrapper、Host HTTP Server、pass 與 GPG、GitHub API" xmlns="http://www.w3.org/2000/svg"><defs><marker id="am4-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="am-arrow" d="M0,0 L10,5 L0,10 z"/></marker></defs><g></g><g><g data-step="0"><path class="am-edge" d="M78,113 L89.5,113 Q101,113 112.5,113 L124,113" marker-end="url(#am4-arrow)"/></g><g data-step="1"><path class="am-edge" d="M256.8,113 L268.3,113 Q279.8,113 308.7,95.8 L337.6,78.5" marker-end="url(#am4-arrow)"/></g><g data-step="2"><path class="am-edge" d="M78,42 L89.5,42 Q101,42 121.9,42 L142.9,42" marker-end="url(#am4-arrow)"/></g><g data-step="3"><path class="am-edge" d="M237.9,42 L258.9,42 Q279.8,42 291.3,44.5 L302.8,47" marker-end="url(#am4-arrow)"/></g><g data-step="4"><path class="am-edge" d="M431.1,74.8 L460.6,81.2 Q490.2,87.5 519.7,81.4 L549.2,75.3" marker-end="url(#am4-arrow)"/></g><g data-step="5"><path class="am-edge" d="M672.2,78.5 L729.5,97 Q786.7,115.5 836.7,115.5 L886.6,115.5" marker-end="url(#am4-arrow)"/><g class="am-edge-label"><rect x="743.6" y="106.5" width="86.4" height="18" rx="3"/><text x="786.7" y="115.5" text-anchor="middle" dominant-baseline="central">取得 RSA 私鑰</text></g></g><g data-step="6"><path class="am-edge" d="M686.9,61 L736.8,61 Q786.7,61 839.8,54.5 L892.8,47.9" marker-end="url(#am4-arrow)"/><g class="am-edge-label"><rect x="710.9" y="52" width="151.7" height="18" rx="3"/><text x="786.7" y="61" text-anchor="middle" dominant-baseline="central">JWT 換 Installation Token</text></g></g><g data-step="7"><path class="am-edge" d="M892.8,36.1 L839.8,29.5 Q786.7,23 736.8,34.2 L686.9,45.5" marker-end="url(#am4-arrow)"/><g class="am-edge-label"><rect x="753" y="14" width="67.5" height="18" rx="3"/><text x="786.7" y="23" text-anchor="middle" dominant-baseline="central">記憶體快取</text></g></g><g data-step="8"><path class="am-edge" d="M549.2,59.7 L519.7,59.1 Q490.2,58.5 460.6,59.1 L431.1,59.7" marker-end="url(#am4-arrow)"/><g class="am-edge-label"><rect x="455.1" y="49.5" width="70" height="18" rx="3"/><text x="490.2" y="58.5" text-anchor="middle" dominant-baseline="central">短期 Token</text></g></g></g><g><g class="am-node am-node--rect" data-key="Git" data-step="0"><rect class="am-node-shape" x="14" y="95.5" width="64" height="35" rx="3"/><text x="46" y="113" text-anchor="middle" dominant-baseline="central" class="am-node-text">Git</text></g><g class="am-node am-node--rect" data-key="Credential Helper" data-step="0"><rect class="am-node-shape" x="124" y="95.5" width="132.8" height="35" rx="3"/><text x="190.4" y="113" text-anchor="middle" dominant-baseline="central" class="am-node-text">Credential Helper</text></g><g class="am-node am-node--rect" data-key="curl Unix Socket" data-step="1"><rect class="am-node-shape" x="302.8" y="43.5" width="128.4" height="35" rx="3"/><text x="367" y="61" text-anchor="middle" dominant-baseline="central" class="am-node-text">curl Unix Socket</text></g><g class="am-node am-node--rect" data-key="GH" data-step="2"><rect class="am-node-shape" x="14" y="24.5" width="64" height="35" rx="3"/><text x="46" y="42" text-anchor="middle" dominant-baseline="central" class="am-node-text">GH</text></g><g class="am-node am-node--rect" data-key="gh wrapper" data-step="2"><rect class="am-node-shape" x="142.9" y="24.5" width="95.1" height="35" rx="3"/><text x="190.4" y="42" text-anchor="middle" dominant-baseline="central" class="am-node-text">gh wrapper</text></g><g class="am-node am-node--rect" data-key="Host HTTP Server" data-step="4"><rect class="am-node-shape" x="549.2" y="43.5" width="137.7" height="35" rx="3"/><text x="618" y="61" text-anchor="middle" dominant-baseline="central" class="am-node-text">Host HTTP Server</text></g><g class="am-node am-node--rect" data-key="pass 與 GPG" data-step="5"><rect class="am-node-shape" x="886.6" y="98" width="109.1" height="35" rx="3"/><text x="941.1" y="115.5" text-anchor="middle" dominant-baseline="central" class="am-node-text">pass 與 GPG</text></g><g class="am-node am-node--rect" data-key="GitHub API" data-step="6"><rect class="am-node-shape" x="892.8" y="24.5" width="96.6" height="35" rx="3"/><text x="941.1" y="42" text-anchor="middle" dominant-baseline="central" class="am-node-text">GitHub API</text></g></g></svg></figure>
 +<div class="am-md"><p>Host server 由 githubapp 實作，使用同一份 dch binary。
-+每個 server 固定服務一個 Project 與一個 owner/repository。
++每個 server 固定服務一個 Project 與指定 Installation。
++新設定沿用 Installation 授權的 Repository 範圍；既有明確 repo 限制繼續有效。
 +容器不能指定 pass entry、App、repository 或權限。
 +HTTP 只監聽 Unix Socket，不開 TCP port。</p>
 +<p>只提供 GET /credential 與 GET /health。
@@ -9924,19 +10065,23 @@ index 0000000..60fce18
 +<p>能連接 Socket 的容器程序可取得該 Project Token。
 +此設計不提供不可信任容器的完整隔離。
 +Docker 管理員仍能存取掛載。
-+授權限於所需 repo；Branch Protection 與 CI 權限另設。
++Installation 應只授權所需 repo；Branch Protection 與 CI 權限另設。
 +不掛載 pass、GPG Key 或 App Private Key。</p>
 +</div></div>
 +</section>
 +<section class="am-panel" id="panel-F">
 +<header class="am-panel-head"><span class="am-panel-id">F</span><h2>GitHub Token、Git 與 gh</h2></header>
-+<div class="am-panel-body"><div class="am-md"><p>GitHub 表單收集 App ID、Installation ID 與 pass entry。
-+同時收集 owner/repository 與所需權限。
-+Contents 與 pull_requests 各可選 read／write。
-+驗證 repo 屬於指定 owner，Token 限制在該 repo 與權限。
-+建立 App、安裝 App 與匯入私鑰由使用者先完成。</p>
++<div class="am-panel-body"><div class="am-md"><p>GitHub 表單只收集 App ID、Installation ID 與所需權限。
++Private key pass entry 與 Owner/repository 不再顯示輸入欄位。
++新設定從 Host pass 的 <code>dch/github-app/&lt;App ID&gt;/private-key</code> 讀取私鑰。</p>
++<p>新設定省略 Token request 的 repositories，沿用 Installation 已授權的 Repository 範圍。
++既有明確 pass entry 與單一 repo 保留；重新設定不默默擴大原本範圍。</p>
++<p>Contents 與 pull_requests 各可選 read／write，或不要求該權限。
++至少必須要求一種權限；兩者都不要求時拒絕啟用。
++既有 repo 限制仍驗證其 Installation 並限制 Token；新設定只限制所選權限。</p>
++<p>建立 App、安裝 App 與匯入私鑰由使用者先完成。</p>
 +<p>使用參數陣列呼叫 pass，不拼接 shell 指令。
-+拒絕空白或選項形式的 pass entry。
++缺少 pass entry 時使用上述預設；拒絕不安全或選項形式的明確 pass entry。
 +支援 GitHub 提供的 RSA PEM 私鑰。
 +JWT 使用 RS256，iss 使用 App ID。
 +iat 回溯 60 秒，exp 不超過未來 10 分鐘。</p>
@@ -10428,7 +10573,8 @@ index 0000000..60fce18
 +```
 +
 +Host server 由 githubapp 實作，使用同一份 dch binary。
-+每個 server 固定服務一個 Project 與一個 owner/repository。
++每個 server 固定服務一個 Project 與指定 Installation。
++新設定沿用 Installation 授權的 Repository 範圍；既有明確 repo 限制繼續有效。
 +容器不能指定 pass entry、App、repository 或權限。
 +HTTP 只監聽 Unix Socket，不開 TCP port。
 +
@@ -10454,19 +10600,26 @@ index 0000000..60fce18
 +能連接 Socket 的容器程序可取得該 Project Token。
 +此設計不提供不可信任容器的完整隔離。
 +Docker 管理員仍能存取掛載。
-+授權限於所需 repo；Branch Protection 與 CI 權限另設。
++Installation 應只授權所需 repo；Branch Protection 與 CI 權限另設。
 +不掛載 pass、GPG Key 或 App Private Key。
 +
 +## F GitHub Token、Git 與 gh
 +
-+GitHub 表單收集 App ID、Installation ID 與 pass entry。
-+同時收集 owner/repository 與所需權限。
-+Contents 與 pull_requests 各可選 read／write。
-+驗證 repo 屬於指定 owner，Token 限制在該 repo 與權限。
++GitHub 表單只收集 App ID、Installation ID 與所需權限。
++Private key pass entry 與 Owner/repository 不再顯示輸入欄位。
++新設定從 Host pass 的 `dch/github-app/&lt;App ID&gt;/private-key` 讀取私鑰。
++
++新設定省略 Token request 的 repositories，沿用 Installation 已授權的 Repository 範圍。
++既有明確 pass entry 與單一 repo 保留；重新設定不默默擴大原本範圍。
++
++Contents 與 pull_requests 各可選 read／write，或不要求該權限。
++至少必須要求一種權限；兩者都不要求時拒絕啟用。
++既有 repo 限制仍驗證其 Installation 並限制 Token；新設定只限制所選權限。
++
 +建立 App、安裝 App 與匯入私鑰由使用者先完成。
 +
 +使用參數陣列呼叫 pass，不拼接 shell 指令。
-+拒絕空白或選項形式的 pass entry。
++缺少 pass entry 時使用上述預設；拒絕不安全或選項形式的明確 pass entry。
 +支援 GitHub 提供的 RSA PEM 私鑰。
 +JWT 使用 RS256，iss 使用 App ID。
 +iat 回溯 60 秒，exp 不超過未來 10 分鐘。
@@ -12006,10 +12159,10 @@ index 0000000..60fce18
 +</html>
 diff --git a/specs/2026-10-24-project-plugins-spec.md b/specs/2026-10-24-project-plugins-spec.md
 new file mode 100644
-index 0000000..e102beb
+index 0000000..e6a5795
 --- /dev/null
 +++ b/specs/2026-10-24-project-plugins-spec.md
-@@ -0,0 +1,440 @@
+@@ -0,0 +1,443 @@
 +---
 +title: Project Plugins 與 GitHub App 認證規格
 +subtitle: 已核准：通用 plugin 架構修訂
@@ -12287,11 +12440,14 @@ index 0000000..e102beb
 +GitHub 表單只收集 App ID、Installation ID 與所需權限。
 +Private key pass entry 與 Owner/repository 不再顯示輸入欄位。
 +新設定從 Host pass 的 `dch/github-app/<App ID>/private-key` 讀取私鑰。
++
 +新設定省略 Token request 的 repositories，沿用 Installation 已授權的 Repository 範圍。
 +既有明確 pass entry 與單一 repo 保留；重新設定不默默擴大原本範圍。
++
 +Contents 與 pull_requests 各可選 read／write，或不要求該權限。
 +至少必須要求一種權限；兩者都不要求時拒絕啟用。
 +既有 repo 限制仍驗證其 Installation 並限制 Token；新設定只限制所選權限。
++
 +建立 App、安裝 App 與匯入私鑰由使用者先完成。
 +
 +使用參數陣列呼叫 pass，不拼接 shell 指令。

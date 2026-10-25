@@ -4,7 +4,7 @@ subtitle: 通用 plugin 架構與 github-app · 待使用者最終核准
 lang: zh-Hant
 template: doc
 theme: shadcn
-source: 34b3414 → 5451f85
+source: 34b3414 → 823da26
 ---
 
 ## A 本次交付
@@ -21,6 +21,8 @@ source: 34b3414 → 5451f85
 - 預設 pass 路徑由 App ID 產生；舊自訂路徑仍有效。
 - 未設定 repository 時，Token 可存取 installation 內所有可用 repository。
 - 舊 repository 限制仍有效；至少必須選擇一項權限。
+- ID 或欄位型別錯誤顯示固定安全訊息，不回顯使用者輸入。
+- Installation ID 需由使用者填入；Notices 指出 installation settings URL 的數字。
 - local.d 取代舊 local.json。此不相容變更維持原決定。
 - 真實 Linux、Docker、systemd 與 GitHub 驗收仍未執行。
 
@@ -33,7 +35,9 @@ source: 34b3414 → 5451f85
 
 完整功能基準：`34b3414f2451e2e713a0880d3f533bd48e5b4614`。
 架構修訂比較基準：`e1b666a`；先前實作快照：`9cc1f5f`。
-T20 修訂基準：`29e8e6b`；最終實作快照：`5451f858193b38de930cec75c6375b69d3cda45b`。
+
+T20 修訂基準：`29e8e6b`；先前實作快照：`5451f85`。
+T21 修訂基準：`73050d4`；最終實作快照：`823da2667f6a542a78b1072dfcde9311ddd94bb5`。
 完整實作 diff 排除生成的審查頁與 diff 本身。
 
 [完整實作 diff](2026-10-24-project-plugins-changes.diff) · [已核准架構規格](2026-10-24-project-plugins-spec.html)
@@ -117,7 +121,7 @@ internal/
 檔案群組與責任表共同列出實際函式、型別與腳本名稱。
 
 本節不顯示原始碼、diff 或完整檔案展開控制。
-名稱、呼叫關係與索引依最終快照 `5451f85` 核對。
+名稱、呼叫關係與完整索引依最終快照 `823da26` 核對。
 
 ### G1 修改：local.d 合併與預覽
 
@@ -155,7 +159,7 @@ group internal/common/devcontainer_config.go: MergedDevcontainerConfig, readJSON
 | `internal/console/devcontainer.go` · `prepareProjectDevcontainer` | 透過 `mergedProjectConfig` 共用合併結果，再分派所有已啟用 plugin 的驗證。後續流程見 G5。 |
 | `.gitignore` | 忽略本 repository 的 local.d 設定。其他 Project 仍須自行設定忽略規則。 |
 
-變更索引（34b3414 → 5451f85；檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 823da26；檔案與新版本 hunk 起始行）：
 
 - `.gitignore:3`
 - `internal/common/devcontainer_config.go:3,10,19,104`
@@ -210,7 +214,7 @@ ScopedStore 是內建 Go plugin 的責任邊界，不是惡意程式 sandbox。
 停用或移除也清理殘留 Data；清理失敗保留可重試記錄。
 `PluginStatus` 使用通用 Message；ServiceActive 不再是核心必要欄位。
 
-變更索引（34b3414 → 5451f85；檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 823da26；檔案與新版本 hunk 起始行）：
 
 - `internal/commands/register.go:19`
 - `internal/common/config_store.go:7,95,154`
@@ -230,7 +234,26 @@ ScopedStore 是內建 Go plugin 的責任邊界，不是惡意程式 sandbox。
 <label><input type="checkbox" id="check-G3"> 我已確認 G3 的決策與風險</label>
 ```
 
-入口：Socket 的 `/credential` handler 呼叫 `Provider.Token`。
+入口一：Console 表單由 Manager.Enable 呼叫 plugin 驗證。
+錯誤先指出欄位；未通過驗證時不啟用服務。
+
+```flow TB
+(Console 確認表單) -> Manager.Enable: 呼叫
+Manager.Enable -> Plugin.ValidateConfig: 呼叫
+Plugin.ValidateConfig -> decodeConfig: 呼叫
+decodeConfig -> Config.UnmarshalJSON: json.Unmarshal 呼叫
+Config.UnmarshalJSON -> decodeID: 解析兩種 ID
+Config.UnmarshalJSON -> safeConfigTypeError: 其他欄位型別錯誤時呼叫
+Plugin.ValidateConfig -> Config.Validate: 解碼成功後呼叫
+Config.Validate -> validateIDs: 檢查正數與缺少欄位
+configFieldError --> decodeConfig: 資料：允許顯示的固定訊息
+decodeConfig --> Console 錯誤訊息: 回傳安全錯誤，不回顯輸入
+group internal/plugins/manager.go: Manager.Enable
+group internal/plugins/githubapp/plugin.go: Plugin.ValidateConfig, decodeConfig
+group internal/plugins/githubapp/config.go: Config.UnmarshalJSON, decodeID, safeConfigTypeError, Config.Validate, validateIDs, configFieldError
+```
+
+入口二：Socket 的 `/credential` handler 呼叫 `Provider.Token`。
 圖中 mint 的子步驟均由 `Provider.mint` 呼叫。
 
 ```flow TB
@@ -249,6 +272,9 @@ group internal/plugins/githubapp/provider.go: Provider.Token, awaitRefresh, Prov
 
 | 檔案／函式或型別 | 責任與後續影響 |
 | --- | --- |
+| `internal/plugins/githubapp/plugin.go` · `Plugin.ValidateConfig`、`decodeConfig` | 呼叫 JSON 解碼與驗證。只保留已知 configFieldError；其他解碼錯誤回報固定通用訊息。 |
+| `internal/plugins/githubapp/config.go` · `Config.UnmarshalJSON`、`decodeID`、`safeConfigTypeError` | 接受十進位文字與 numeric ID；ID 與允許欄位的型別錯誤轉為固定訊息，不回顯值。 |
+| 同檔 · `configFieldError`（型別）、`configFieldError.Error` | 標記可安全顯示的固定錯誤。缺少、零與負數 ID 由 validateIDs 指出欄位。 |
 | `internal/plugins/githubapp/config.go` · `Config`、`Config.normalized` | 空白 pass entry 衍生為 `dch/github-app/<AppID>/private-key`。明確設定的舊路徑與 repository 保留。 |
 | 同檔 · `Config.Validate`、`validateIDs`、`validatePassEntry`、`validateOptionalRepository`、`validatePermissions` | 驗證正整數 ID、pass 路徑與可選 owner/repository。權限只接受 contents／pull_requests 的 read/write，且不可全空。 |
 | `internal/plugins/githubapp/provider.go` · `Provider`、`ProviderOptions`、`NewProvider` | 先正規化 pass entry，再保存設定、逾時、HTTP client 與時鐘；停用 HTTP redirect。 |
@@ -257,7 +283,7 @@ group internal/plugins/githubapp/provider.go: Provider.Token, awaitRefresh, Prov
 | 同檔 · `Provider.createAppJWT`、`Provider.verifyRepositoryInstallation` | 簽發 App JWT。僅舊 repository 非空時查詢該 repo，且 installation ID 必須符合設定。 |
 | 同檔 · `Provider.requestInstallationToken` | 始終送出選定權限。未設定 repository 時省略 repositories；舊設定只送出該 repo。驗證 Token 格式及有效期，結果只留 Host 記憶體。 |
 
-變更索引（34b3414 → 5451f85；檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 823da26；檔案與新版本 hunk 起始行）：
 
 - `internal/plugins/githubapp/config.go:1`
 - `internal/plugins/githubapp/provider.go:1`
@@ -307,7 +333,7 @@ group internal/plugins/githubapp/server.go: Serve, prepareCredentialSocket, cred
 | `internal/plugins/githubapp/server.go` · `prepareCredentialSocket`、`listenCredentialSocket`、`acquireServerLock` | 排除重複 server、處理舊 Socket、建立 0600 Unix Socket；不開 TCP。 |
 | 同檔 · `healthHandler`、`credentialHandler`、`CheckCredential` | health 不取 Token；credential 呼叫 Provider.Token 並帶 no-store；啟用驗證不輸出 Token。 |
 
-變更索引（34b3414 → 5451f85；檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 823da26；檔案與新版本 hunk 起始行）：
 
 - `internal/commands/commands.go:1,134`
 - `internal/plugins/githubapp/manager.go:1`
@@ -359,7 +385,7 @@ group internal/console/devcontainer.go: projectExecutor.Exec, prepareProjectDevc
 容器只需要 Git、gh、curl 與 POSIX shell，不複製 dch binary。
 接線保留既有 lifecycle hooks；腳本從固定 Socket 取得短期 Token。
 
-變更索引（34b3414 → 5451f85；檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 823da26；檔案與新版本 hunk 起始行）：
 
 - `internal/console/devcontainer.go:1,11,59,95`
 - `internal/plugins/githubapp/adapter.go:1`
@@ -378,6 +404,9 @@ group internal/console/devcontainer.go: projectExecutor.Exec, prepareProjectDevc
 入口：Project → Plugins。Console 只理解 Definition 與通用狀態。
 GitHub metadata 移除 pass entry 與 Owner/repository 提問。
 Notices 顯示預設 pass 路徑與 installation 全範圍。
+Notices 指示填入 installation settings URL 的數字 ID。
+App ID 與 Client ID 不能取代 Installation ID。
+
 既有 JSON 未建模欄位保留；隱藏欄位不會清除舊限制。
 
 ```flow TB
@@ -460,7 +489,7 @@ Shell 程序不綁定結束後即取消的 operation context。
 
 取消註冊保留工作區與容器；清理失敗保留註冊與重試資料。
 
-變更索引（34b3414 → 5451f85；檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 823da26；檔案與新版本 hunk 起始行）：
 
 - `internal/console/build.go:1,16`
 - `internal/console/connect.go:1`
@@ -483,7 +512,7 @@ Shell 程序不綁定結束後即取消的 operation context。
 GitHub 舊測試已移入 `internal/plugins/githubapp/`，保留認證與 Socket 回歸範圍。
 最終指令、複雜度與 reviewer 結論見 F。
 
-變更索引（34b3414 → 5451f85；檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 823da26；檔案與新版本 hunk 起始行）：
 
 - `internal/commands/plugin_serve_test.go:1`
 - `internal/commands/register_test.go:28,44`
@@ -520,7 +549,7 @@ README 說明 Console 路徑、GitHub 前置條件、local.d 遷移與人工 Lin
 規格 Markdown／HTML 包含獨立目錄樹、module／file 職責與 Host／Container 邊界。
 `.gitattributes` 保留審查產物中的字面空白。
 
-變更索引（34b3414 → 5451f85；檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 823da26；檔案與新版本 hunk 起始行）：
 
 - `.gitattributes:1`
 - `README.md:5,21,57,68`
@@ -617,11 +646,37 @@ Socket --> Git 或 gh: no-store 回應
 
 ## F 測試與獨立 Review
 
-T20 最終驗證快照：`5451f858193b38de930cec75c6375b69d3cda45b`。
-本輪修訂基準為 `29e8e6b`。
-下列歷史結果不代表 T20 或更新後 HTML 已通過覆核。
+T21 最終驗證快照：`823da2667f6a542a78b1072dfcde9311ddd94bb5`。
+修訂基準為 `73050d4`。
+使用者確認將 Client ID 填入 Installation ID，造成原本通用錯誤。
+本輪新增欄位診斷；未新增 installation 自動查找。
 
-| 本輪指令或範圍 | 結果 | 證據與限制 |
+| T21 指令或範圍 | 結果 | 證據與限制 |
+| --- | --- | --- |
+| focused config／Console 測試 | PASS | 真實 prompt → Plugin.ValidateConfig；合法文字／numeric ID、Client ID 誤填、型別錯誤與清理訊息 |
+| go test ./... -count=1 | PASS | 主代理於 823da26 執行；全部 6 個 package 通過 |
+| go build ./...／go vet ./... | PASS | 主代理於 823da26 執行 |
+| git diff --check | PASS | 主代理檢查最終差異 |
+| Cognitive Complexity | PASS | gocognit v1.3.0；AST 辨識 445 個新增／修改具名函式，最高 15，0 違規 |
+| 完整 diff 與索引 | PASS | 34b3414 → 823da26；逐檔核對新版本 hunk 起始行 |
+| 更新後 HTML 產生與內容 | PASS | am render --no-open；7 panels、11 flow、1 tree、1 sequence；6 個未勾選框；C 無原始碼或 diff |
+| 更新後 HTML 瀏覽器與互動 | PASS | Chromium 155；1440×900 與 390×844；11 個 flow、6 個初始未勾選且可切換框；無水平溢出或 CSP 錯誤 |
+| Standards＋Spec review | PASS | 73050d4 → 823da26；0 項未解決 finding；enable-config-code.md |
+| Security review | PASS | 73050d4 → 823da26；0 項安全 finding；enable-config-security.md；靜態 review |
+
+T21 已保存行為 red → green。
+原本 ID 與型別錯誤只回傳通用訊息，focused 測試先失敗。
+修正後 focused 測試通過，malformed JSON 仍使用清理後通用訊息。
+缺少、零與負數 ID 的六個欄位案例亦先失敗再通過。
+證據：`.scratch/project-plugins/enable-config-evidence.md`。
+測試未呼叫會操作 Docker／systemd 的正式 Manager.Enable。
+
+以下為 T20 與更早歷史證據，不代表更新後 T21 已通過覆核。
+
+T20 驗證快照：`5451f858193b38de930cec75c6375b69d3cda45b`。
+T20 修訂基準為 `29e8e6b`。
+
+| T20 指令或範圍 | 結果 | 證據與限制 |
 | --- | --- | --- |
 | go test ./... -count=1 | PASS | 主代理於 5451f85 執行；全部 6 個 package 通過 |
 | go build ./... | PASS | 主代理於 5451f85 執行；通過 |
@@ -635,7 +690,7 @@ T20 最終驗證快照：`5451f858193b38de930cec75c6375b69d3cda45b`。
 | UID／重啟／關閉 dch 後認證 | NOT RUN | 需在真實 Linux 容器執行 README 驗收 |
 | go test -race ./... | NOT RUN | CGO 關閉，且無 C compiler |
 
-| 本輪獨立 reviewer | 範圍 | 結論 |
+| T20 獨立 reviewer | 範圍 | 結論 |
 | --- | --- | --- |
 | Standards＋Spec | 29e8e6b → 5451f85；簡化表單、預設 pass 與 installation 範圍 | 最終重查 0 項未解決 finding；複雜度超標已修正 |
 | Security | 29e8e6b → 5451f85；表單、舊設定、Token 請求與 pass 邊界 | 最終重查 0 項安全 finding；靜態 review，未連線真實 GitHub |
@@ -644,7 +699,7 @@ T20 最終驗證快照：`5451f858193b38de930cec75c6375b69d3cda45b`。
 八個既有超標函式未修改，仍屬本次範圍外。
 此結果不表示整個 repository 已無既存違規。
 
-本輪報告：`simplified-code.md`、`simplified-security.md`。
+T20 報告：`simplified-code.md`、`simplified-security.md`。
 報告位於 `.scratch/project-plugins/reviews/`。
 
 | 歷史證據 | 快照與結果 | 限制 |
