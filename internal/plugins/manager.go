@@ -67,6 +67,147 @@ func (m *Manager) Register(plugin Plugin) error {
 	return nil
 }
 
+// SupportsInteractive reports whether a plugin accepts interactive configuration.
+func (m *Manager) SupportsInteractive(id string) bool {
+	plugin, ok := m.plugins[id]
+	if !ok {
+		return false
+	}
+	_, ok = plugin.(InteractiveConfigurer)
+	return ok
+}
+
+// SharedConfig returns a copy of one plugin's opaque shared settings.
+func (m *Manager) SharedConfig(ctx context.Context, id string) (json.RawMessage, error) {
+	if _, err := m.plugin(id); err != nil {
+		return nil, err
+	}
+	cfg, err := common.ReadConfig()
+	if err != nil {
+		return nil, err
+	}
+	return cloneRaw(cfg.PluginSettings[id]), nil
+}
+
+// SetSharedConfig validates and stores one plugin's opaque shared settings.
+func (m *Manager) SetSharedConfig(ctx context.Context, id string, raw json.RawMessage) error {
+	plugin, err := m.plugin(id)
+	if err != nil {
+		return err
+	}
+	if validator, ok := plugin.(SharedSettingsValidator); ok {
+		if err := validator.ValidateSharedSettings(raw); err != nil {
+			return fmt.Errorf("plugin %q shared settings: %w", id, err)
+		}
+	}
+	return common.UpdateConfig(func(config *common.Config) error {
+		if config.PluginSettings == nil {
+			config.PluginSettings = map[string]json.RawMessage{}
+		}
+		if raw == nil {
+			delete(config.PluginSettings, id)
+		} else {
+			config.PluginSettings[id] = cloneRaw(raw)
+		}
+		return nil
+	})
+}
+
+// ConfigureAndEnable runs interactive preparation outside the project lock,
+// then rechecks the snapshot and commits its candidate while holding that lock.
+func (m *Manager) ConfigureAndEnable(ctx context.Context, projectPath, id string, interaction Interaction) error {
+	plugin, err := m.plugin(id)
+	if err != nil {
+		return err
+	}
+	configurer, ok := plugin.(InteractiveConfigurer)
+	if !ok {
+		return errors.New("plugin does not support interactive configuration")
+	}
+	path, err := common.NormalizePath(projectPath)
+	if err != nil {
+		return err
+	}
+	before, err := m.loadProject(path)
+	if err != nil {
+		return err
+	}
+	if err := requireRegisteredProject(path); err != nil {
+		return err
+	}
+	oldConfig, wasEnabled := before.Enabled[id]
+	oldState := before.States[id]
+	shared, err := m.SharedConfig(ctx, id)
+	if err != nil {
+		return err
+	}
+	host, err := m.hostContext(path, id, oldConfig, oldState.Data, nil, nil)
+	if err != nil {
+		return err
+	}
+	host.SharedConfig = cloneRaw(shared)
+	prepared, err := configurer.Configure(ctx, ConfigureContext{Host: host, SharedConfig: cloneRaw(shared)}, interaction)
+	if err != nil {
+		return pluginError(id, EventEnable, err)
+	}
+	if err := plugin.ValidateConfig(prepared.Config); err != nil {
+		return pluginError(id, EventEnable, err)
+	}
+	if prepared.Commit == nil {
+		return errors.New("interactive configuration has no commit hook")
+	}
+	lockedPath, unlock, err := m.lockProject(ctx, path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	current, err := m.loadProject(lockedPath)
+	if err != nil {
+		return err
+	}
+	if err := m.validateInteractiveSnapshot(ctx, lockedPath, id, current, wasEnabled, oldConfig, oldState.Data, shared); err != nil {
+		return err
+	}
+	commitHost, err := m.hostContext(lockedPath, id, prepared.Config, oldState.Data, oldConfig, oldState.Data)
+	if err != nil {
+		return err
+	}
+	result, err := prepared.Commit(ctx, commitHost)
+	if err != nil {
+		return pluginError(id, EventEnable, err)
+	}
+	return m.commitEnable(lockedPath, id, prepared.Config, oldConfig, wasEnabled, result)
+}
+
+func (m *Manager) validateInteractiveSnapshot(ctx context.Context, path, id string, current common.ProjectPlugins, wasEnabled bool, oldConfig, oldState, shared json.RawMessage) error {
+	if err := requireRegisteredProject(path); err != nil {
+		return err
+	}
+	currentConfig, enabled := current.Enabled[id]
+	if enabled != wasEnabled || !bytes.Equal(currentConfig, oldConfig) || !bytes.Equal(current.States[id].Data, oldState) {
+		return errors.New("project plugin configuration changed during interactive setup; retry")
+	}
+	latestShared, err := m.SharedConfig(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(latestShared, shared) {
+		return errors.New("plugin shared settings changed during interactive setup; retry")
+	}
+	return nil
+}
+
+func requireRegisteredProject(path string) error {
+	registered, err := projectRegistered(path)
+	if err != nil {
+		return err
+	}
+	if !registered {
+		return fmt.Errorf("project %s is no longer registered", path)
+	}
+	return nil
+}
+
 func (m *Manager) validateAliases(id string, plugin Plugin, aliases []string) error {
 	if len(aliases) > 0 {
 		if _, ok := plugin.(HostService); !ok {
@@ -157,7 +298,10 @@ func (m *Manager) Enable(ctx context.Context, projectPath, id string, raw json.R
 	}
 	oldConfig, wasEnabled := project.Enabled[id]
 	oldState, hadState := project.States[id]
-	host := m.hostContext(path, id, raw, oldState.Data, oldConfig, oldState.Data)
+	host, err := m.hostContext(path, id, raw, oldState.Data, oldConfig, oldState.Data)
+	if err != nil {
+		return err
+	}
 	if !wasEnabled {
 		host.PreviousConfig = nil
 	}
@@ -219,7 +363,11 @@ func (m *Manager) Disable(ctx context.Context, projectPath, id string) error {
 	if !has(project.Enabled, id) && len(state.Data) == 0 {
 		return nil
 	}
-	result, err := plugin.HandleHost(ctx, m.hostContext(path, id, config, state.Data, nil, nil), EventDisable)
+	host, err := m.hostContext(path, id, config, state.Data, nil, nil)
+	if err != nil {
+		return err
+	}
+	result, err := plugin.HandleHost(ctx, host, EventDisable)
 	if err != nil {
 		return pluginError(id, EventDisable, err)
 	}
@@ -262,7 +410,11 @@ func (m *Manager) Prepare(ctx context.Context, projectPath string, event Event) 
 	for _, id := range sortedEnabled(project) {
 		plugin := m.plugins[id]
 		state := project.States[id]
-		result, err := plugin.HandleHost(ctx, m.hostContext(path, id, project.Enabled[id], state.Data, nil, nil), event)
+		host, err := m.hostContext(path, id, project.Enabled[id], state.Data, nil, nil)
+		if err != nil {
+			return err
+		}
+		result, err := plugin.HandleHost(ctx, host, event)
 		if err != nil {
 			return pluginError(id, event, err)
 		}
@@ -346,7 +498,11 @@ func (m *Manager) Statuses(ctx context.Context, projectPath string) ([]PluginSta
 	statuses := make([]PluginStatus, 0, len(m.plugins))
 	for _, id := range m.pluginIDs() {
 		state := project.States[id]
-		status, err := m.plugins[id].Status(ctx, m.hostContext(path, id, project.Enabled[id], state.Data, nil, nil))
+		host, err := m.hostContext(path, id, project.Enabled[id], state.Data, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		status, err := m.plugins[id].Status(ctx, host)
 		if err != nil {
 			return nil, pluginError(id, "status", err)
 		}
@@ -444,11 +600,7 @@ func (m *Manager) RemoveProject(ctx context.Context, projectPath string) error {
 		if !has(project.Enabled, id) && len(state.Data) == 0 {
 			continue
 		}
-		result, err := m.plugins[id].HandleHost(ctx, m.hostContext(path, id, project.Enabled[id], state.Data, nil, nil), EventDisable)
-		if err != nil {
-			return pluginError(id, EventDisable, err)
-		}
-		if err := m.commitDisable(path, id, result); err != nil {
+		if err := m.cleanupProjectPlugin(ctx, path, id, project.Enabled[id], state.Data); err != nil {
 			return err
 		}
 		project, err = m.loadProject(path)
@@ -457,6 +609,18 @@ func (m *Manager) RemoveProject(ctx context.Context, projectPath string) error {
 		}
 	}
 	return common.RemoveProjectRegistration(path)
+}
+
+func (m *Manager) cleanupProjectPlugin(ctx context.Context, path, id string, config, state json.RawMessage) error {
+	host, err := m.hostContext(path, id, config, state, nil, nil)
+	if err != nil {
+		return err
+	}
+	result, err := m.plugins[id].HandleHost(ctx, host, EventDisable)
+	if err != nil {
+		return pluginError(id, EventDisable, err)
+	}
+	return m.commitDisable(path, id, result)
 }
 
 func projectRegistered(path string) (bool, error) {
@@ -495,7 +659,10 @@ func (m *Manager) Serve(ctx context.Context, projectPath, id string) error {
 		return fmt.Errorf("plugin %q is not enabled", id)
 	}
 	state := project.States[id]
-	host := m.hostContext(path, id, project.Enabled[id], state.Data, nil, nil)
+	host, err := m.hostContext(path, id, project.Enabled[id], state.Data, nil, nil)
+	if err != nil {
+		return err
+	}
 	return service.ServeHost(ctx, host)
 }
 
@@ -518,8 +685,12 @@ func (m *Manager) commitHookResult(path, id string, result Result) error {
 	})
 }
 
-func (m *Manager) hostContext(path, id string, config, state, previousConfig, previousState json.RawMessage) HostContext {
-	return HostContext{ProjectPath: path, Config: cloneRaw(config), State: cloneRaw(state), PreviousConfig: cloneRaw(previousConfig), PreviousState: cloneRaw(previousState), Store: scopedStore{path: path, id: id}}
+func (m *Manager) hostContext(path, id string, config, state, previousConfig, previousState json.RawMessage) (HostContext, error) {
+	shared, err := m.SharedConfig(context.Background(), id)
+	if err != nil {
+		return HostContext{}, err
+	}
+	return HostContext{ProjectPath: path, SharedConfig: shared, Config: cloneRaw(config), State: cloneRaw(state), PreviousConfig: cloneRaw(previousConfig), PreviousState: cloneRaw(previousState), Store: scopedStore{path: path, id: id}}, nil
 }
 
 func (m *Manager) loadProject(path string) (common.ProjectPlugins, error) {

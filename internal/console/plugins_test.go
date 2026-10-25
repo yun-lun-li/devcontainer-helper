@@ -42,17 +42,14 @@ func TestPromptPluginConfigUsesGenericFieldsAndNestedPaths(t *testing.T) {
 	}
 }
 
-func TestGitHubAppPromptOutputPassesPluginValidation(t *testing.T) {
+func TestGitHubAppSharedSettingsPromptUsesMetadataAndValidation(t *testing.T) {
 	tests := []struct {
 		name    string
 		current json.RawMessage
 		input   string
-		wantErr string
 	}{
-		{name: "text IDs", input: "123\n456\n2\n1\n"},
-		{name: "numeric current IDs", current: json.RawMessage(`{"app_id":123,"installation_id":456}`), input: "\n\n2\n1\n"},
-		{name: "App ID URL", input: "https://github.com/apps/example\n456\n2\n1\n", wantErr: "app_id must be a decimal numeric App ID (not Client ID)"},
-		{name: "Installation ID Client ID", input: "123\nIv1.example\n2\n1\n", wantErr: "installation_id must be the numeric installation ID from the installation settings URL, not the App ID or Client ID"},
+		{name: "client ID", input: "Iv1example\n"},
+		{name: "keeps current client ID", current: json.RawMessage(`{"client_id":"Iv1example"}`), input: "\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -60,20 +57,22 @@ func TestGitHubAppPromptOutputPassesPluginValidation(t *testing.T) {
 			input = bufio.NewReader(strings.NewReader(tt.input))
 			defer func() { input = previous }()
 
-			definition := githubapp.New().Definition()
+			plugin := githubapp.New()
+			definition := plugin.Definition()
+			definition.Fields = definition.SharedFields
 			got, err := promptPluginConfig(definition, tt.current)
 			if err != nil {
 				t.Fatalf("promptPluginConfig() error = %v", err)
 			}
-			err = githubapp.New().ValidateConfig(got)
-			if tt.wantErr != "" {
-				if err == nil || err.Error() != tt.wantErr {
-					t.Fatalf("GitHub App validation error = %v, want %q", err, tt.wantErr)
-				}
-				return
+			var values map[string]string
+			if err := json.Unmarshal(got, &values); err != nil {
+				t.Fatal(err)
 			}
-			if err != nil {
-				t.Fatalf("GitHub App rejected prompt output %s: %v", got, err)
+			if err := plugin.ValidateSharedSettings(got); err != nil {
+				t.Fatalf("GitHub App rejected shared settings %s: %v", got, err)
+			}
+			if values["client_id"] != "Iv1example" {
+				t.Fatalf("shared settings = %s, want Client ID preserved", got)
 			}
 		})
 	}
@@ -142,6 +141,24 @@ func TestPluginOptionsReflectIndependentDefinitionsAndPendingState(t *testing.T)
 	got := pluginOptions(definitions, statuses)
 	if len(got) != 2 || got[0] != "First: enabled" || got[1] != "Second: disabled · Build required · waiting" {
 		t.Fatalf("plugin options = %v", got)
+	}
+}
+
+func TestInteractivePluginActionsAreIndependentOfSharedFieldMetadata(t *testing.T) {
+	definition := plugins.Definition{ID: "sample", Name: "Sample"}
+	got := choosePluginActions(definition, plugins.PluginStatus{Enabled: true}, true)
+	want := []string{"Show status", "Configure and enable", "Reauthorize", "Disable"}
+	if len(got) != len(want) {
+		t.Fatalf("actions = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("actions = %v, want %v", got, want)
+		}
+	}
+	got = choosePluginActions(definition, plugins.PluginStatus{Enabled: true}, false)
+	if len(got) != 3 || got[2] != "Disable" {
+		t.Fatalf("non-interactive actions = %v", got)
 	}
 }
 

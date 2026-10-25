@@ -7,7 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"dch/internal/plugins"
 )
@@ -64,7 +69,8 @@ func statusFor(statuses []plugins.PluginStatus, id string) plugins.PluginStatus 
 }
 
 func configurePlugin(project Project, manager *plugins.Manager, definition plugins.Definition, status plugins.PluginStatus) error {
-	choice, err := choosePluginAction(definition, status)
+	interactive := manager.SupportsInteractive(definition.ID)
+	choice, err := choosePluginAction(definition, status, interactive)
 	if err != nil {
 		return err
 	}
@@ -74,17 +80,19 @@ func configurePlugin(project Project, manager *plugins.Manager, definition plugi
 	if status.Enabled && choice == 0 {
 		return showPluginStatus(definition, status)
 	}
-	if status.Enabled && choice == 2 {
+	if status.Enabled && choice == len(choosePluginActions(definition, status, interactive))-1 {
 		return disableProjectPlugin(project, manager, definition)
+	}
+	if interactive {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return manager.ConfigureAndEnable(ctx, project.Path, definition.ID, consoleInteraction{})
 	}
 	return enableProjectPlugin(project, manager, definition)
 }
 
-func choosePluginAction(definition plugins.Definition, status plugins.PluginStatus) (int, error) {
-	actions := []string{"Configure and enable"}
-	if status.Enabled {
-		actions = []string{"Show status", "Configure and enable", "Disable"}
-	}
+func choosePluginAction(definition plugins.Definition, status plugins.PluginStatus, interactive bool) (int, error) {
+	actions := choosePluginActions(definition, status, interactive)
 	actions = append(actions, "Back")
 	choice, err := choose(definition.Name, actions)
 	if err != nil {
@@ -97,6 +105,61 @@ func choosePluginAction(definition plugins.Definition, status plugins.PluginStat
 		return -1, nil
 	}
 	return choice, nil
+}
+
+func choosePluginActions(definition plugins.Definition, status plugins.PluginStatus, interactive bool) []string {
+	actions := []string{"Configure and enable"}
+	if status.Enabled {
+		actions = []string{"Show status", "Configure and enable", "Disable"}
+		if interactive {
+			actions = []string{"Show status", "Configure and enable", "Reauthorize", "Disable"}
+		}
+	}
+	return actions
+}
+
+type consoleInteraction struct{}
+
+func (consoleInteraction) Notify(_ context.Context, title, message string) error {
+	screenNotice(title, message)
+	return nil
+}
+func (consoleInteraction) Select(_ context.Context, title string, options []plugins.Choice, defaultIndex int) (string, error) {
+	labels := make([]string, len(options))
+	values := make([]string, len(options))
+	for i, option := range options {
+		labels[i] = option.Label
+		values[i] = option.Value
+	}
+	if defaultIndex >= 0 && defaultIndex < len(options) && defaultIndex != 0 {
+		labels[0], labels[defaultIndex] = labels[defaultIndex], labels[0]
+		values[0], values[defaultIndex] = values[defaultIndex], values[0]
+	}
+	choice, err := choose(title, labels)
+	if err != nil {
+		return "", err
+	}
+	return values[choice], nil
+}
+func (consoleInteraction) Confirm(_ context.Context, title, message string) (bool, error) {
+	choice, err := choose(title+"\n\n"+message, []string{"Continue", "Cancel"})
+	return choice == 0, err
+}
+func (consoleInteraction) OpenBrowser(ctx context.Context, url string) error {
+	command := exec.CommandContext(ctx, "xdg-open", url)
+	if err := command.Start(); err != nil {
+		fmt.Println("Open this URL in your browser:", url)
+		return nil
+	}
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(3 * time.Second):
+	}
+	return nil
 }
 
 func showPluginStatus(definition plugins.Definition, status plugins.PluginStatus) error {

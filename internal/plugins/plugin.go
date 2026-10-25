@@ -58,7 +58,9 @@ type Definition struct {
 	Name        string
 	Description string
 	Fields      []Field
-	Notices     []string
+	// SharedFields describes plugin-owned settings used across projects.
+	SharedFields []Field
+	Notices      []string
 	// ServiceAliases are internal command names and require HostService support.
 	ServiceAliases []string
 }
@@ -88,11 +90,44 @@ type PluginStatus struct {
 // PreviousState let Enable restore earlier values if its rollback succeeds.
 type HostContext struct {
 	ProjectPath    string
+	SharedConfig   json.RawMessage
 	Config         json.RawMessage
 	State          json.RawMessage
 	PreviousConfig json.RawMessage
 	PreviousState  json.RawMessage
 	Store          ScopedStore
+}
+
+// SharedSettingsValidator validates one plugin's opaque global settings.
+type SharedSettingsValidator interface {
+	ValidateSharedSettings(json.RawMessage) error
+}
+
+// ConfigureContext contains the project and opaque shared settings for an
+// interactive authorization or configuration flow.
+type ConfigureContext struct {
+	Host         HostContext
+	SharedConfig json.RawMessage
+}
+
+// Interaction provides generic host UI capabilities to an interactive plugin.
+type Interaction interface {
+	Notify(context.Context, string, string) error
+	Select(context.Context, string, []Choice, int) (string, error)
+	Confirm(context.Context, string, string) (bool, error)
+	OpenBrowser(context.Context, string) error
+}
+
+// PreparedConfiguration holds a candidate project config and a commit hook.
+// The hook runs under the project lock after Manager revalidates its snapshot.
+type PreparedConfiguration struct {
+	Config json.RawMessage
+	Commit func(context.Context, HostContext) (Result, error)
+}
+
+// InteractiveConfigurer prepares a configuration without holding the project lock.
+type InteractiveConfigurer interface {
+	Configure(context.Context, ConfigureContext, Interaction) (PreparedConfiguration, error)
 }
 
 // ContainerContext gives a plugin its own project data and a host-side executor

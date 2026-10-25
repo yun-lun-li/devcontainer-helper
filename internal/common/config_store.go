@@ -11,9 +11,10 @@ import (
 )
 
 type Config struct {
-	Version        int                       `json:"version"`
-	Projects       []string                  `json:"projects"`
-	ProjectPlugins map[string]ProjectPlugins `json:"project_plugins,omitempty"`
+	Version        int                        `json:"version"`
+	Projects       []string                   `json:"projects"`
+	PluginSettings map[string]json.RawMessage `json:"plugin_settings,omitempty"`
+	ProjectPlugins map[string]ProjectPlugins  `json:"project_plugins,omitempty"`
 }
 
 // ProjectPlugins stores host-side configuration and ownership state for one project.

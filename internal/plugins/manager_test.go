@@ -46,6 +46,64 @@ func TestEnableKeepsPluginConfigAndScopedState(t *testing.T) {
 	}
 }
 
+func TestConfigureAndEnableRejectsChangedSharedSettingsBeforeCommit(t *testing.T) {
+	manager, project := newManagerFixture(t)
+	plugin := &interactiveFake{fakePlugin: fakePlugin{definition: Definition{ID: "interactive"}}}
+	if err := manager.Register(plugin); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetSharedConfig(context.Background(), "interactive", json.RawMessage(`{"client":"first"}`)); err != nil {
+		t.Fatal(err)
+	}
+	plugin.configure = func(_ context.Context, setup ConfigureContext, _ Interaction) (PreparedConfiguration, error) {
+		if !sameJSON(setup.SharedConfig, `{"client":"first"}`) {
+			t.Fatalf("shared config = %s", setup.SharedConfig)
+		}
+		if err := manager.SetSharedConfig(context.Background(), "interactive", json.RawMessage(`{"client":"second"}`)); err != nil {
+			t.Fatal(err)
+		}
+		return PreparedConfiguration{Config: json.RawMessage(`{"candidate":true}`), Commit: func(context.Context, HostContext) (Result, error) { plugin.committed = true; return Result{}, nil }}, nil
+	}
+	err := manager.ConfigureAndEnable(context.Background(), project, "interactive", nil)
+	if err == nil || !strings.Contains(err.Error(), "shared settings changed") {
+		t.Fatalf("ConfigureAndEnable error = %v", err)
+	}
+	if plugin.committed {
+		t.Fatal("stale candidate was committed")
+	}
+}
+
+func TestConfigureAndEnableRejectsChangedProjectStateBeforeCommit(t *testing.T) {
+	manager, project := newManagerFixture(t)
+	plugin := &interactiveFake{fakePlugin: fakePlugin{definition: Definition{ID: "interactive"}}}
+	if err := manager.Register(plugin); err != nil {
+		t.Fatal(err)
+	}
+	plugin.configure = func(_ context.Context, setup ConfigureContext, _ Interaction) (PreparedConfiguration, error) {
+		if err := setup.Host.Store.SaveState(json.RawMessage(`{"changed":true}`)); err != nil {
+			t.Fatal(err)
+		}
+		return PreparedConfiguration{Config: json.RawMessage(`{}`), Commit: func(context.Context, HostContext) (Result, error) { plugin.committed = true; return Result{}, nil }}, nil
+	}
+	err := manager.ConfigureAndEnable(context.Background(), project, "interactive", nil)
+	if err == nil || !strings.Contains(err.Error(), "project plugin configuration changed") {
+		t.Fatalf("ConfigureAndEnable error = %v", err)
+	}
+	if plugin.committed {
+		t.Fatal("stale candidate was committed")
+	}
+}
+
+type interactiveFake struct {
+	fakePlugin
+	configure func(context.Context, ConfigureContext, Interaction) (PreparedConfiguration, error)
+	committed bool
+}
+
+func (p *interactiveFake) Configure(ctx context.Context, setup ConfigureContext, interaction Interaction) (PreparedConfiguration, error) {
+	return p.configure(ctx, setup, interaction)
+}
+
 func TestServeCanRunWhileEnableWaitsForServiceReadiness(t *testing.T) {
 	manager, project := newManagerFixture(t)
 	served := make(chan struct{}, 1)

@@ -170,9 +170,13 @@ func setupStartPluginFixture(t *testing.T) startPluginFixture {
 	})}
 	go credentialServer.Serve(listener)
 	t.Cleanup(func() { _ = credentialServer.Close() })
-	cfg := githubapp.Config{AppID: 1, InstallationID: 2, PrivateKeyPassEntry: "test/key", Repository: "octo/repo", Permissions: map[string]string{"contents": "read"}}
+	cfg := githubapp.Config{ClientID: "Iv1example", ProjectPath: project, UserID: 1, RepositoryID: 2, Repository: "octo/repo"}
 	manager := newConsoleTestManager(t)
-	if err := common.SaveConfig(common.Config{Version: 1, Projects: []string{project}}); err != nil {
+	shared, err := json.Marshal(githubapp.SharedConfig{ClientID: cfg.ClientID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := common.SaveConfig(common.Config{Version: 1, Projects: []string{project}, PluginSettings: map[string]json.RawMessage{"github-app": shared}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.Enable(context.Background(), project, "github-app", rawPluginConfig(t, cfg)); err != nil {
@@ -228,6 +232,16 @@ func assertSuccessfulPluginStart(t *testing.T, fixture startPluginFixture) {
 
 func assertFailedAdapterInstall(t *testing.T, fixture startPluginFixture) {
 	t.Helper()
+	if err := common.UpdateConfig(func(config *common.Config) error {
+		project := config.ProjectPlugins[fixture.project]
+		state := project.States["github-app"]
+		state.BuildPending = true
+		project.States["github-app"] = state
+		config.ProjectPlugins[fixture.project] = project
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := fixture.manager.Enable(context.Background(), fixture.project, "github-app", rawPluginConfig(t, fixture.cfg)); err != nil {
 		t.Fatal(err)
 	}

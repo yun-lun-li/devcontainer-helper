@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"dch/internal/common"
+	"dch/internal/plugins"
 	"dch/internal/plugins/githubapp"
 )
 
@@ -36,6 +37,19 @@ func TestAvailableProjectActions(t *testing.T) {
 		if !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("state %q: got %v, want %v", tc.state, got, tc.want)
 		}
+	}
+}
+
+func TestProjectsMenuQuitsFromEmptyProjectsMenu(t *testing.T) {
+	t.Setenv("DCH_CONFIG", filepath.Join(t.TempDir(), "config"))
+	if err := common.SaveConfig(common.Config{Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	previousInput := input
+	input = bufio.NewReader(strings.NewReader("2\n"))
+	defer func() { input = previousInput }()
+	if err := projectsMenu(plugins.NewManager()); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -19,6 +20,7 @@ func TestConfigRoundTripsProjectPluginsAndLoadsLegacyConfig(t *testing.T) {
 		t.Fatalf("legacy config = %#v, %v", cfg, err)
 	}
 	cfg.ProjectPlugins = map[string]ProjectPlugins{}
+	cfg.PluginSettings = map[string]json.RawMessage{"plugin-a": json.RawMessage(`{"opaque":[1,true]}`)}
 	cfg.ProjectPlugins["/project"] = ProjectPlugins{
 		Enabled: map[string]json.RawMessage{"plugin-a": json.RawMessage(`{"setting":"value"}`)},
 		States:  map[string]PluginState{"plugin-a": {Data: json.RawMessage(`{"private":"state"}`), BuildPending: true}},
@@ -31,6 +33,16 @@ func TestConfigRoundTripsProjectPluginsAndLoadsLegacyConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := loaded.ProjectPlugins["/project"]
+	var sharedGot, sharedWant any
+	if err := json.Unmarshal(loaded.PluginSettings["plugin-a"], &sharedGot); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(json.RawMessage(`{"opaque":[1,true]}`), &sharedWant); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(sharedGot, sharedWant) {
+		t.Fatalf("plugin settings = %s", loaded.PluginSettings["plugin-a"])
+	}
 	if !sameJSON(got.Enabled["plugin-a"], `{"setting":"value"}`) || !sameJSON(got.States["plugin-a"].Data, `{"private":"state"}`) || !got.States["plugin-a"].BuildPending {
 		t.Fatalf("plugin state did not round trip: %#v", got)
 	}

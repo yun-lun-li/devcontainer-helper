@@ -29,26 +29,61 @@ func projectsMenu(manager *plugins.Manager) error {
 		if err != nil {
 			return err
 		}
-		if len(projects) == 0 {
-			return chooseEmptyProjects()
-		}
-		statusErr := common.UpdateStatuses(projects)
-		options, err := projectOptions(manager, projects)
+		project, hasProject, quit, err := selectProject(manager, projects)
 		if err != nil {
 			return err
 		}
-		options = append(options, "Quit console")
-		choice, err := chooseProjectList(options, statusErr)
-		if errors.Is(err, errCancelled) || choice == len(projects) {
+		if quit {
 			return nil
 		}
-		if err != nil {
-			return err
+		if !hasProject {
+			continue
 		}
-		if err := projectMenu(manager, projects[choice].Path); err != nil {
+		if err := projectMenu(manager, project.Path); err != nil {
 			return err
 		}
 	}
+}
+
+func selectProject(manager *plugins.Manager, projects []Project) (Project, bool, bool, error) {
+	if len(projects) == 0 {
+		quit, err := emptyProjectsMenu(manager)
+		return Project{}, false, quit, err
+	}
+	statusErr := common.UpdateStatuses(projects)
+	options, err := projectOptions(manager, projects)
+	if err != nil {
+		return Project{}, false, false, err
+	}
+	choice, err := chooseProjectList(append(options, "Settings", "Quit console"), statusErr)
+	if errors.Is(err, errCancelled) {
+		return Project{}, false, true, nil
+	}
+	if err != nil {
+		return Project{}, false, false, err
+	}
+	return selectedProject(manager, projects, choice)
+}
+
+func emptyProjectsMenu(manager *plugins.Manager) (bool, error) {
+	choice, err := choose("Projects", []string{"Settings", "Quit console"})
+	if errors.Is(err, errCancelled) || choice == 1 {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return false, pluginSettingsMenu(manager)
+}
+
+func selectedProject(manager *plugins.Manager, projects []Project, choice int) (Project, bool, bool, error) {
+	if choice == len(projects)+1 {
+		return Project{}, false, true, nil
+	}
+	if choice == len(projects) {
+		return Project{}, false, false, pluginSettingsMenu(manager)
+	}
+	return projects[choice], true, false, nil
 }
 
 func chooseEmptyProjects() error {
