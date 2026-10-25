@@ -39,18 +39,18 @@ source: 34b3414 → 759b9d8
 ~ 合併設定
 ```
 
-G1–G6 對應下方可點擊變更群組。
+G1–G6 對應下方直接展開的變更群組。
 G7 是測試；G8 是文件。
 「新增／修改」指群組內包含兩類檔案。
 
 ## C 程式碼與決策
 
-每個按鈕開啟實際 diff 彈窗。
+八組實際 diff 直接顯示，不需點擊。
 新檔案完整列出；既有檔案保留完整 hunk。
 生成的規格 HTML 另見完整 diff。
 
 ```html
-<div><p><button type="button" data-review-dialog="review-G1">G1 修改：local.d 合併與預覽：開啟實際 diff</button></p><p>確認舊 local.json 靜默停用。需要保留設定者須自行搬移。</p><p>需你 review：是</p><label><input type="checkbox" id="check-G1"> 我已確認 G1 的決策與風險</label><details><summary>檔案與新版本 hunk 起始行</summary><ul><li>internal/common/devcontainer_config.go:3,10,19</li><li>internal/console/config_preview.go:18,72</li><li>.gitignore:3</li></ul></details></div><dialog id="review-G1" aria-label="修改：local.d 合併與預覽" style="max-width:94vw;max-height:90vh"><form method="dialog"><button>關閉 G1</button></form><h3>修改：local.d 合併與預覽</h3><p>版本 759b9d8；以下為完整檔案 diff（保留完整 hunk）。行號見 @@ 的 + 區段。</p><h4>internal/common/devcontainer_config.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/common/devcontainer_config.go b/internal/common/devcontainer_config.go
+<div><h3>G1 修改：local.d 合併與預覽</h3><p>確認舊 local.json 靜默停用。需要保留設定者須自行搬移。</p><p>需你 review：是</p><label><input type="checkbox" id="check-G1"> 我已確認 G1 的決策與風險</label><p><strong>檔案與新版本 hunk 起始行</strong></p><ul><li>internal/common/devcontainer_config.go:3,10,19</li><li>internal/console/config_preview.go:18,72</li><li>.gitignore:3</li></ul></div><div id="review-G1"><p>版本 759b9d8；以下為完整檔案 diff（保留完整 hunk）。行號見 @@ 的 + 區段。</p><h4>internal/common/devcontainer_config.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/common/devcontainer_config.go b/internal/common/devcontainer_config.go
 index 02065fc..6f2df42 100644
 --- a/internal/common/devcontainer_config.go
 +++ b/internal/common/devcontainer_config.go
@@ -109,7 +109,7 @@ index 02065fc..6f2df42 100644
  	var out bytes.Buffer
  	encoder := json.NewEncoder(&amp;out)
  	encoder.SetIndent(&quot;&quot;, &quot;  &quot;)
-</code></pre><h4>internal/console/config_preview.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/console/config_preview.go b/internal/console/config_preview.go
+</code></pre><h4>internal/console/config_preview.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/console/config_preview.go b/internal/console/config_preview.go
 index eeafd16..0259656 100644
 --- a/internal/console/config_preview.go
 +++ b/internal/console/config_preview.go
@@ -131,7 +131,7 @@ index eeafd16..0259656 100644
  	}
  	render()
  	for {
-</code></pre><h4>.gitignore</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/.gitignore b/.gitignore
+</code></pre><h4>.gitignore</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/.gitignore b/.gitignore
 index c31985e..4bf530f 100644
 --- a/.gitignore
 +++ b/.gitignore
@@ -140,8 +140,8 @@ index c31985e..4bf530f 100644
  
  .devcontainer/devcontainer.local.json
 +.devcontainer/devcontainer.local.d/
-</code></pre><form method="dialog"><button>關閉 G1</button></form></dialog>
-<div><p><button type="button" data-review-dialog="review-G2">G2 新增／修改：Project plugin 管理：開啟實際 diff</button></p><p>確認每個 Project 獨立設定與服務。摘要比對保護手改檔；失敗保留可重試狀態。</p><p>需你 review：是</p><label><input type="checkbox" id="check-G2"> 我已確認 G2 的決策與風險</label><details><summary>檔案與新版本 hunk 起始行</summary><ul><li>internal/plugins/registry.go:1</li><li>internal/plugins/manager.go:1</li><li>internal/common/config_store.go:7</li></ul></details></div><dialog id="review-G2" aria-label="新增／修改：Project plugin 管理" style="max-width:94vw;max-height:90vh"><form method="dialog"><button>關閉 G2</button></form><h3>新增／修改：Project plugin 管理</h3><p>版本 759b9d8；以下為完整檔案 diff（保留完整 hunk）。行號見 @@ 的 + 區段。</p><h4>internal/plugins/registry.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/plugins/registry.go b/internal/plugins/registry.go
+</code></pre></div>
+<div><h3>G2 新增／修改：Project plugin 管理</h3><p>確認每個 Project 獨立設定與服務。摘要比對保護手改檔；失敗保留可重試狀態。</p><p>需你 review：是</p><label><input type="checkbox" id="check-G2"> 我已確認 G2 的決策與風險</label><p><strong>檔案與新版本 hunk 起始行</strong></p><ul><li>internal/plugins/registry.go:1</li><li>internal/plugins/manager.go:1</li><li>internal/common/config_store.go:7</li></ul></div><div id="review-G2"><p>版本 759b9d8；以下為完整檔案 diff（保留完整 hunk）。行號見 @@ 的 + 區段。</p><h4>internal/plugins/registry.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/plugins/registry.go b/internal/plugins/registry.go
 new file mode 100644
 index 0000000..dbd5108
 --- /dev/null
@@ -157,7 +157,7 @@ index 0000000..dbd5108
 +func Builtins() []Plugin {
 +	return []Plugin{{ID: githubAppID, Name: &quot;GitHub App&quot;}}
 +}
-</code></pre><h4>internal/plugins/manager.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/plugins/manager.go b/internal/plugins/manager.go
+</code></pre><h4>internal/plugins/manager.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/plugins/manager.go b/internal/plugins/manager.go
 new file mode 100644
 index 0000000..b197254
 --- /dev/null
@@ -932,7 +932,7 @@ index 0000000..b197254
 +	}
 +	return func() { _ = syscall.Flock(fd, syscall.LOCK_UN); _ = file.Close() }, nil
 +}
-</code></pre><h4>internal/common/config_store.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/common/config_store.go b/internal/common/config_store.go
+</code></pre><h4>internal/common/config_store.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/common/config_store.go b/internal/common/config_store.go
 index 891c8c8..9fad571 100644
 --- a/internal/common/config_store.go
 +++ b/internal/common/config_store.go
@@ -973,8 +973,8 @@ index 891c8c8..9fad571 100644
  func configPath() (string, error) {
  	if p := os.Getenv(&quot;DCH_CONFIG&quot;); p != &quot;&quot; {
  		return filepath.Abs(p)
-</code></pre><form method="dialog"><button>關閉 G2</button></form></dialog>
-<div><p><button type="button" data-review-dialog="review-G3">G3 新增：GitHub App provider：開啟實際 diff</button></p><p>確認單一 repository 與選定權限。先用 App JWT 驗證 installation，再申請 Token。</p><p>需你 review：是</p><label><input type="checkbox" id="check-G3"> 我已確認 G3 的決策與風險</label><details><summary>檔案與新版本 hunk 起始行</summary><ul><li>internal/githubapp/config.go:1</li><li>internal/githubapp/provider.go:1</li></ul></details></div><dialog id="review-G3" aria-label="新增：GitHub App provider" style="max-width:94vw;max-height:90vh"><form method="dialog"><button>關閉 G3</button></form><h3>新增：GitHub App provider</h3><p>版本 759b9d8；以下為完整檔案 diff（保留完整 hunk）。行號見 @@ 的 + 區段。</p><h4>internal/githubapp/config.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/githubapp/config.go b/internal/githubapp/config.go
+</code></pre></div>
+<div><h3>G3 新增：GitHub App provider</h3><p>確認單一 repository 與選定權限。先用 App JWT 驗證 installation，再申請 Token。</p><p>需你 review：是</p><label><input type="checkbox" id="check-G3"> 我已確認 G3 的決策與風險</label><p><strong>檔案與新版本 hunk 起始行</strong></p><ul><li>internal/githubapp/config.go:1</li><li>internal/githubapp/provider.go:1</li></ul></div><div id="review-G3"><p>版本 759b9d8；以下為完整檔案 diff（保留完整 hunk）。行號見 @@ 的 + 區段。</p><h4>internal/githubapp/config.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/githubapp/config.go b/internal/githubapp/config.go
 new file mode 100644
 index 0000000..b1a5420
 --- /dev/null
@@ -1049,7 +1049,7 @@ index 0000000..b1a5420
 +	}
 +	return true
 +}
-</code></pre><h4>internal/githubapp/provider.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/githubapp/provider.go b/internal/githubapp/provider.go
+</code></pre><h4>internal/githubapp/provider.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/githubapp/provider.go b/internal/githubapp/provider.go
 new file mode 100644
 index 0000000..bd174b0
 --- /dev/null
@@ -1320,8 +1320,8 @@ index 0000000..bd174b0
 +	}
 +	return b.Buffer.Write(p)
 +}
-</code></pre><form method="dialog"><button>關閉 G3</button></form></dialog>
-<div><p><button type="button" data-review-dialog="review-G4">G4 新增：Host Unix Socket：開啟實際 diff</button></p><p>確認信任邊界：可連 Socket 的程序可取 Token。目錄 0700、Socket 0600；不開 TCP。</p><p>需你 review：是</p><label><input type="checkbox" id="check-G4"> 我已確認 G4 的決策與風險</label><details><summary>檔案與新版本 hunk 起始行</summary><ul><li>internal/githubapp/runtime.go:1</li><li>internal/githubapp/server.go:1</li></ul></details></div><dialog id="review-G4" aria-label="新增：Host Unix Socket" style="max-width:94vw;max-height:90vh"><form method="dialog"><button>關閉 G4</button></form><h3>新增：Host Unix Socket</h3><p>版本 759b9d8；以下為完整檔案 diff（保留完整 hunk）。行號見 @@ 的 + 區段。</p><h4>internal/githubapp/runtime.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/githubapp/runtime.go b/internal/githubapp/runtime.go
+</code></pre></div>
+<div><h3>G4 新增：Host Unix Socket</h3><p>確認信任邊界：可連 Socket 的程序可取 Token。目錄 0700、Socket 0600；不開 TCP。</p><p>需你 review：是</p><label><input type="checkbox" id="check-G4"> 我已確認 G4 的決策與風險</label><p><strong>檔案與新版本 hunk 起始行</strong></p><ul><li>internal/githubapp/runtime.go:1</li><li>internal/githubapp/server.go:1</li></ul></div><div id="review-G4"><p>版本 759b9d8；以下為完整檔案 diff（保留完整 hunk）。行號見 @@ 的 + 區段。</p><h4>internal/githubapp/runtime.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/githubapp/runtime.go b/internal/githubapp/runtime.go
 new file mode 100644
 index 0000000..1ec1dc3
 --- /dev/null
@@ -1378,7 +1378,7 @@ index 0000000..1ec1dc3
 +	stat, ok := info.Sys().(*syscall.Stat_t)
 +	return ok &amp;&amp; int(stat.Uid) == os.Getuid()
 +}
-</code></pre><h4>internal/githubapp/server.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/githubapp/server.go b/internal/githubapp/server.go
+</code></pre><h4>internal/githubapp/server.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/githubapp/server.go b/internal/githubapp/server.go
 new file mode 100644
 index 0000000..e2cd8ea
 --- /dev/null
@@ -1529,8 +1529,8 @@ index 0000000..e2cd8ea
 +		return (&amp;net.Dialer{}).DialContext(ctx, &quot;unix&quot;, path)
 +	}}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 +}
-</code></pre><form method="dialog"><button>關閉 G4</button></form></dialog>
-<div><p><button type="button" data-review-dialog="review-G5">G5 新增：Git／gh 容器接線：開啟實際 diff</button></p><p>確認唯讀掛載整個 runtime 目錄。HTTPS github.com 使用 helper；gh 子程序取得 GH_TOKEN。</p><p>需你 review：是</p><label><input type="checkbox" id="check-G5"> 我已確認 G5 的決策與風險</label><details><summary>檔案與新版本 hunk 起始行</summary><ul><li>internal/githubapp/adapter.go:1</li></ul></details></div><dialog id="review-G5" aria-label="新增：Git／gh 容器接線" style="max-width:94vw;max-height:90vh"><form method="dialog"><button>關閉 G5</button></form><h3>新增：Git／gh 容器接線</h3><p>版本 759b9d8；以下為完整檔案 diff（保留完整 hunk）。行號見 @@ 的 + 區段。</p><h4>internal/githubapp/adapter.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/githubapp/adapter.go b/internal/githubapp/adapter.go
+</code></pre></div>
+<div><h3>G5 新增：Git／gh 容器接線</h3><p>確認唯讀掛載整個 runtime 目錄。HTTPS github.com 使用 helper；gh 子程序取得 GH_TOKEN。</p><p>需你 review：是</p><label><input type="checkbox" id="check-G5"> 我已確認 G5 的決策與風險</label><p><strong>檔案與新版本 hunk 起始行</strong></p><ul><li>internal/githubapp/adapter.go:1</li></ul></div><div id="review-G5"><p>版本 759b9d8；以下為完整檔案 diff（保留完整 hunk）。行號見 @@ 的 + 區段。</p><h4>internal/githubapp/adapter.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/githubapp/adapter.go b/internal/githubapp/adapter.go
 new file mode 100644
 index 0000000..229d772
 --- /dev/null
@@ -1730,8 +1730,8 @@ index 0000000..229d772
 +	git config --global --add include.path &quot;$include&quot;
 +fi
 +`
-</code></pre><form method="dialog"><button>關閉 G5</button></form></dialog>
-<div><p><button type="button" data-review-dialog="review-G6">G6 新增／修改：Console 與執行生命週期：開啟實際 diff</button></p><p>確認既有容器待 Build 時阻擋 Start／Connect。Build 保留移除確認；移除前清理服務。</p><p>需你 review：是</p><label><input type="checkbox" id="check-G6"> 我已確認 G6 的決策與風險</label><details><summary>檔案與新版本 hunk 起始行</summary><ul><li>internal/console/plugins.go:1</li><li>internal/console/plugin_integration.go:1</li><li>internal/console/projects_menu.go:1,17,39,87,108,120,138,176,192</li><li>internal/console/devcontainer.go:1,11,70,116,126</li><li>internal/console/up.go:1</li><li>internal/console/build.go:1,42</li><li>internal/console/connect.go:1</li><li>internal/common/remove_project.go:2,24</li><li>internal/commands/commands.go:1,57,82</li></ul></details></div><dialog id="review-G6" aria-label="新增／修改：Console 與執行生命週期" style="max-width:94vw;max-height:90vh"><form method="dialog"><button>關閉 G6</button></form><h3>新增／修改：Console 與執行生命週期</h3><p>版本 759b9d8；以下為完整檔案 diff（保留完整 hunk）。行號見 @@ 的 + 區段。</p><h4>internal/console/plugins.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/console/plugins.go b/internal/console/plugins.go
+</code></pre></div>
+<div><h3>G6 新增／修改：Console 與執行生命週期</h3><p>確認既有容器待 Build 時阻擋 Start／Connect。Build 保留移除確認；移除前清理服務。</p><p>需你 review：是</p><label><input type="checkbox" id="check-G6"> 我已確認 G6 的決策與風險</label><p><strong>檔案與新版本 hunk 起始行</strong></p><ul><li>internal/console/plugins.go:1</li><li>internal/console/plugin_integration.go:1</li><li>internal/console/projects_menu.go:1,17,39,87,108,120,138,176,192</li><li>internal/console/devcontainer.go:1,11,70,116,126</li><li>internal/console/up.go:1</li><li>internal/console/build.go:1,42</li><li>internal/console/connect.go:1</li><li>internal/common/remove_project.go:2,24</li><li>internal/commands/commands.go:1,57,82</li></ul></div><div id="review-G6"><p>版本 759b9d8；以下為完整檔案 diff（保留完整 hunk）。行號見 @@ 的 + 區段。</p><h4>internal/console/plugins.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/console/plugins.go b/internal/console/plugins.go
 new file mode 100644
 index 0000000..a26ce66
 --- /dev/null
@@ -1894,7 +1894,7 @@ index 0000000..a26ce66
 +	}
 +	return value, nil
 +}
-</code></pre><h4>internal/console/plugin_integration.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/console/plugin_integration.go b/internal/console/plugin_integration.go
+</code></pre><h4>internal/console/plugin_integration.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/console/plugin_integration.go b/internal/console/plugin_integration.go
 new file mode 100644
 index 0000000..2aae0ef
 --- /dev/null
@@ -2050,7 +2050,7 @@ index 0000000..2aae0ef
 +	return len(data), nil
 +}
 +func (output *boundedOutput) Bytes() []byte { return output.data }
-</code></pre><h4>internal/console/projects_menu.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/console/projects_menu.go b/internal/console/projects_menu.go
+</code></pre><h4>internal/console/projects_menu.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/console/projects_menu.go b/internal/console/projects_menu.go
 index 597ba7c..c5db69f 100644
 --- a/internal/console/projects_menu.go
 +++ b/internal/console/projects_menu.go
@@ -2200,7 +2200,7 @@ index 597ba7c..c5db69f 100644
 -	return append(actions, actionConfig, actionRemove, actionBack)
 +	return append(actions, actionPlugins, actionConfig, actionRemove, actionBack)
  }
-</code></pre><h4>internal/console/devcontainer.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/console/devcontainer.go b/internal/console/devcontainer.go
+</code></pre><h4>internal/console/devcontainer.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/console/devcontainer.go b/internal/console/devcontainer.go
 index d2491ba..57bbc4c 100644
 --- a/internal/console/devcontainer.go
 +++ b/internal/console/devcontainer.go
@@ -2344,7 +2344,7 @@ index d2491ba..57bbc4c 100644
  }
  
  func invokeDevcontainerWithCleanup(cleanup func(), args ...string) error {
-</code></pre><h4>internal/console/up.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/console/up.go b/internal/console/up.go
+</code></pre><h4>internal/console/up.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/console/up.go b/internal/console/up.go
 index 825ac04..0bd878f 100644
 --- a/internal/console/up.go
 +++ b/internal/console/up.go
@@ -2394,7 +2394,7 @@ index 825ac04..0bd878f 100644
 +func hasExistingContainer(p Project) bool {
 +	return p.ID != &quot;&quot; || strings.HasPrefix(p.State, &quot;RUNNING&quot;) || strings.HasPrefix(p.State, &quot;STOPPED&quot;)
  }
-</code></pre><h4>internal/console/build.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/console/build.go b/internal/console/build.go
+</code></pre><h4>internal/console/build.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/console/build.go b/internal/console/build.go
 index 7f93d79..535c1f4 100644
 --- a/internal/console/build.go
 +++ b/internal/console/build.go
@@ -2450,7 +2450,7 @@ index 7f93d79..535c1f4 100644
 +	}
 +	return manager.MarkBuilt(p.Path)
  }
-</code></pre><h4>internal/console/connect.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/console/connect.go b/internal/console/connect.go
+</code></pre><h4>internal/console/connect.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/console/connect.go b/internal/console/connect.go
 index 3e6b215..10fb9be 100644
 --- a/internal/console/connect.go
 +++ b/internal/console/connect.go
@@ -2498,7 +2498,7 @@ index 3e6b215..10fb9be 100644
 +	args := append([]string{&quot;exec&quot;, &quot;--workspace-folder&quot;, p.Path}, githubapp.AdapterInstallCommand()...)
 +	return invokeProjectDevcontainerQuiet(p, args...)
  }
-</code></pre><h4>internal/common/remove_project.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/common/remove_project.go b/internal/common/remove_project.go
+</code></pre><h4>internal/common/remove_project.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/common/remove_project.go b/internal/common/remove_project.go
 index 2a3c8cb..ba8b925 100644
 --- a/internal/common/remove_project.go
 +++ b/internal/common/remove_project.go
@@ -2537,7 +2537,7 @@ index 2a3c8cb..ba8b925 100644
  			return SaveConfig(cfg)
  		}
  	}
-</code></pre><h4>internal/commands/commands.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/commands/commands.go b/internal/commands/commands.go
+</code></pre><h4>internal/commands/commands.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/commands/commands.go b/internal/commands/commands.go
 index 65ae9d1..4315979 100644
 --- a/internal/commands/commands.go
 +++ b/internal/commands/commands.go
@@ -2578,8 +2578,8 @@ index 65ae9d1..4315979 100644
  Navigation:    ↑ / ↓ + Enter, q/Esc to go back (or numbered selection if not a TTY)
  `)
  }
-</code></pre><form method="dialog"><button>關閉 G6</button></form></dialog>
-<div><p><button type="button" data-review-dialog="review-G7">G7 新增／修改：行為測試：開啟實際 diff</button></p><p>測試是上述行為的證據。涵蓋假指令、真實暫存 Socket 與 Git plumbing。</p><p>需你 review：否</p><details><summary>檔案與新版本 hunk 起始行</summary><ul><li>internal/commands/plugin_serve_test.go:1</li><li>internal/common/common_test.go:65</li><li>internal/common/config_store_test.go:1</li><li>internal/common/remove_project_test.go:1</li><li>internal/console/build_plugin_test.go:1</li><li>internal/console/config_preview_test.go:1</li><li>internal/console/devcontainer_plugin_test.go:1</li><li>internal/console/plugin_integration_test.go:1</li><li>internal/console/plugins_test.go:1</li><li>internal/console/projects_menu_test.go:10</li><li>internal/githubapp/adapter_test.go:1</li><li>internal/githubapp/config_test.go:1</li><li>internal/githubapp/provider_test.go:1</li><li>internal/githubapp/server_test.go:1</li><li>internal/plugins/manager_test.go:1</li></ul></details></div><dialog id="review-G7" aria-label="新增／修改：行為測試" style="max-width:94vw;max-height:90vh"><form method="dialog"><button>關閉 G7</button></form><h3>新增／修改：行為測試</h3><p>版本 759b9d8；以下為完整檔案 diff（保留完整 hunk）。行號見 @@ 的 + 區段。</p><h4>internal/commands/plugin_serve_test.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/commands/plugin_serve_test.go b/internal/commands/plugin_serve_test.go
+</code></pre></div>
+<div><h3>G7 新增／修改：行為測試</h3><p>測試是上述行為的證據。涵蓋假指令、真實暫存 Socket 與 Git plumbing。</p><p>需你 review：否</p><p><strong>檔案與新版本 hunk 起始行</strong></p><ul><li>internal/commands/plugin_serve_test.go:1</li><li>internal/common/common_test.go:65</li><li>internal/common/config_store_test.go:1</li><li>internal/common/remove_project_test.go:1</li><li>internal/console/build_plugin_test.go:1</li><li>internal/console/config_preview_test.go:1</li><li>internal/console/devcontainer_plugin_test.go:1</li><li>internal/console/plugin_integration_test.go:1</li><li>internal/console/plugins_test.go:1</li><li>internal/console/projects_menu_test.go:10</li><li>internal/githubapp/adapter_test.go:1</li><li>internal/githubapp/config_test.go:1</li><li>internal/githubapp/provider_test.go:1</li><li>internal/githubapp/server_test.go:1</li><li>internal/plugins/manager_test.go:1</li></ul></div><div id="review-G7"><p>版本 759b9d8；以下為完整檔案 diff（保留完整 hunk）。行號見 @@ 的 + 區段。</p><h4>internal/commands/plugin_serve_test.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/commands/plugin_serve_test.go b/internal/commands/plugin_serve_test.go
 new file mode 100644
 index 0000000..b6cc2a7
 --- /dev/null
@@ -2605,7 +2605,7 @@ index 0000000..b6cc2a7
 +		t.Fatalf(&quot;invalid invocation error=%v&quot;, err)
 +	}
 +}
-</code></pre><h4>internal/common/common_test.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/common/common_test.go b/internal/common/common_test.go
+</code></pre><h4>internal/common/common_test.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/common/common_test.go b/internal/common/common_test.go
 index 898400f..3918def 100644
 --- a/internal/common/common_test.go
 +++ b/internal/common/common_test.go
@@ -2730,7 +2730,7 @@ index 898400f..3918def 100644
  func TestSaveLoadConfig(t *testing.T) {
  	path := filepath.Join(t.TempDir(), &quot;.dch&quot;, &quot;config&quot;)
  	t.Setenv(&quot;DCH_CONFIG&quot;, path)
-</code></pre><h4>internal/common/config_store_test.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/common/config_store_test.go b/internal/common/config_store_test.go
+</code></pre><h4>internal/common/config_store_test.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/common/config_store_test.go b/internal/common/config_store_test.go
 new file mode 100644
 index 0000000..5ad2a93
 --- /dev/null
@@ -2773,7 +2773,7 @@ index 0000000..5ad2a93
 +		t.Fatalf(&quot;plugin state did not round trip: %#v&quot;, got)
 +	}
 +}
-</code></pre><h4>internal/common/remove_project_test.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/common/remove_project_test.go b/internal/common/remove_project_test.go
+</code></pre><h4>internal/common/remove_project_test.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/common/remove_project_test.go b/internal/common/remove_project_test.go
 new file mode 100644
 index 0000000..2d3028f
 --- /dev/null
@@ -2847,7 +2847,7 @@ index 0000000..2d3028f
 +		})
 +	}
 +}
-</code></pre><h4>internal/console/build_plugin_test.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/console/build_plugin_test.go b/internal/console/build_plugin_test.go
+</code></pre><h4>internal/console/build_plugin_test.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/console/build_plugin_test.go b/internal/console/build_plugin_test.go
 new file mode 100644
 index 0000000..7034e41
 --- /dev/null
@@ -2945,7 +2945,7 @@ index 0000000..7034e41
 +		t.Fatalf(&quot;Build did not request rebuild: %s&quot;, args)
 +	}
 +}
-</code></pre><h4>internal/console/config_preview_test.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/console/config_preview_test.go b/internal/console/config_preview_test.go
+</code></pre><h4>internal/console/config_preview_test.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/console/config_preview_test.go b/internal/console/config_preview_test.go
 new file mode 100644
 index 0000000..3c713d3
 --- /dev/null
@@ -3001,7 +3001,7 @@ index 0000000..3c713d3
 +		t.Fatalf(&quot;preview mentions legacy local file: %s&quot;, output)
 +	}
 +}
-</code></pre><h4>internal/console/devcontainer_plugin_test.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/console/devcontainer_plugin_test.go b/internal/console/devcontainer_plugin_test.go
+</code></pre><h4>internal/console/devcontainer_plugin_test.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/console/devcontainer_plugin_test.go b/internal/console/devcontainer_plugin_test.go
 new file mode 100644
 index 0000000..7eff69f
 --- /dev/null
@@ -3106,7 +3106,7 @@ index 0000000..7eff69f
 +}
 +
 +func shellQuote(s string) string { return &quot;&#x27;&quot; + strings.ReplaceAll(s, &quot;&#x27;&quot;, &quot;&#x27;\\&#x27;&#x27;&quot;) + &quot;&#x27;&quot; }
-</code></pre><h4>internal/console/plugin_integration_test.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/console/plugin_integration_test.go b/internal/console/plugin_integration_test.go
+</code></pre><h4>internal/console/plugin_integration_test.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/console/plugin_integration_test.go b/internal/console/plugin_integration_test.go
 new file mode 100644
 index 0000000..dd95350
 --- /dev/null
@@ -3425,7 +3425,7 @@ index 0000000..dd95350
 +		t.Fatal(&quot;unknown plugin data was removed&quot;)
 +	}
 +}
-</code></pre><h4>internal/console/plugins_test.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/console/plugins_test.go b/internal/console/plugins_test.go
+</code></pre><h4>internal/console/plugins_test.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/console/plugins_test.go b/internal/console/plugins_test.go
 new file mode 100644
 index 0000000..03e8d8c
 --- /dev/null
@@ -3460,7 +3460,7 @@ index 0000000..03e8d8c
 +		t.Fatalf(&quot;cancel error = %v, want errCancelled&quot;, err)
 +	}
 +}
-</code></pre><h4>internal/console/projects_menu_test.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/console/projects_menu_test.go b/internal/console/projects_menu_test.go
+</code></pre><h4>internal/console/projects_menu_test.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/console/projects_menu_test.go b/internal/console/projects_menu_test.go
 index 6f41898..d912d4f 100644
 --- a/internal/console/projects_menu_test.go
 +++ b/internal/console/projects_menu_test.go
@@ -3594,7 +3594,7 @@ index 6f41898..d912d4f 100644
  func TestStopOffersOptionalDeleteForMatchingContainers(t *testing.T) {
  	for _, tc := range []struct {
  		name, answer, want string
-</code></pre><h4>internal/githubapp/adapter_test.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/githubapp/adapter_test.go b/internal/githubapp/adapter_test.go
+</code></pre><h4>internal/githubapp/adapter_test.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/githubapp/adapter_test.go b/internal/githubapp/adapter_test.go
 new file mode 100644
 index 0000000..6169913
 --- /dev/null
@@ -4008,7 +4008,7 @@ index 0000000..6169913
 +		t.Fatal(err)
 +	}
 +}
-</code></pre><h4>internal/githubapp/config_test.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/githubapp/config_test.go b/internal/githubapp/config_test.go
+</code></pre><h4>internal/githubapp/config_test.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/githubapp/config_test.go b/internal/githubapp/config_test.go
 new file mode 100644
 index 0000000..f452a62
 --- /dev/null
@@ -4045,7 +4045,7 @@ index 0000000..f452a62
 +		}
 +	}
 +}
-</code></pre><h4>internal/githubapp/provider_test.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/githubapp/provider_test.go b/internal/githubapp/provider_test.go
+</code></pre><h4>internal/githubapp/provider_test.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/githubapp/provider_test.go b/internal/githubapp/provider_test.go
 new file mode 100644
 index 0000000..2d08a58
 --- /dev/null
@@ -4446,7 +4446,7 @@ index 0000000..2d08a58
 +		t.Fatalf(&quot;mint calls=%d want %d&quot;, calls.Load(), expectedCalls)
 +	}
 +}
-</code></pre><h4>internal/githubapp/server_test.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/githubapp/server_test.go b/internal/githubapp/server_test.go
+</code></pre><h4>internal/githubapp/server_test.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/githubapp/server_test.go b/internal/githubapp/server_test.go
 new file mode 100644
 index 0000000..9252176
 --- /dev/null
@@ -4638,7 +4638,7 @@ index 0000000..9252176
 +	}
 +	t.Fatal(&quot;credential server did not become healthy&quot;)
 +}
-</code></pre><h4>internal/plugins/manager_test.go</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/internal/plugins/manager_test.go b/internal/plugins/manager_test.go
+</code></pre><h4>internal/plugins/manager_test.go</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/internal/plugins/manager_test.go b/internal/plugins/manager_test.go
 new file mode 100644
 index 0000000..77ed353
 --- /dev/null
@@ -5180,8 +5180,8 @@ index 0000000..77ed353
 +func validConfig() githubapp.Config {
 +	return githubapp.Config{AppID: 1, InstallationID: 2, PrivateKeyPassEntry: &quot;github/key&quot;, Repository: &quot;owner/repo&quot;, Permissions: map[string]string{&quot;contents&quot;: &quot;read&quot;}}
 +}
-</code></pre><form method="dialog"><button>關閉 G7</button></form></dialog>
-<div><p><button type="button" data-review-dialog="review-G8">G8 新增／修改：文件與核准規格：開啟實際 diff</button></p><p>README 說明操作、限制與人工驗收。規格 HTML 為已核准規格的呈現產物。</p><p>需你 review：否</p><details><summary>檔案與新版本 hunk 起始行</summary><ul><li>README.md:5,21,57,68</li><li>specs/2026-10-24-project-plugins-spec.md:1</li><li>specs/2026-10-24-project-plugins-spec.html:1</li></ul></details></div><dialog id="review-G8" aria-label="新增／修改：文件與核准規格" style="max-width:94vw;max-height:90vh"><form method="dialog"><button>關閉 G8</button></form><h3>新增／修改：文件與核准規格</h3><p>版本 759b9d8；以下為完整檔案 diff（保留完整 hunk）。行號見 @@ 的 + 區段。</p><h4>README.md</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/README.md b/README.md
+</code></pre></div>
+<div><h3>G8 新增／修改：文件與核准規格</h3><p>README 說明操作、限制與人工驗收。規格 HTML 為已核准規格的呈現產物。</p><p>需你 review：否</p><p><strong>檔案與新版本 hunk 起始行</strong></p><ul><li>README.md:5,21,57,68</li><li>specs/2026-10-24-project-plugins-spec.md:1</li><li>specs/2026-10-24-project-plugins-spec.html:1</li></ul></div><div id="review-G8"><p>版本 759b9d8；以下為完整檔案 diff（保留完整 hunk）。行號見 @@ 的 + 區段。</p><h4>README.md</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/README.md b/README.md
 index 9c3f336..ea70463 100644
 --- a/README.md
 +++ b/README.md
@@ -5263,7 +5263,7 @@ index 9c3f336..ea70463 100644
 +These checks require Linux, Docker, systemd, `pass`, and GPG agent access; they are manual integration checks.
 +
 +Project-specific settings belong in `.devcontainer/devcontainer.local.d/` as first-level `.json` files. dch merges them in filename order; keep local fragments out of version control when they contain machine-specific settings. dch no longer reads `.devcontainer/devcontainer.local.json`; existing files are ignored and never converted automatically.
-</code></pre><h4>specs/2026-10-24-project-plugins-spec.md</h4><pre style="overflow:auto;max-height:65vh;white-space:pre"><code>diff --git a/specs/2026-10-24-project-plugins-spec.md b/specs/2026-10-24-project-plugins-spec.md
+</code></pre><h4>specs/2026-10-24-project-plugins-spec.md</h4><pre style="white-space:pre-wrap;overflow-wrap:anywhere"><code>diff --git a/specs/2026-10-24-project-plugins-spec.md b/specs/2026-10-24-project-plugins-spec.md
 new file mode 100644
 index 0000000..07a6cb5
 --- /dev/null
@@ -5533,15 +5533,7 @@ index 0000000..07a6cb5
 +接著確認本機 tickets 分工，再由子代理 TDD 實作。
 +完成獨立 Code／Security Review 後提供最終 HTML review。
 +最終 review 核准後才 push 與建立 PR。
-</code></pre><p>已核准規格 HTML：2824 行新增。完整內容見永久 diff；此處不重複嵌入生成版面。</p><form method="dialog"><button>關閉 G8</button></form></dialog>
-<script>
-document.querySelectorAll('[data-review-dialog]').forEach((button) => {
-  button.addEventListener('click', () => {
-    const dialog = document.getElementById(button.dataset.reviewDialog);
-    if (dialog && typeof dialog.showModal === 'function') dialog.showModal();
-  });
-});
-</script>
+</code></pre><p>已核准規格 HTML：2824 行新增。完整內容見永久 diff；此處不重複嵌入生成版面。</p></div>
 ```
 
 ## D 使用行為與相容性
@@ -5615,7 +5607,8 @@ Socket --> Git 或 gh: no-store 回應
 | go test -race ./... | NOT RUN | CGO 關閉，且無 C compiler |
 | 真實 Linux 驗收 | NOT RUN | 缺 Docker／systemctl／pass；未用真實 GitHub 與 GPG |
 | UID／重啟／關閉 dch 後認證 | NOT RUN | 需在真實 Linux 容器執行 README 驗收 |
-| HTML 瀏覽器互動／窄視窗 | NOT RUN | 無瀏覽器工具；僅做靜態結構、腳本與連結檢查 |
+| HTML diff 直接顯示 | PASS | 靜態檢查八組正常文流、37 份 diff、6 個未勾選框與連結 |
+| HTML 瀏覽器／窄視窗 | NOT RUN | Chromium 導覽時程序關閉；未完成桌面／窄視窗實測 |
 
 Root 執行測試時，DAC 拒絕案例會跳過。
 假 health 失敗與 UID 錯誤提示仍有測試。
