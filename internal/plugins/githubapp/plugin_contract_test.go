@@ -472,9 +472,9 @@ func setupHostHookTest(t *testing.T, active bool) hostHookTestEnv {
 		}
 	}
 	logPath := filepath.Join(root, "systemctl.log")
-	activeResult := "exit 3"
+	activeResult := "echo inactive; exit 3"
 	if active {
-		activeResult = "exit 0"
+		activeResult = "echo active; exit 0"
 	}
 	script := "#!/bin/sh\nshift\necho \"$1\" >> \"$DCH_TEST_SYSTEMCTL_LOG\"\ncase \"$1\" in\n  is-active) " + activeResult + " ;;\n  *) exit 0 ;;\nesac\n"
 	if err := os.WriteFile(filepath.Join(binDir, "systemctl"), []byte(script), 0700); err != nil {

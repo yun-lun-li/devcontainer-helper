@@ -310,23 +310,30 @@ func (p *Plugin) quarantineLegacy(ctx context.Context, host plugins.HostContext)
 func requireInactiveUnit(ctx context.Context, projectPath string) error {
 	commandCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(commandCtx, "systemctl", "--user", "is-active", "--quiet", unitName(projectPath))
-	var output limitedOutput
-	cmd.Stdout, cmd.Stderr = &output, &output
-	if err := cmd.Run(); err == nil {
-		return fmt.Errorf("unit is active")
-	} else if !isKnownInactiveExit(err) {
-		return fmt.Errorf("systemctl could not verify unit state: %s", strings.TrimSpace(output.String()))
+	cmd := exec.CommandContext(commandCtx, "systemctl", "--user", "is-active", unitName(projectPath))
+	var stdout, stderr limitedOutput
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	if stdout.overflow || stderr.overflow || stderr.String() != "" || !isKnownInactiveState(stdout.String(), err) {
+		return fmt.Errorf("systemctl could not verify unit state")
 	}
 	return nil
 }
 
-func isKnownInactiveExit(err error) bool {
+func isKnownInactiveState(output string, err error) bool {
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) {
 		return false
 	}
-	return exitErr.ExitCode() == 3 || exitErr.ExitCode() == 4
+	state := strings.TrimSuffix(output, "\n")
+	switch exitErr.ExitCode() {
+	case 3:
+		return state == "inactive" || state == "failed"
+	case 4:
+		return state == "unknown"
+	default:
+		return false
+	}
 }
 
 func validateEnabledHost(host plugins.HostContext) error {
@@ -766,7 +773,10 @@ func runSystemctl(ctx context.Context, args ...string) error {
 	return nil
 }
 
-type limitedOutput struct{ buffer bytes.Buffer }
+type limitedOutput struct {
+	buffer   bytes.Buffer
+	overflow bool
+}
 
 func (output *limitedOutput) Write(data []byte) (int, error) {
 	const limit = 4096
@@ -775,8 +785,11 @@ func (output *limitedOutput) Write(data []byte) (int, error) {
 	if remaining > 0 {
 		if len(data) > remaining {
 			data = data[:remaining]
+			output.overflow = true
 		}
 		_, _ = output.buffer.Write(data)
+	} else if originalLength > 0 {
+		output.overflow = true
 	}
 	return originalLength, nil
 }
