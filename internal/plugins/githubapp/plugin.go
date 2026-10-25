@@ -169,18 +169,7 @@ func (p *Plugin) prepareConfiguration(project, clientID string, repo Repository,
 
 func (p *Plugin) commitCandidate(ctx context.Context, host plugins.HostContext, cfg Config, tokens TokenSet, raw json.RawMessage) (plugins.Result, error) {
 	store := p.secretStore(cfg)
-	var previousSecret []byte
-	var missing bool
-	err := store.WithLock(ctx, func() error {
-		var snapshotErr error
-		previousSecret, snapshotErr = store.Snapshot(ctx)
-		if errors.Is(snapshotErr, ErrSecretMissing) {
-			missing = true
-		} else if snapshotErr != nil {
-			return snapshotErr
-		}
-		return store.Write(ctx, tokens)
-	})
+	previousSecret, missing, err := saveCandidate(ctx, store, tokens)
 	if err != nil {
 		return plugins.Result{}, err
 	}
@@ -203,6 +192,42 @@ func (p *Plugin) commitCandidate(ctx context.Context, host plugins.HostContext, 
 		return plugins.Result{}, fmt.Errorf("%w; previous credential restore failed and authorization is required: %v", enableErr, restoreErr)
 	}
 	return plugins.Result{}, enableErr
+}
+
+func saveCandidate(ctx context.Context, store *SecretStore, tokens TokenSet) ([]byte, bool, error) {
+	var previousSecret []byte
+	var missing bool
+	err := store.WithLock(ctx, func() error {
+		var err error
+		previousSecret, missing, err = saveCandidateLocked(ctx, store, tokens)
+		return err
+	})
+	return previousSecret, missing, err
+}
+
+func saveCandidateLocked(ctx context.Context, store *SecretStore, tokens TokenSet) ([]byte, bool, error) {
+	previous, err := store.Snapshot(ctx)
+	missing := errors.Is(err, ErrSecretMissing)
+	if err != nil && !missing {
+		return nil, false, err
+	}
+	if err := store.Write(ctx, tokens); err == nil {
+		return previous, missing, nil
+	} else {
+		writeErr := err
+		rollbackCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		defer cancel()
+		var rollbackErr error
+		if missing {
+			rollbackErr = store.Delete(rollbackCtx)
+		} else {
+			rollbackErr = store.RestoreRaw(rollbackCtx, previous)
+		}
+		if rollbackErr != nil {
+			return previous, missing, fmt.Errorf("%w; previous credential restore failed and authorization is required: %w", writeErr, rollbackErr)
+		}
+		return previous, missing, writeErr
+	}
 }
 
 func (p *Plugin) cleanupPreviousClient(ctx context.Context, host plugins.HostContext, result plugins.Result, oldClientID string) (plugins.Result, error) {
