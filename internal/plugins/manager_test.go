@@ -1,563 +1,314 @@
 package plugins
 
 import (
+	"bytes"
 	"context"
-	"net"
-	"net/http"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"dch/internal/common"
-	"dch/internal/githubapp"
 )
 
-func TestEnableValidatesCredentialOverUnixSocketAndMarksBuildPending(t *testing.T) {
-	env := setupManagerTest(t, "ok")
-	projectPath := filepath.Join(env.root, "project$workspace")
-	if err := os.MkdirAll(filepath.Join(projectPath, ".devcontainer"), 0700); err != nil {
+func TestEnableKeepsPluginConfigAndScopedState(t *testing.T) {
+	manager, project := newManagerFixture(t)
+	plugin := &fakePlugin{definition: Definition{ID: "alpha", Name: "Alpha"}}
+	plugin.host = func(ctx context.Context, host HostContext, event Event) (Result, error) {
+		if event != EventEnable || string(host.Config) != `{"choice":"one"}` {
+			t.Fatalf("enable context = %#v, event %q", host, event)
+		}
+		if err := host.Store.SaveConfig(json.RawMessage(`{"choice":"normalized"}`)); err != nil {
+			return Result{}, err
+		}
+		if err := host.Store.SaveState(json.RawMessage(`{"phase":"ready"}`)); err != nil {
+			return Result{}, err
+		}
+		return Result{NeedsBuild: true}, nil
+	}
+	if err := manager.Register(plugin); err != nil {
 		t.Fatal(err)
 	}
-	env.setSocket(t, projectPath)
-	cfg := validConfig()
-	if err := NewManager().Enable(context.Background(), projectPath, cfg); err != nil {
+	if err := manager.Enable(context.Background(), project, "alpha", json.RawMessage(`{"choice":"one"}`)); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := common.LoadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	normalized, _ := common.NormalizePath(projectPath)
-	state := loaded.ProjectPlugins[normalized]
-	if state.Enabled[githubAppID].AppID != cfg.AppID || !state.States[githubAppID].BuildPending || state.States[githubAppID].FragmentDigest == "" {
-		t.Fatalf("enable did not persist config and Build state: %+v", state)
-	}
-	unit, err := os.ReadFile(state.States[githubAppID].UnitPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(unit), strings.ReplaceAll(projectPath, "$", "$$")) {
-		t.Fatalf("ExecStart does not escape dollar in project path: %s", unit)
-	}
-	if _, err := os.Stat(managedFragment(normalized)); err != nil {
-		t.Fatalf("managed fragment missing: %v", err)
-	}
-}
-
-func TestEnableFailureRestoresPriorProjectConfigAndFragment(t *testing.T) {
-	env := setupManagerTest(t, "fail")
-	projectPath := filepath.Join(env.root, "project")
-	if err := os.MkdirAll(filepath.Join(projectPath, ".devcontainer", "devcontainer.local.d"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	env.setSocket(t, projectPath)
-	normalized, _ := common.NormalizePath(projectPath)
-	oldCfg := validConfig()
-	oldCfg.AppID = 3
-	oldFragment := []byte(`{"old":true}`)
-	fragmentPath := managedFragment(normalized)
-	if err := os.WriteFile(fragmentPath, oldFragment, 0600); err != nil {
-		t.Fatal(err)
-	}
-	old := common.ProjectPlugins{Enabled: map[string]githubapp.Config{githubAppID: oldCfg}, States: map[string]common.PluginState{githubAppID: {FragmentDigest: digest(oldFragment), BuildPending: false}}}
-	if err := common.SaveConfig(common.Config{Version: 1, Projects: []string{}, ProjectPlugins: map[string]common.ProjectPlugins{normalized: old}}); err != nil {
-		t.Fatal(err)
-	}
-	cfg := validConfig()
-	cfg.AppID = 99
-	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-	defer cancel()
-	if err := NewManager().Enable(ctx, projectPath, cfg); err == nil {
-		t.Fatal("Enable succeeded despite credential failure")
-	}
-	loaded, err := common.LoadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := loaded.ProjectPlugins[normalized]
-	if got.Enabled[githubAppID].AppID != oldCfg.AppID || got.States[githubAppID].BuildPending {
-		t.Fatalf("failed enable changed existing project config: %+v", got)
-	}
-	fragment, err := os.ReadFile(fragmentPath)
-	if err != nil || string(fragment) != string(oldFragment) {
-		t.Fatalf("failed enable did not restore fragment: %q, %v", fragment, err)
-	}
-}
-
-func TestEnableCleanupFailureKeepsRetryableSettings(t *testing.T) {
-	env := setupManagerTest(t, "fail")
-	t.Setenv("DCH_TEST_FAIL_STOP_ONCE", filepath.Join(env.root, "stop-failed"))
-	projectPath := filepath.Join(env.root, "project")
-	if err := os.MkdirAll(filepath.Join(projectPath, ".devcontainer"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	env.setSocket(t, projectPath)
-	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-	defer cancel()
-	if err := NewManager().Enable(ctx, projectPath, validConfig()); err == nil || !strings.Contains(err.Error(), "cleanup failed") {
-		t.Fatalf("Enable error = %v, want cleanup failure", err)
-	}
-	normalized, _ := common.NormalizePath(projectPath)
-	loaded, err := common.LoadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := loaded.ProjectPlugins[normalized].Enabled[githubAppID]; !ok {
-		t.Fatal("retryable config was not retained")
-	}
-	if err := NewManager().Disable(context.Background(), projectPath); err != nil {
-		t.Fatalf("retry disable: %v", err)
-	}
-	loaded, err = common.LoadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := loaded.ProjectPlugins[normalized].Enabled[githubAppID]; ok {
-		t.Fatal("retry cleanup left plugin enabled")
-	}
-}
-
-func TestEnableRestartsActiveServiceWhenConfigurationChanges(t *testing.T) {
-	env := setupManagerTest(t, "ok")
-	projectPath := filepath.Join(env.root, "project")
-	if err := os.MkdirAll(filepath.Join(projectPath, ".devcontainer"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	env.setSocket(t, projectPath)
-	manager := NewManager()
-	cfg := validConfig()
-	if err := manager.Enable(context.Background(), projectPath, cfg); err != nil {
-		t.Fatal(err)
-	}
-	first, err := common.LoadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	normalized, _ := common.NormalizePath(projectPath)
-	if _, ok := first.ProjectPlugins[normalized].Enabled[githubAppID]; !ok {
-		t.Fatalf("first enable did not persist enabled state: %+v", first.ProjectPlugins)
-	}
-	if !first.ProjectPlugins[normalized].States[githubAppID].BuildPending {
-		t.Fatal("first enable did not mark Build pending")
-	}
-	if err := manager.MarkBuilt(projectPath); err != nil {
-		t.Fatalf("mark first configuration built: %v", err)
-	}
-	cfg.AppID = 42
-	if err := manager.Enable(context.Background(), projectPath, cfg); err != nil {
-		t.Fatal(err)
-	}
-	log, err := os.ReadFile(filepath.Join(env.root, "systemctl.log"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(log), "restart") {
-		debug, _ := os.ReadFile(filepath.Join(env.root, "service.debug"))
-		t.Fatalf("active service was not restarted: %s / %s", log, debug)
-	}
-	normalized, _ = common.NormalizePath(projectPath)
-	loaded, err := common.LoadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := loaded.ProjectPlugins[normalized].Enabled[githubAppID].AppID; got != 42 {
-		t.Fatalf("AppID = %d, want 42", got)
-	}
-	if !loaded.ProjectPlugins[normalized].States[githubAppID].BuildPending {
-		t.Fatal("configuration change did not mark Build pending")
-	}
-}
-
-func TestEnsureUpdatesOwnedUnitAfterProcessEnvironmentChanges(t *testing.T) {
-	env := setupManagerTest(t, "ok")
-	projectPath := filepath.Join(env.root, "project")
-	if err := os.MkdirAll(filepath.Join(projectPath, ".devcontainer"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	env.setSocket(t, projectPath)
-	manager := NewManager()
-	if err := manager.Enable(context.Background(), projectPath, validConfig()); err != nil {
-		t.Fatal(err)
-	}
-	normalized, _ := common.NormalizePath(projectPath)
-	before, err := common.LoadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	oldUnitPath := before.ProjectPlugins[normalized].States[githubAppID].UnitPath
-	oldUnitDigest := before.ProjectPlugins[normalized].States[githubAppID].UnitDigest
-	oldPath := os.Getenv("PATH")
-	extra := filepath.Join(env.root, "extra-bin")
-	if err := os.Mkdir(extra, 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", extra+":"+oldPath)
-	newConfigHome := filepath.Join(env.root, "new-config")
-	if err := os.Mkdir(newConfigHome, 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("XDG_CONFIG_HOME", newConfigHome)
-	if err := manager.Ensure(context.Background(), projectPath); err != nil {
-		t.Fatalf("Ensure after PATH change: %v", err)
-	}
-	after, err := common.LoadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	afterState := after.ProjectPlugins[normalized].States[githubAppID]
-	if afterState.UnitPath != oldUnitPath || afterState.UnitDigest == oldUnitDigest {
-		t.Fatalf("unit metadata was not updated at stored path: before=%+v after=%+v", before.ProjectPlugins[normalized].States[githubAppID], afterState)
-	}
-	newUnitPath, err := unitPath(projectPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(newUnitPath); !os.IsNotExist(err) {
-		t.Fatalf("Ensure created a duplicate unit under changed XDG_CONFIG_HOME: %v", err)
-	}
-	if err := manager.Disable(context.Background(), projectPath); err != nil {
-		t.Fatalf("Disable after PATH change: %v", err)
-	}
-	if _, err := os.Stat(oldUnitPath); !os.IsNotExist(err) {
-		t.Fatalf("Disable left the stored service unit behind: %v", err)
-	}
-}
-
-func TestEnsureDoesNothingForDisabledPluginWithPersistedState(t *testing.T) {
-	env := setupManagerTest(t, "ok")
-	projectPath := filepath.Join(env.root, "project")
-	normalized, err := common.NormalizePath(projectPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	config := common.Config{
-		Version:  1,
-		Projects: []string{},
-		ProjectPlugins: map[string]common.ProjectPlugins{
-			normalized: {States: map[string]common.PluginState{githubAppID: {BuildPending: true}}},
-		},
-	}
-	if err := common.SaveConfig(config); err != nil {
-		t.Fatal(err)
-	}
-	if err := NewManager().Ensure(context.Background(), projectPath); err != nil {
-		t.Fatalf("Ensure for disabled plugin: %v", err)
-	}
-}
-
-func TestEnsureRetriesRestartAfterSystemctlRestartFailure(t *testing.T) {
-	env := setupManagerTest(t, "ok")
-	projectPath := filepath.Join(env.root, "project")
-	if err := os.MkdirAll(filepath.Join(projectPath, ".devcontainer"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	env.setSocket(t, projectPath)
-	manager := NewManager()
-	if err := manager.Enable(context.Background(), projectPath, validConfig()); err != nil {
-		t.Fatal(err)
-	}
-	normalized, _ := common.NormalizePath(projectPath)
 	config, err := common.LoadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	stateBefore := config.ProjectPlugins[normalized].States[githubAppID]
-	unitBefore, err := os.ReadFile(stateBefore.UnitPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", filepath.Join(env.root, "new-path")+":"+os.Getenv("PATH"))
-	t.Setenv("DCH_TEST_FAIL_RESTART_ONCE", filepath.Join(env.root, "restart-failed"))
-	if err := manager.Ensure(context.Background(), projectPath); err == nil {
-		t.Fatal("Ensure succeeded despite failed restart")
-	}
-	unitAfterFailure, err := os.ReadFile(stateBefore.UnitPath)
-	if err != nil || string(unitAfterFailure) != string(unitBefore) {
-		t.Fatalf("failed restart did not restore unit: %v", err)
-	}
-	configAfterFailure, err := common.LoadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := configAfterFailure.ProjectPlugins[normalized].States[githubAppID].UnitDigest; got != stateBefore.UnitDigest {
-		t.Fatalf("failed restart persisted digest %q, want %q", got, stateBefore.UnitDigest)
-	}
-	if err := manager.Ensure(context.Background(), projectPath); err != nil {
-		t.Fatalf("Ensure retry: %v", err)
-	}
-	log, err := os.ReadFile(filepath.Join(env.root, "systemctl.log"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Count(string(log), "restart") < 2 {
-		t.Fatalf("Ensure retry did not retry restart: %s", log)
+	stored := config.ProjectPlugins[project]
+	if !sameJSON(stored.Enabled["alpha"], `{"choice":"normalized"}`) || !sameJSON(stored.States["alpha"].Data, `{"phase":"ready"}`) || !stored.States["alpha"].BuildPending {
+		t.Fatalf("stored plugin data = %#v", stored)
 	}
 }
 
-func TestDisableRefusesManuallyModifiedUnit(t *testing.T) {
-	env := setupManagerTest(t, "ok")
-	projectPath := filepath.Join(env.root, "project")
-	if err := os.MkdirAll(filepath.Join(projectPath, ".devcontainer"), 0700); err != nil {
+func TestServeCanRunWhileEnableWaitsForServiceReadiness(t *testing.T) {
+	manager, project := newManagerFixture(t)
+	served := make(chan struct{}, 1)
+	plugin := &fakeServicePlugin{fakePlugin: fakePlugin{definition: Definition{ID: "service", ServiceAliases: []string{"_service-serve"}}}, served: served}
+	plugin.host = func(ctx context.Context, host HostContext, event Event) (Result, error) {
+		if err := host.Store.SaveConfig(host.Config); err != nil {
+			return Result{}, err
+		}
+		ready := make(chan error, 1)
+		go func() { ready <- manager.Serve(ctx, project, "service") }()
+		select {
+		case err := <-ready:
+			return Result{}, err
+		case <-time.After(time.Second):
+			return Result{}, errors.New("Serve blocked on the enable operation lock")
+		}
+	}
+	if err := manager.Register(plugin); err != nil {
 		t.Fatal(err)
 	}
-	env.setSocket(t, projectPath)
-	manager := NewManager()
-	if err := manager.Enable(context.Background(), projectPath, validConfig()); err != nil {
+	if _, ok := manager.ServiceAlias("_service-serve"); !ok {
+		t.Fatal("service alias was not registered")
+	}
+	if err := manager.Enable(context.Background(), project, "service", json.RawMessage(`{"token":"safe"}`)); err != nil {
 		t.Fatal(err)
 	}
-	normalized, _ := common.NormalizePath(projectPath)
+	select {
+	case <-served:
+	default:
+		t.Fatal("host service did not start")
+	}
+}
+
+func TestProjectOperationSerializesHooksAndAllowsNestedManagerCalls(t *testing.T) {
+	manager, project := newManagerFixture(t)
+	if err := manager.Register(&fakePlugin{definition: Definition{ID: "alpha"}}); err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	operationDone := make(chan error, 1)
+	go func() {
+		operationDone <- manager.WithProjectOperation(context.Background(), project, func(ctx context.Context) error {
+			if _, err := manager.Status(ctx, project); err != nil {
+				return err
+			}
+			close(entered)
+			<-release
+			return manager.MarkBuilt(ctx, project)
+		})
+	}()
+	<-entered
+	enableStarted := make(chan struct{})
+	enableDone := make(chan error, 1)
+	go func() {
+		close(enableStarted)
+		enableDone <- manager.Enable(context.Background(), project, "alpha", json.RawMessage(`{}`))
+	}()
+	<-enableStarted
+	assertActionBlocked(t, enableDone)
+	close(release)
+	if err := <-operationDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-enableDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPrepareSortsPluginsAndStopsAtFirstFailure(t *testing.T) {
+	manager, project := newManagerFixture(t)
+	var calls []string
+	alpha := &fakePlugin{definition: Definition{ID: "alpha"}}
+	alpha.host = func(context.Context, HostContext, Event) (Result, error) {
+		calls = append(calls, "alpha")
+		return Result{NeedsBuild: true, State: json.RawMessage(`{"completed":true}`)}, nil
+	}
+	zulu := &fakePlugin{definition: Definition{ID: "zulu"}}
+	zulu.host = recordHost(&calls, "zulu", errors.New("host unavailable"))
+	registerPlugins(t, manager, alpha, zulu)
+	seedPlugins(t, project, "alpha", "zulu")
+
+	err := manager.Prepare(context.Background(), project, EventStart)
+	if err == nil || !contains(err.Error(), `plugin "zulu" event "start"`) {
+		t.Fatalf("Prepare error = %v", err)
+	}
+	if !reflect.DeepEqual(calls, []string{"alpha", "zulu"}) {
+		t.Fatalf("host calls = %v", calls)
+	}
 	config, err := common.LoadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	unitPath := config.ProjectPlugins[normalized].States[githubAppID].UnitPath
-	manual := []byte("\n# user change\n")
-	file, err := os.OpenFile(unitPath, os.O_APPEND|os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := file.Write(manual); err != nil {
-		t.Fatal(err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.Disable(context.Background(), projectPath); err == nil {
-		t.Fatal("Disable accepted a manually edited unit")
-	}
-	data, err := os.ReadFile(unitPath)
-	if err != nil || !strings.HasSuffix(string(data), string(manual)) {
-		t.Fatalf("manual unit edit changed: %q, %v", data, err)
+	state := config.ProjectPlugins[project].States["alpha"]
+	if !state.BuildPending || !sameJSON(state.Data, `{"completed":true}`) {
+		t.Fatalf("first plugin result was not committed before the failure: %#v", state)
 	}
 }
 
-func TestFailedReconfigureRestoresPriorUnitAndConfig(t *testing.T) {
-	env := setupManagerTest(t, "ok")
-	projectPath := filepath.Join(env.root, "project")
-	if err := os.MkdirAll(filepath.Join(projectPath, ".devcontainer"), 0700); err != nil {
+func TestUnknownStateIDFailsBeforeAnyHostHook(t *testing.T) {
+	manager, project := newManagerFixture(t)
+	plugin := &fakePlugin{definition: Definition{ID: "alpha"}}
+	var calls []string
+	plugin.host = recordHost(&calls, "alpha", nil)
+	if err := manager.Register(plugin); err != nil {
 		t.Fatal(err)
 	}
-	env.setSocket(t, projectPath)
-	manager := NewManager()
-	oldConfig := validConfig()
-	if err := manager.Enable(context.Background(), projectPath, oldConfig); err != nil {
-		t.Fatal(err)
+	seedState(t, project, "future-plugin")
+	if err := manager.Prepare(context.Background(), project, EventStart); err == nil {
+		t.Fatal("expected unknown state ID to fail")
 	}
-	normalized, _ := common.NormalizePath(projectPath)
-	stored, err := common.LoadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	state := stored.ProjectPlugins[normalized].States[githubAppID]
-	unitBefore, err := os.ReadFile(state.UnitPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	newPath := filepath.Join(env.root, "changed-path")
-	t.Setenv("PATH", newPath+":"+os.Getenv("PATH"))
-	t.Setenv("DCH_TEST_MODE", "fail")
-	updated := oldConfig
-	updated.AppID++
-	if err := manager.Enable(context.Background(), projectPath, updated); err == nil {
-		t.Fatal("Enable succeeded despite credential validation failure")
-	}
-	unitAfter, err := os.ReadFile(state.UnitPath)
-	if err != nil || string(unitAfter) != string(unitBefore) {
-		t.Fatalf("rollback did not restore unit: %v", err)
-	}
-	loaded, err := common.LoadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := loaded.ProjectPlugins[normalized]
-	if got.Enabled[githubAppID].AppID != oldConfig.AppID || got.States[githubAppID].UnitDigest != state.UnitDigest {
-		t.Fatalf("rollback did not restore config state: %+v", got)
+	if len(calls) != 0 {
+		t.Fatalf("hooks ran before unknown ID check: %v", calls)
 	}
 }
 
-func TestStatusReportsPendingBuildAndInactiveService(t *testing.T) {
-	env := setupManagerTest(t, "ok")
-	path := filepath.Join(env.root, "project")
-	normalized, _ := common.NormalizePath(path)
-	if err := common.SaveConfig(common.Config{Version: 1, Projects: []string{}, ProjectPlugins: map[string]common.ProjectPlugins{
-		normalized: {Enabled: map[string]githubapp.Config{githubAppID: {}}, States: map[string]common.PluginState{githubAppID: {BuildPending: true}}},
-	}}); err != nil {
+func TestContainerHooksKeepPerPluginChangesAndMarkBuildComplete(t *testing.T) {
+	manager, project := newManagerFixture(t)
+	alpha := &fakePlugin{definition: Definition{ID: "alpha"}}
+	alpha.container = func(_ context.Context, container ContainerContext, event Event) (Result, error) {
+		if event != EventBuild || container.Executor == nil {
+			return Result{}, errors.New("container context missing")
+		}
+		return Result{State: json.RawMessage(`{"installed":true}`)}, nil
+	}
+	if err := manager.Register(alpha); err != nil {
 		t.Fatal(err)
 	}
-	status, err := NewManager().Status(context.Background(), path)
+	seedPlugins(t, project, "alpha")
+	if err := manager.HandleContainer(context.Background(), project, EventBuild, fakeExecutor{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.MarkBuilt(context.Background(), project); err != nil {
+		t.Fatal(err)
+	}
+	status, err := manager.Status(context.Background(), project)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !status.Enabled || !status.PendingBuild || status.ServiceActive {
-		t.Fatalf("unexpected status: %+v", status)
+	if status.PendingBuild {
+		t.Fatal("pending build remained after MarkBuilt")
 	}
-}
-
-func TestDisableRefusesEditedFragmentBeforeStoppingService(t *testing.T) {
-	env := setupManagerTest(t, "ok")
-	projectPath := filepath.Join(env.root, "project")
-	if err := os.MkdirAll(filepath.Dir(managedFragment(projectPath)), 0700); err != nil {
-		t.Fatal(err)
-	}
-	fragmentPath := managedFragment(projectPath)
-	if err := os.WriteFile(fragmentPath, []byte(`{"manual":true}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	normalized, _ := common.NormalizePath(projectPath)
-	if err := common.SaveConfig(common.Config{Version: 1, Projects: []string{}, ProjectPlugins: map[string]common.ProjectPlugins{
-		normalized: {Enabled: map[string]githubapp.Config{githubAppID: validConfig()}, States: map[string]common.PluginState{githubAppID: {FragmentDigest: digest([]byte(`{"generated":true}`))}}},
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := NewManager().Disable(context.Background(), projectPath); err == nil {
-		t.Fatal("Disable accepted a manually edited fragment")
-	}
-	data, err := os.ReadFile(fragmentPath)
-	if err != nil || string(data) != `{"manual":true}` {
-		t.Fatalf("edited fragment changed: %q %v", data, err)
-	}
-	log, err := os.ReadFile(filepath.Join(env.root, "systemctl.log"))
-	if err == nil && strings.Contains(string(log), "stop") {
-		t.Fatalf("service was stopped before ownership check: %s", log)
-	}
-	loaded, err := common.LoadConfig()
+	config, err := common.LoadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := loaded.ProjectPlugins[normalized].Enabled[githubAppID]; !ok {
-		t.Fatal("enabled config was lost")
+	if !sameJSON(config.ProjectPlugins[project].States["alpha"].Data, `{"installed":true}`) {
+		t.Fatalf("container state = %s", config.ProjectPlugins[project].States["alpha"].Data)
 	}
 }
 
-func TestEnablePreservesForeignSystemdUnit(t *testing.T) {
-	env := setupManagerTest(t, "ok")
-	projectPath := filepath.Join(env.root, "project")
-	if err := os.MkdirAll(filepath.Join(projectPath, ".devcontainer"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	env.setSocket(t, projectPath)
-	unit, err := unitPath(projectPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(unit), 0700); err != nil {
-		t.Fatal(err)
-	}
-	foreign := []byte("foreign unit\n")
-	if err := os.WriteFile(unit, foreign, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := NewManager().Enable(context.Background(), projectPath, validConfig()); err == nil {
-		t.Fatal("Enable overwrote a foreign unit")
-	}
-	data, err := os.ReadFile(unit)
-	if err != nil || string(data) != string(foreign) {
-		t.Fatalf("foreign unit changed: %q, %v", data, err)
-	}
-	log, _ := os.ReadFile(filepath.Join(env.root, "systemctl.log"))
-	if strings.Contains(string(log), "stop") || strings.Contains(string(log), "disable") {
-		t.Fatalf("foreign unit was managed: %s", log)
-	}
+type fakePlugin struct {
+	definition Definition
+	host       func(context.Context, HostContext, Event) (Result, error)
+	container  func(context.Context, ContainerContext, Event) (Result, error)
 }
 
-func TestCredentialServiceHelper(t *testing.T) {
-	if os.Getenv("DCH_TEST_HELPER") != "1" {
-		return
+func (p *fakePlugin) Definition() Definition { return p.definition }
+
+func (p *fakePlugin) ValidateConfig(json.RawMessage) error { return nil }
+
+func (p *fakePlugin) HandleHost(ctx context.Context, host HostContext, event Event) (Result, error) {
+	if p.host == nil {
+		return Result{}, nil
 	}
-	socket := os.Getenv("DCH_TEST_SOCKET")
-	_ = os.Remove(socket)
-	listener, err := net.Listen("unix", socket)
-	if err != nil {
-		os.Exit(2)
-	}
-	_ = os.Chmod(socket, 0600)
-	status := http.StatusOK
-	if os.Getenv("DCH_TEST_MODE") == "fail" {
-		status = http.StatusServiceUnavailable
-	}
-	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status); _, _ = w.Write([]byte("token")) })}
-	_ = server.Serve(listener)
-	os.Exit(0)
+	return p.host(ctx, host, event)
 }
 
-type managerTestEnv struct {
-	root    string
-	runtime string
-}
-
-func (env managerTestEnv) setSocket(t *testing.T, projectPath string) {
-	t.Helper()
-	dir, err := githubapp.RuntimeDir(projectPath)
-	if err != nil {
-		t.Fatal(err)
+func (p *fakePlugin) HandleContainer(ctx context.Context, container ContainerContext, event Event) (Result, error) {
+	if p.container == nil {
+		return Result{}, nil
 	}
-	t.Setenv("DCH_TEST_SOCKET", filepath.Join(dir, "credential.sock"))
+	return p.container(ctx, container, event)
 }
 
-func setupManagerTest(t *testing.T, mode string) managerTestEnv {
+func (p *fakePlugin) ValidateContainerConfig(context.Context, ContainerContext, map[string]json.RawMessage) error {
+	return nil
+}
+
+func (p *fakePlugin) Status(context.Context, HostContext) (PluginStatus, error) {
+	return PluginStatus{}, nil
+}
+
+type fakeExecutor struct{}
+
+func (fakeExecutor) Exec(context.Context, ...string) ([]byte, error) { return nil, nil }
+
+type fakeServicePlugin struct {
+	fakePlugin
+	served chan struct{}
+}
+
+func (p *fakeServicePlugin) ServeHost(context.Context, HostContext) error {
+	p.served <- struct{}{}
+	return nil
+}
+
+func newManagerFixture(t *testing.T) (*Manager, string) {
 	t.Helper()
 	root := t.TempDir()
-	runtime, err := os.MkdirTemp("/tmp", "dchrt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(runtime) })
-	configHome := filepath.Join(root, "config-home")
-	if err := os.Mkdir(configHome, 0700); err != nil {
-		t.Fatal(err)
-	}
-	binDir := filepath.Join(root, "bin")
-	if err := os.Mkdir(binDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	binary, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	pidPath := filepath.Join(root, "service.pid")
-	logPath := filepath.Join(root, "systemctl.log")
-	debugPath := filepath.Join(root, "service.debug")
-	script := `#!/bin/sh
-shift
-action=$1
-echo "$action" >> "$DCH_TEST_LOG"
-case "$action" in
-  daemon-reload) exit 0 ;;
-  is-active) [ -f "$DCH_TEST_PID" ] && kill -0 "$(cat "$DCH_TEST_PID")" 2>/dev/null ; status=$?; echo "active=$status pid=$(cat "$DCH_TEST_PID" 2>/dev/null)" >> "$DCH_TEST_DEBUG"; exit "$status" ;;
-  stop) if [ -n "$DCH_TEST_FAIL_STOP_ONCE" ] && [ ! -f "$DCH_TEST_FAIL_STOP_ONCE.done" ]; then touch "$DCH_TEST_FAIL_STOP_ONCE.done"; exit 1; fi; if [ -f "$DCH_TEST_PID" ]; then kill "$(cat "$DCH_TEST_PID")" 2>/dev/null || true; rm -f "$DCH_TEST_PID"; fi; exit 0 ;;
-  disable) if [ -f "$DCH_TEST_PID" ]; then kill "$(cat "$DCH_TEST_PID")" 2>/dev/null || true; rm -f "$DCH_TEST_PID"; fi; exit 0 ;;
-  enable|restart|start)
-    if [ "$action" = "restart" ] && [ -n "$DCH_TEST_FAIL_RESTART_ONCE" ] && [ ! -f "$DCH_TEST_FAIL_RESTART_ONCE.done" ]; then touch "$DCH_TEST_FAIL_RESTART_ONCE.done"; exit 1; fi
-    if [ -f "$DCH_TEST_PID" ]; then kill "$(cat "$DCH_TEST_PID")" 2>/dev/null || true; rm -f "$DCH_TEST_PID"; fi
-    DCH_TEST_HELPER=1 "$DCH_TEST_BINARY" -test.run '^TestCredentialServiceHelper$' >> "$DCH_TEST_DEBUG" 2>&1 &
-    echo $! > "$DCH_TEST_PID"
-    sleep 0.03
-    exit 0 ;;
-esac
-exit 1
-`
-	if err := os.WriteFile(filepath.Join(binDir, "systemctl"), []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
-	oldPath := os.Getenv("PATH")
-	t.Setenv("PATH", binDir+":"+oldPath)
 	t.Setenv("DCH_CONFIG", filepath.Join(root, "config"))
-	t.Setenv("XDG_RUNTIME_DIR", runtime)
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-	t.Setenv("DCH_TEST_BINARY", binary)
-	t.Setenv("DCH_TEST_PID", pidPath)
-	t.Setenv("DCH_TEST_LOG", logPath)
-	t.Setenv("DCH_TEST_DEBUG", debugPath)
-	t.Setenv("DCH_TEST_FAIL_STOP_ONCE", "")
-	t.Setenv("DCH_TEST_FAIL_RESTART_ONCE", "")
-	t.Setenv("DCH_TEST_SOCKET", "")
-	t.Setenv("DCH_TEST_MODE", mode)
-	t.Setenv("DCH_TEST_HELPER", "")
-	return managerTestEnv{root: root, runtime: runtime}
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := common.SaveConfig(common.Config{Version: 1, Projects: []string{project}}); err != nil {
+		t.Fatal(err)
+	}
+	return NewManager(), project
 }
 
-func validConfig() githubapp.Config {
-	return githubapp.Config{AppID: 1, InstallationID: 2, PrivateKeyPassEntry: "github/key", Repository: "owner/repo", Permissions: map[string]string{"contents": "read"}}
+func registerPlugins(t *testing.T, manager *Manager, plugins ...Plugin) {
+	t.Helper()
+	for _, plugin := range plugins {
+		if err := manager.Register(plugin); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func seedPlugins(t *testing.T, project string, ids ...string) {
+	t.Helper()
+	plugins := common.ProjectPlugins{Enabled: map[string]json.RawMessage{}, States: map[string]common.PluginState{}}
+	for _, id := range ids {
+		plugins.Enabled[id] = json.RawMessage(`{}`)
+		plugins.States[id] = common.PluginState{BuildPending: true}
+	}
+	if err := common.SaveConfig(common.Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]common.ProjectPlugins{project: plugins}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedState(t *testing.T, project, id string) {
+	t.Helper()
+	if err := common.SaveConfig(common.Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]common.ProjectPlugins{project: {States: map[string]common.PluginState{id: {BuildPending: true}}}}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func recordHost(calls *[]string, name string, failure error) func(context.Context, HostContext, Event) (Result, error) {
+	return func(context.Context, HostContext, Event) (Result, error) {
+		*calls = append(*calls, name)
+		return Result{}, failure
+	}
+}
+
+func contains(value, fragment string) bool {
+	return strings.Contains(value, fragment)
+}
+
+func sameJSON(got json.RawMessage, want string) bool {
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, got); err != nil {
+		return false
+	}
+	return compact.String() == want
+}
+
+func assertActionBlocked(t *testing.T, done <-chan error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		t.Fatalf("operation proceeded while the project lock was held: %v", err)
+	case <-time.After(40 * time.Millisecond):
+	}
 }

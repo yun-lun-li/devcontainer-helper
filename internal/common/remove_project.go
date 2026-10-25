@@ -18,20 +18,14 @@ func ValidateProjectPlugins(project ProjectPlugins, knownIDs map[string]struct{}
 }
 
 func RemoveProjectRegistration(path string) error {
-	cfg, err := LoadConfig()
-	if err != nil {
-		return err
-	}
-	for i, registered := range cfg.Projects {
-		if registered == path {
-			projectPlugins := cfg.ProjectPlugins[path]
-			if err := ValidateProjectPlugins(projectPlugins, map[string]struct{}{"github-app": {}}); err != nil {
-				return err
+	return UpdateConfig(func(cfg *Config) error {
+		for i, registered := range cfg.Projects {
+			if registered == path {
+				cfg.Projects = append(cfg.Projects[:i], cfg.Projects[i+1:]...)
+				delete(cfg.ProjectPlugins, path)
+				return nil
 			}
-			cfg.Projects = append(cfg.Projects[:i], cfg.Projects[i+1:]...)
-			delete(cfg.ProjectPlugins, path)
-			return SaveConfig(cfg)
 		}
-	}
-	return fmt.Errorf("project %s is no longer registered", path)
+		return fmt.Errorf("project %s is no longer registered", path)
+	})
 }

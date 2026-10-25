@@ -7,8 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"dch/internal/githubapp"
+	"syscall"
 )
 
 type Config struct {
@@ -19,16 +18,42 @@ type Config struct {
 
 // ProjectPlugins stores host-side configuration and ownership state for one project.
 type ProjectPlugins struct {
-	Enabled map[string]githubapp.Config `json:"enabled,omitempty"`
-	States  map[string]PluginState      `json:"states,omitempty"`
+	Enabled map[string]json.RawMessage `json:"enabled,omitempty"`
+	States  map[string]PluginState     `json:"states,omitempty"`
 }
 
-// PluginState tracks generated-file ownership and whether containers need a Build.
+// PluginState stores manager lifecycle state and plugin-owned opaque data.
 type PluginState struct {
-	FragmentDigest string `json:"fragment_digest,omitempty"`
-	UnitDigest     string `json:"unit_digest,omitempty"`
-	UnitPath       string `json:"unit_path,omitempty"`
-	BuildPending   bool   `json:"build_pending,omitempty"`
+	BuildPending bool            `json:"build_pending,omitempty"`
+	Data         json.RawMessage `json:"data,omitempty"`
+}
+
+func (s *PluginState) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if raw, ok := fields["build_pending"]; ok {
+		if err := json.Unmarshal(raw, &s.BuildPending); err != nil {
+			return err
+		}
+		delete(fields, "build_pending")
+	}
+	if raw, ok := fields["data"]; ok {
+		if err := json.Unmarshal(raw, &s.Data); err != nil {
+			return err
+		}
+	} else {
+		delete(fields, "build_pending")
+		legacy, err := json.Marshal(fields)
+		if err != nil {
+			return err
+		}
+		if len(fields) > 0 {
+			s.Data = legacy
+		}
+	}
+	return nil
 }
 
 // ConfigPath returns the absolute path used to load and save the host configuration.
@@ -70,11 +95,34 @@ func LoadConfig() (Config, error) {
 	return cfg, nil
 }
 
+// ReadConfig reads a consistent snapshot while a configuration write is in progress.
+func ReadConfig() (Config, error) {
+	p, err := configPath()
+	if err != nil {
+		return Config{}, err
+	}
+	unlock, err := lockConfigFile(p)
+	if err != nil {
+		return Config{}, err
+	}
+	defer unlock()
+	return LoadConfig()
+}
+
 func SaveConfig(cfg Config) error {
 	p, err := configPath()
 	if err != nil {
 		return err
 	}
+	unlock, err := lockConfigFile(p)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return saveConfigAt(p, cfg)
+}
+
+func saveConfigAt(p string, cfg Config) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
 		return err
 	}
@@ -104,6 +152,56 @@ func SaveConfig(cfg Config) error {
 		return err
 	}
 	return os.Rename(f.Name(), p)
+}
+
+// UpdateConfig serializes read-modify-write operations across processes.
+func UpdateConfig(update func(*Config) error) error {
+	p, err := configPath()
+	if err != nil {
+		return err
+	}
+	unlock, err := lockConfigFile(p)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	if err := update(&cfg); err != nil {
+		return err
+	}
+	return saveConfigAt(p, cfg)
+}
+
+func lockConfigFile(configPath string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		return nil, err
+	}
+	lockPath := configPath + ".lock"
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
+	if err != nil {
+		return nil, err
+	}
+	info, err := lock.Stat()
+	if err != nil {
+		lock.Close()
+		return nil, err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || stat.Uid != uint32(os.Geteuid()) {
+		lock.Close()
+		return nil, fmt.Errorf("unsafe configuration lock file %s", lockPath)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		lock.Close()
+		return nil, err
+	}
+	return func() {
+		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		_ = lock.Close()
+	}, nil
 }
 
 func NormalizePath(s string) (string, error) {

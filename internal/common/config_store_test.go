@@ -1,11 +1,11 @@
 package common
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
-
-	"dch/internal/githubapp"
 )
 
 func TestConfigRoundTripsProjectPluginsAndLoadsLegacyConfig(t *testing.T) {
@@ -20,8 +20,8 @@ func TestConfigRoundTripsProjectPluginsAndLoadsLegacyConfig(t *testing.T) {
 	}
 	cfg.ProjectPlugins = map[string]ProjectPlugins{}
 	cfg.ProjectPlugins["/project"] = ProjectPlugins{
-		Enabled: map[string]githubapp.Config{"github-app": {AppID: 7, InstallationID: 8, PrivateKeyPassEntry: "key", Repository: "owner/repo", Permissions: map[string]string{"contents": "read"}}},
-		States:  map[string]PluginState{"github-app": {FragmentDigest: "digest", UnitDigest: "unit-digest", UnitPath: "/home/user/.config/systemd/user/dch.service", BuildPending: true}},
+		Enabled: map[string]json.RawMessage{"plugin-a": json.RawMessage(`{"setting":"value"}`)},
+		States:  map[string]PluginState{"plugin-a": {Data: json.RawMessage(`{"private":"state"}`), BuildPending: true}},
 	}
 	if err := SaveConfig(cfg); err != nil {
 		t.Fatal(err)
@@ -31,7 +31,59 @@ func TestConfigRoundTripsProjectPluginsAndLoadsLegacyConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := loaded.ProjectPlugins["/project"]
-	if got.Enabled["github-app"].AppID != 7 || got.States["github-app"].FragmentDigest != "digest" || got.States["github-app"].UnitDigest != "unit-digest" || got.States["github-app"].UnitPath != "/home/user/.config/systemd/user/dch.service" || !got.States["github-app"].BuildPending {
+	if !sameJSON(got.Enabled["plugin-a"], `{"setting":"value"}`) || !sameJSON(got.States["plugin-a"].Data, `{"private":"state"}`) || !got.States["plugin-a"].BuildPending {
 		t.Fatalf("plugin state did not round trip: %#v", got)
+	}
+}
+
+func sameJSON(got json.RawMessage, want string) bool {
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, got); err != nil {
+		return false
+	}
+	return compact.String() == want
+}
+
+func TestLegacyPluginStateMovesUnknownFieldsIntoOpaqueData(t *testing.T) {
+	var state PluginState
+	if err := json.Unmarshal([]byte(`{"fragment_digest":"fragment","unit_digest":"unit","unit_path":"service","build_pending":true}`), &state); err != nil {
+		t.Fatal(err)
+	}
+	if !state.BuildPending || !sameJSON(state.Data, `{"fragment_digest":"fragment","unit_digest":"unit","unit_path":"service"}`) {
+		t.Fatalf("legacy state was not preserved: %#v", state)
+	}
+	configPath := filepath.Join(t.TempDir(), "config")
+	t.Setenv("DCH_CONFIG", configPath)
+	if err := SaveConfig(Config{Version: 1, ProjectPlugins: map[string]ProjectPlugins{"/project": {States: map[string]PluginState{"plugin-a": state}}}}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := loaded.ProjectPlugins["/project"].States["plugin-a"]
+	if !got.BuildPending || !sameJSON(got.Data, `{"fragment_digest":"fragment","unit_digest":"unit","unit_path":"service"}`) {
+		t.Fatalf("legacy state changed after config round trip: %#v", got)
+	}
+}
+
+func TestPluginStateDataPreservesAnyJSONShapeAndReservedNames(t *testing.T) {
+	for _, value := range []string{`["fragment",7]`, `"scalar"`, `{"build_pending":false,"data":"plugin-owned"}`} {
+		t.Run(value, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "config")
+			t.Setenv("DCH_CONFIG", configPath)
+			state := PluginState{BuildPending: true, Data: json.RawMessage(value)}
+			if err := SaveConfig(Config{Version: 1, ProjectPlugins: map[string]ProjectPlugins{"/project": {States: map[string]PluginState{"plugin-a": state}}}}); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := LoadConfig()
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := loaded.ProjectPlugins["/project"].States["plugin-a"]
+			if !got.BuildPending || !sameJSON(got.Data, value) {
+				t.Fatalf("opaque state = %#v, want %s", got, value)
+			}
+		})
 	}
 }

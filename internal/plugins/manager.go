@@ -5,701 +5,668 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
-	"time"
 
 	"dch/internal/common"
-	"dch/internal/githubapp"
 )
 
-const githubAppID = "github-app"
-
 type Status struct {
-	Enabled       bool
-	PendingBuild  bool
-	ServiceActive bool
-	Message       string
+	Plugins      []PluginStatus
+	Enabled      int
+	PendingBuild bool
 }
 
-type Manager struct{}
-
-func NewManager() *Manager { return &Manager{} }
-
-func (m *Manager) Enable(ctx context.Context, projectPath string, cfg githubapp.Config) error {
-	if err := cfg.Validate(); err != nil {
-		return err
-	}
-	path, err := common.NormalizePath(projectPath)
-	if err != nil {
-		return err
-	}
-	unlock, err := lockConfig()
-	if err != nil {
-		return err
-	}
-	defer unlock()
-
-	config, err := common.LoadConfig()
-	if err != nil {
-		return err
-	}
-	old, hadOld := config.ProjectPlugins[path]
-	if err := validateEnabledPlugins(old); err != nil {
-		return err
-	}
-	_, wasEnabled := old.Enabled[githubAppID]
-	wasActive, _ := m.serviceActive(ctx, path)
-	fragment, runtimeDir, err := renderFragment(path)
-	if err != nil {
-		return err
-	}
-	fragmentPath, oldBytes, oldFileExists, err := replaceManagedFragment(path, fragment, old.States[githubAppID].FragmentDigest)
-	if err != nil {
-		return err
-	}
-	if err := githubapp.WriteAdapterScripts(runtimeDir); err != nil {
-		return errors.Join(err, restoreFile(fragmentPath, oldBytes, oldFileExists))
-	}
-	unit, err := m.prepareServiceUnit(path, old.States[githubAppID])
-	if err != nil {
-		return errors.Join(err, restoreFile(fragmentPath, oldBytes, oldFileExists))
-	}
-
-	if err := saveEnabledPlugin(config, path, old, cfg, fragment, unit); err != nil {
-		cleanupErr := restoreFile(fragmentPath, oldBytes, oldFileExists)
-		cleanupErr = errors.Join(cleanupErr, unit.restore())
-		return errors.Join(err, cleanupErr)
-	}
-
-	rollback := enableRollback{manager: m, path: path, old: old, hadOld: hadOld, wasEnabled: wasEnabled, wasActive: wasActive, fragmentPath: fragmentPath, oldBytes: oldBytes, oldFileExists: oldFileExists, runtimeDir: runtimeDir, unit: unit}
-
-	return m.activateEnabledPlugin(ctx, path, runtimeDir, wasActive && wasEnabled, rollback)
+type Manager struct {
+	plugins map[string]Plugin
+	aliases map[string]string
 }
 
-func (m *Manager) activateEnabledPlugin(ctx context.Context, path, runtimeDir string, restart bool, rollback enableRollback) error {
-	if err := runSystemctl(ctx, "daemon-reload"); err != nil {
-		return rollback.run(err, false)
+type operationContextKey struct{}
+
+type operationToken struct {
+	manager *Manager
+	path    string
+}
+
+func NewManager() *Manager {
+	return &Manager{plugins: map[string]Plugin{}, aliases: map[string]string{}}
+}
+
+func (m *Manager) Register(plugin Plugin) error {
+	if plugin == nil {
+		return errors.New("plugin cannot be nil")
 	}
-	if restart {
-		if err := runSystemctl(ctx, "restart", unitName(path)); err != nil {
-			return rollback.run(err, true)
-		}
-	} else if err := runSystemctl(ctx, "enable", "--now", unitName(path)); err != nil {
-		return rollback.run(err, true)
+	definition := plugin.Definition()
+	id := strings.TrimSpace(definition.ID)
+	if id == "" || id != definition.ID {
+		return errors.New("plugin ID must be non-empty and trimmed")
 	}
-	if err := m.checkReady(ctx, runtimeDir); err != nil {
-		return rollback.run(err, true)
+	if _, exists := m.plugins[id]; exists {
+		return fmt.Errorf("plugin ID %q is already registered", id)
+	}
+	if err := m.validateAliases(id, plugin, definition.ServiceAliases); err != nil {
+		return err
+	}
+	m.plugins[id] = plugin
+	for _, alias := range definition.ServiceAliases {
+		m.aliases[alias] = id
 	}
 	return nil
 }
 
-func (m *Manager) Ensure(ctx context.Context, projectPath string) error {
-	path, err := common.NormalizePath(projectPath)
-	if err != nil {
-		return err
+func (m *Manager) validateAliases(id string, plugin Plugin, aliases []string) error {
+	if len(aliases) > 0 {
+		if _, ok := plugin.(HostService); !ok {
+			return fmt.Errorf("plugin %q has service aliases but no host service", id)
+		}
 	}
-	unlock, err := lockConfig()
+	seenAliases := map[string]struct{}{}
+	for _, alias := range aliases {
+		if len(alias) < 2 || strings.TrimSpace(alias) != alias || !strings.HasPrefix(alias, "_") {
+			return fmt.Errorf("plugin %q service alias %q must start with _", id, alias)
+		}
+		if _, exists := seenAliases[alias]; exists {
+			return fmt.Errorf("plugin %q repeats service alias %q", id, alias)
+		}
+		seenAliases[alias] = struct{}{}
+		if _, exists := m.aliases[alias]; exists {
+			return fmt.Errorf("service alias %q is already registered", alias)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) Definitions() []Definition {
+	ids := m.pluginIDs()
+	definitions := make([]Definition, 0, len(ids))
+	for _, id := range ids {
+		definitions = append(definitions, m.plugins[id].Definition())
+	}
+	return definitions
+}
+
+func (m *Manager) ServiceAlias(command string) (string, bool) {
+	id, ok := m.aliases[command]
+	return id, ok
+}
+
+func (m *Manager) WithProjectOperation(ctx context.Context, projectPath string, operation func(context.Context) error) error {
+	if operation == nil {
+		return errors.New("project operation cannot be nil")
+	}
+	path, unlock, err := m.lockProject(ctx, projectPath)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	config, err := common.LoadConfig()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if token, ok := ctx.Value(operationContextKey{}).(operationToken); ok && token.manager == m && token.path == path && ctx.Err() == nil {
+		return operation(ctx)
+	}
+	operationCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	operationCtx = context.WithValue(operationCtx, operationContextKey{}, operationToken{manager: m, path: path})
+	return operation(operationCtx)
+}
+
+func (m *Manager) Enable(ctx context.Context, projectPath, id string, raw json.RawMessage) error {
+	path, unlock, err := m.lockProject(ctx, projectPath)
 	if err != nil {
 		return err
 	}
-	project, ok := config.ProjectPlugins[path]
-	if !ok {
-		return nil
-	}
-	if err := validateEnabledPlugins(project); err != nil {
-		return err
-	}
-	_, enabled := project.Enabled[githubAppID]
-	if !enabled {
-		return nil
-	}
-	if err := validateManagedFragment(path, project.States[githubAppID].FragmentDigest); err != nil {
-		return err
-	}
-	runtimeDir, unit, err := m.prepareEnsureService(path, project)
+	defer unlock()
+	plugin, err := m.plugin(id)
 	if err != nil {
 		return err
 	}
-	oldState := project.States[githubAppID]
-	state := oldState
-	state.UnitDigest = unit.digest
-	state.UnitPath = unit.path
-	metadataChanged := state != oldState
-	if metadataChanged {
-		project.States[githubAppID] = state
+	project, err := m.loadProject(path)
+	if err != nil {
+		return err
+	}
+	registered, err := projectRegistered(path)
+	if err != nil {
+		return err
+	}
+	if !registered {
+		return fmt.Errorf("project %s is no longer registered", path)
+	}
+	if err := plugin.ValidateConfig(raw); err != nil {
+		return pluginError(id, EventEnable, err)
+	}
+	oldConfig, wasEnabled := project.Enabled[id]
+	oldState, hadState := project.States[id]
+	host := m.hostContext(path, id, raw, oldState.Data, oldConfig, oldState.Data)
+	if !wasEnabled {
+		host.PreviousConfig = nil
+	}
+	if !hadState {
+		host.PreviousState = nil
+	}
+	result, err := plugin.HandleHost(ctx, host, EventEnable)
+	if err != nil {
+		return pluginError(id, EventEnable, err)
+	}
+	return m.commitEnable(path, id, raw, oldConfig, wasEnabled, result)
+}
+
+func (m *Manager) commitEnable(path, id string, raw, previousConfig json.RawMessage, wasEnabled bool, result Result) error {
+	return common.UpdateConfig(func(config *common.Config) error {
+		project := projectAt(config, path)
+		if project.Enabled == nil {
+			project.Enabled = map[string]json.RawMessage{}
+		}
+		if project.States == nil {
+			project.States = map[string]common.PluginState{}
+		}
+		currentConfig, alreadyEnabled := project.Enabled[id]
+		if result.Config != nil {
+			raw = result.Config
+		} else if alreadyEnabled && (!wasEnabled || !bytes.Equal(currentConfig, previousConfig)) {
+			raw = currentConfig
+		}
+		project.Enabled[id] = raw
+		state := project.States[id]
+		if result.State != nil {
+			state.Data = result.State
+		}
+		state.BuildPending = state.BuildPending || result.NeedsBuild
+		project.States[id] = state
 		config.ProjectPlugins[path] = project
-		if err := common.SaveConfig(config); err != nil {
-			return errors.Join(err, unit.restore())
-		}
-	}
-	active, _ := m.serviceActive(ctx, path)
-	rollback := ensureRollback{unit: unit, metadataChanged: metadataChanged, project: project, config: config, path: path, oldState: oldState}
-	if err := activateEnsuredPlugin(ctx, path, active, unit, rollback); err != nil {
-		return err
-	}
-	return m.checkReady(ctx, runtimeDir)
+		return nil
+	})
 }
 
-func activateEnsuredPlugin(ctx context.Context, path string, active bool, unit serviceUnitChange, rollback ensureRollback) error {
-	if err := runSystemctl(ctx, "daemon-reload"); err != nil {
-		return rollback.run(err)
+func (m *Manager) Disable(ctx context.Context, projectPath, id string) error {
+	path, unlock, err := m.lockProject(ctx, projectPath)
+	if err != nil {
+		return err
 	}
-	if active && unit.changed {
-		if err := runSystemctl(ctx, "restart", unitName(path)); err != nil {
-			return rollback.run(err)
+	defer unlock()
+	plugin, err := m.plugin(id)
+	if err != nil {
+		return err
+	}
+	project, err := m.loadProject(path)
+	if err != nil {
+		return err
+	}
+	config := project.Enabled[id]
+	state := project.States[id]
+	if !has(project.Enabled, id) && len(state.Data) == 0 {
+		return nil
+	}
+	result, err := plugin.HandleHost(ctx, m.hostContext(path, id, config, state.Data, nil, nil), EventDisable)
+	if err != nil {
+		return pluginError(id, EventDisable, err)
+	}
+	return m.commitDisable(path, id, result)
+}
+
+func (m *Manager) commitDisable(path, id string, result Result) error {
+	return common.UpdateConfig(func(config *common.Config) error {
+		project := projectAt(config, path)
+		delete(project.Enabled, id)
+		state := project.States[id]
+		if result.State != nil {
+			state.Data = result.State
 		}
-	} else if err := runSystemctl(ctx, "enable", "--now", unitName(path)); err != nil {
-		return rollback.run(err)
+		state.BuildPending = state.BuildPending || result.NeedsBuild
+		if len(state.Data) == 0 && !state.BuildPending {
+			delete(project.States, id)
+		} else {
+			setState(&project, id, state)
+		}
+		config.ProjectPlugins[path] = project
+		return nil
+	})
+}
+
+func (m *Manager) Prepare(ctx context.Context, projectPath string, event Event) error {
+	if !hostLifecycleEvent(event) {
+		return fmt.Errorf("unsupported host event %q", event)
+	}
+	path, unlock, err := m.lockProject(ctx, projectPath)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	project, err := m.loadProject(path)
+	if err != nil {
+		return err
+	}
+	for _, id := range sortedEnabled(project) {
+		plugin := m.plugins[id]
+		state := project.States[id]
+		result, err := plugin.HandleHost(ctx, m.hostContext(path, id, project.Enabled[id], state.Data, nil, nil), event)
+		if err != nil {
+			return pluginError(id, event, err)
+		}
+		if err := m.commitHookResult(path, id, result); err != nil {
+			return pluginError(id, event, err)
+		}
+		project, err = m.loadProject(path)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func validateManagedFragment(path, expectedDigest string) error {
-	_, exists, err := readOwnedFile(managedFragment(path), expectedDigest)
+func (m *Manager) HandleContainer(ctx context.Context, projectPath string, event Event, executor Executor) error {
+	if !hostLifecycleEvent(event) {
+		return fmt.Errorf("unsupported container event %q", event)
+	}
+	path, unlock, err := m.lockProject(ctx, projectPath)
 	if err != nil {
 		return err
 	}
-	if !exists {
-		return fmt.Errorf("managed plugin fragment is missing")
+	defer unlock()
+	project, err := m.loadProject(path)
+	if err != nil {
+		return err
+	}
+	for _, id := range sortedEnabled(project) {
+		state := project.States[id]
+		container := ContainerContext{ProjectPath: path, Config: project.Enabled[id], State: state.Data, Executor: executor}
+		result, err := m.plugins[id].HandleContainer(ctx, container, event)
+		if err != nil {
+			return pluginError(id, event, err)
+		}
+		if err := m.commitHookResult(path, id, result); err != nil {
+			return pluginError(id, event, err)
+		}
+		project, err = m.loadProject(path)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (m *Manager) prepareEnsureService(path string, project common.ProjectPlugins) (string, serviceUnitChange, error) {
-	_, runtimeDir, err := renderFragment(path)
+func (m *Manager) ValidateMergedConfig(ctx context.Context, projectPath string, merged map[string]json.RawMessage) error {
+	path, unlock, err := m.lockProject(ctx, projectPath)
 	if err != nil {
-		return "", serviceUnitChange{}, err
+		return err
 	}
-	if err := githubapp.WriteAdapterScripts(runtimeDir); err != nil {
-		return "", serviceUnitChange{}, err
+	defer unlock()
+	project, err := m.loadProject(path)
+	if err != nil {
+		return err
 	}
-	unit, err := m.prepareServiceUnit(path, project.States[githubAppID])
-	return runtimeDir, unit, err
+	for _, id := range sortedEnabled(project) {
+		state := project.States[id]
+		container := ContainerContext{ProjectPath: path, Config: project.Enabled[id], State: state.Data}
+		if err := m.plugins[id].ValidateContainerConfig(ctx, container, merged); err != nil {
+			return pluginError(id, EventBuild, err)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) Statuses(ctx context.Context, projectPath string) ([]PluginStatus, error) {
+	path, unlock, err := m.lockProject(ctx, projectPath)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	project, err := m.loadProject(path)
+	if err != nil {
+		return nil, err
+	}
+	statuses := make([]PluginStatus, 0, len(m.plugins))
+	for _, id := range m.pluginIDs() {
+		state := project.States[id]
+		status, err := m.plugins[id].Status(ctx, m.hostContext(path, id, project.Enabled[id], state.Data, nil, nil))
+		if err != nil {
+			return nil, pluginError(id, "status", err)
+		}
+		status.ID = id
+		status.Name = m.plugins[id].Definition().Name
+		status.Enabled = has(project.Enabled, id)
+		status.PendingBuild = state.BuildPending
+		statuses = append(statuses, status)
+	}
+	return statuses, nil
 }
 
 func (m *Manager) Status(ctx context.Context, projectPath string) (Status, error) {
-	path, err := common.NormalizePath(projectPath)
+	statuses, err := m.Statuses(ctx, projectPath)
 	if err != nil {
 		return Status{}, err
 	}
-	unlock, err := lockConfig()
-	if err != nil {
-		return Status{}, err
+	result := Status{Plugins: statuses}
+	for _, status := range statuses {
+		if status.Enabled {
+			result.Enabled++
+		}
+		result.PendingBuild = result.PendingBuild || status.PendingBuild
 	}
-	defer unlock()
-	config, err := common.LoadConfig()
-	if err != nil {
-		return Status{}, err
-	}
-	project, ok := config.ProjectPlugins[path]
-	if !ok {
-		return Status{}, nil
-	}
-	if err := validateEnabledPlugins(project); err != nil {
-		return Status{}, err
-	}
-	_, enabled := project.Enabled[githubAppID]
-	active, activeErr := m.serviceActive(ctx, path)
-	status := Status{Enabled: enabled, PendingBuild: project.States[githubAppID].BuildPending, ServiceActive: active}
-	if activeErr != nil {
-		status.Message = activeErr.Error()
-	}
-	return status, nil
+	return result, nil
 }
 
-func (m *Manager) MarkBuilt(projectPath string) error {
-	path, err := common.NormalizePath(projectPath)
+func (m *Manager) Config(ctx context.Context, projectPath, id string) (json.RawMessage, error) {
+	path, unlock, err := m.lockProject(ctx, projectPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	unlock, err := lockConfig()
+	defer unlock()
+	if _, err := m.plugin(id); err != nil {
+		return nil, err
+	}
+	project, err := m.loadProject(path)
+	if err != nil {
+		return nil, err
+	}
+	return cloneRaw(project.Enabled[id]), nil
+}
+
+func (m *Manager) MarkBuilt(ctx context.Context, projectPath string) error {
+	path, unlock, err := m.lockProject(ctx, projectPath)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	config, err := common.LoadConfig()
+	_, err = m.loadProject(path)
 	if err != nil {
 		return err
 	}
-	project, ok := config.ProjectPlugins[path]
-	if !ok {
+	return common.UpdateConfig(func(config *common.Config) error {
+		project := projectAt(config, path)
+		for id, state := range project.States {
+			state.BuildPending = false
+			if len(state.Data) == 0 {
+				delete(project.States, id)
+			} else {
+				project.States[id] = state
+			}
+		}
+		config.ProjectPlugins[path] = project
 		return nil
-	}
-	if err := validateEnabledPlugins(project); err != nil {
-		return err
-	}
-	state := project.States[githubAppID]
-	state.BuildPending = false
-	project.States[githubAppID] = state
-	config.ProjectPlugins[path] = project
-	return common.SaveConfig(config)
+	})
 }
 
-func (m *Manager) Disable(ctx context.Context, projectPath string) error {
-	path, err := common.NormalizePath(projectPath)
-	if err != nil {
-		return err
-	}
-	unlock, err := lockConfig()
+func (m *Manager) RemoveProject(ctx context.Context, projectPath string) error {
+	path, unlock, err := m.lockProject(ctx, projectPath)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	config, err := common.LoadConfig()
+	project, err := m.loadProject(path)
 	if err != nil {
 		return err
 	}
-	project, ok := config.ProjectPlugins[path]
-	if !ok {
-		return nil
-	}
-	if err := validateEnabledPlugins(project); err != nil {
-		return err
-	}
-	if _, enabled := project.Enabled[githubAppID]; !enabled {
-		return nil
-	}
-	unitFile, err := ownedUnitPath(path, project.States[githubAppID])
+	registered, err := projectRegistered(path)
 	if err != nil {
 		return err
 	}
-	if _, _, err := readOwnedFile(managedFragment(path), project.States[githubAppID].FragmentDigest); err != nil {
-		return err
+	if !registered {
+		return fmt.Errorf("project %s is no longer registered", path)
 	}
-	if err := removePluginFiles(ctx, path, unitFile, project.States[githubAppID].FragmentDigest); err != nil {
-		return err
-	}
-	delete(project.Enabled, githubAppID)
-	state := project.States[githubAppID]
-	state.FragmentDigest = ""
-	state.UnitDigest = ""
-	state.UnitPath = ""
-	state.BuildPending = true
-	project.States[githubAppID] = state
-	config.ProjectPlugins[path] = project
-	return common.SaveConfig(config)
-}
-
-func ownedUnitPath(path string, state common.PluginState) (string, error) {
-	unitFile := state.UnitPath
-	if unitFile == "" {
-		var err error
-		unitFile, err = unitPath(path)
+	ids := unionIDs(project)
+	for _, id := range ids {
+		state := project.States[id]
+		if !has(project.Enabled, id) && len(state.Data) == 0 {
+			continue
+		}
+		result, err := m.plugins[id].HandleHost(ctx, m.hostContext(path, id, project.Enabled[id], state.Data, nil, nil), EventDisable)
 		if err != nil {
-			return "", err
+			return pluginError(id, EventDisable, err)
 		}
-	} else if err := validateUnitPath(unitFile, path); err != nil {
-		return "", err
+		if err := m.commitDisable(path, id, result); err != nil {
+			return err
+		}
+		project, err = m.loadProject(path)
+		if err != nil {
+			return err
+		}
 	}
-	if err := verifyOwnedUnit(unitFile, state.UnitDigest); err != nil {
-		return "", err
-	}
-	return unitFile, nil
+	return common.RemoveProjectRegistration(path)
 }
 
-func removePluginFiles(ctx context.Context, path, unitFile, fragmentDigest string) error {
-	if err := runSystemctl(ctx, "stop", unitName(path)); err != nil {
-		return err
-	}
-	if err := runSystemctl(ctx, "disable", unitName(path)); err != nil {
-		return err
-	}
-	if err := removeIfPresent(unitFile); err != nil {
-		return err
-	}
-	if err := runSystemctl(ctx, "daemon-reload"); err != nil {
-		return err
-	}
-	if err := removeManagedFragment(path, fragmentDigest); err != nil {
-		return err
-	}
-	runtimeDir, err := githubapp.RuntimeDir(path)
+func projectRegistered(path string) (bool, error) {
+	config, err := common.ReadConfig()
 	if err != nil {
-		return err
+		return false, err
 	}
-	return os.RemoveAll(runtimeDir)
+	for _, registered := range config.Projects {
+		if registered == path {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
-func removeIfPresent(path string) error {
-	err := os.Remove(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return err
-}
-
-func removeManagedFragment(path, expectedDigest string) error {
-	fragmentPath := managedFragment(path)
-	_, exists, err := readOwnedFile(fragmentPath, expectedDigest)
-	if err != nil || !exists {
-		return err
-	}
-	return os.Remove(fragmentPath)
-}
-
-func (m *Manager) ServeProject(ctx context.Context, projectPath string) error {
+func (m *Manager) Serve(ctx context.Context, projectPath, id string) error {
 	path, err := common.NormalizePath(projectPath)
 	if err != nil {
 		return err
 	}
-	config, err := common.LoadConfig()
+	plugin, err := m.plugin(id)
 	if err != nil {
 		return err
 	}
-	project, ok := config.ProjectPlugins[path]
+	service, ok := plugin.(HostService)
 	if !ok {
-		return fmt.Errorf("github-app is not enabled for this project")
+		return fmt.Errorf("plugin %q has no host service", id)
 	}
-	if err := validateEnabledPlugins(project); err != nil {
+	project, err := m.loadProject(path)
+	if err != nil {
 		return err
 	}
-	cfg, ok := project.Enabled[githubAppID]
+	if !has(project.Enabled, id) {
+		return fmt.Errorf("plugin %q is not enabled", id)
+	}
+	state := project.States[id]
+	host := m.hostContext(path, id, project.Enabled[id], state.Data, nil, nil)
+	return service.ServeHost(ctx, host)
+}
+
+func (m *Manager) commitHookResult(path, id string, result Result) error {
+	return common.UpdateConfig(func(config *common.Config) error {
+		project := projectAt(config, path)
+		state := project.States[id]
+		if result.Config != nil && has(project.Enabled, id) {
+			project.Enabled[id] = result.Config
+		}
+		if result.State != nil {
+			state.Data = result.State
+		}
+		state.BuildPending = state.BuildPending || result.NeedsBuild
+		if len(state.Data) > 0 || state.BuildPending {
+			setState(&project, id, state)
+		}
+		config.ProjectPlugins[path] = project
+		return nil
+	})
+}
+
+func (m *Manager) hostContext(path, id string, config, state, previousConfig, previousState json.RawMessage) HostContext {
+	return HostContext{ProjectPath: path, Config: cloneRaw(config), State: cloneRaw(state), PreviousConfig: cloneRaw(previousConfig), PreviousState: cloneRaw(previousState), Store: scopedStore{path: path, id: id}}
+}
+
+func (m *Manager) loadProject(path string) (common.ProjectPlugins, error) {
+	config, err := common.ReadConfig()
+	if err != nil {
+		return common.ProjectPlugins{}, err
+	}
+	project := config.ProjectPlugins[path]
+	if err := validateIDs(project, m.plugins); err != nil {
+		return common.ProjectPlugins{}, err
+	}
+	return project, nil
+}
+
+func (m *Manager) lockProject(ctx context.Context, projectPath string) (string, func(), error) {
+	path, err := common.NormalizePath(projectPath)
+	if err != nil {
+		return "", nil, err
+	}
+	if token, ok := ctx.Value(operationContextKey{}).(operationToken); ok && token.manager == m && token.path == path && ctx.Err() == nil {
+		return path, func() {}, nil
+	}
+	return lockProject(path)
+}
+
+func (m *Manager) plugin(id string) (Plugin, error) {
+	plugin, ok := m.plugins[id]
 	if !ok {
-		return fmt.Errorf("github-app is not enabled for this project")
+		return nil, fmt.Errorf("unknown plugin %q", id)
 	}
-	runtimeDir, err := githubapp.RuntimeDir(path)
-	if err != nil {
-		return err
-	}
-	return githubapp.Serve(ctx, filepath.Join(runtimeDir, "credential.sock"), cfg)
+	return plugin, nil
 }
 
-func renderFragment(path string) ([]byte, string, error) {
-	runtimeDir, err := githubapp.RuntimeDir(path)
-	if err != nil {
-		return nil, "", err
+func (m *Manager) pluginIDs() []string {
+	ids := make([]string, 0, len(m.plugins))
+	for id := range m.plugins {
+		ids = append(ids, id)
 	}
-	fragment, err := githubapp.AdapterFragment(runtimeDir)
-	return fragment, runtimeDir, err
+	sort.Strings(ids)
+	return ids
 }
 
-func (m *Manager) checkReady(ctx context.Context, runtimeDir string) error {
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-	tick := time.NewTicker(100 * time.Millisecond)
-	defer tick.Stop()
-	socketPath := filepath.Join(runtimeDir, "credential.sock")
-	for {
-		conn, err := net.DialTimeout("unix", socketPath, 100*time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-			break
+type scopedStore struct {
+	path string
+	id   string
+}
+
+func (s scopedStore) SaveConfig(raw json.RawMessage) error {
+	return common.UpdateConfig(func(config *common.Config) error {
+		project := projectAt(config, s.path)
+		if raw == nil {
+			delete(project.Enabled, s.id)
+		} else {
+			if project.Enabled == nil {
+				project.Enabled = map[string]json.RawMessage{}
+			}
+			project.Enabled[s.id] = cloneRaw(raw)
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-deadline.C:
-			return fmt.Errorf("credential service socket did not become ready")
-		case <-tick.C:
+		config.ProjectPlugins[s.path] = project
+		return nil
+	})
+}
+
+func (s scopedStore) SaveState(raw json.RawMessage) error {
+	return common.UpdateConfig(func(config *common.Config) error {
+		project := projectAt(config, s.path)
+		state := project.States[s.id]
+		state.Data = cloneRaw(raw)
+		if len(state.Data) == 0 && !state.BuildPending {
+			delete(project.States, s.id)
+		} else {
+			setState(&project, s.id, state)
 		}
-	}
-	if err := githubapp.CheckCredential(ctx, socketPath); err != nil {
-		return fmt.Errorf("credential service validation failed: %w", err)
-	}
-	return nil
+		config.ProjectPlugins[s.path] = project
+		return nil
+	})
 }
 
-func (m *Manager) serviceActive(ctx context.Context, path string) (bool, error) {
-	err := runSystemctl(ctx, "is-active", "--quiet", unitName(path))
-	if err == nil {
-		return true, nil
+func projectAt(config *common.Config, path string) common.ProjectPlugins {
+	if config.ProjectPlugins == nil {
+		config.ProjectPlugins = map[string]common.ProjectPlugins{}
 	}
-	return false, err
+	return config.ProjectPlugins[path]
 }
 
-func (m *Manager) startAndCheck(ctx context.Context, path string) error {
-	_, runtimeDir, err := renderFragment(path)
+func setState(project *common.ProjectPlugins, id string, state common.PluginState) {
+	if project.States == nil {
+		project.States = map[string]common.PluginState{}
+	}
+	project.States[id] = state
+}
+
+func validateIDs(project common.ProjectPlugins, registered map[string]Plugin) error {
+	known := make(map[string]struct{}, len(registered))
+	for id := range registered {
+		known[id] = struct{}{}
+	}
+	return common.ValidateProjectPlugins(project, known)
+}
+
+func sortedEnabled(project common.ProjectPlugins) []string {
+	ids := make([]string, 0, len(project.Enabled))
+	for id := range project.Enabled {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func unionIDs(project common.ProjectPlugins) []string {
+	set := map[string]struct{}{}
+	for id := range project.Enabled {
+		set[id] = struct{}{}
+	}
+	for id := range project.States {
+		set[id] = struct{}{}
+	}
+	ids := make([]string, 0, len(set))
+	for id := range set {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func has(values map[string]json.RawMessage, id string) bool {
+	_, ok := values[id]
+	return ok
+}
+
+func hostLifecycleEvent(event Event) bool {
+	return event == EventStart || event == EventBuild || event == EventConnect
+}
+
+func pluginError(id string, event Event, err error) error {
+	return fmt.Errorf("plugin %q event %q: %w", id, event, err)
+}
+
+func cloneRaw(raw json.RawMessage) json.RawMessage {
+	return append(json.RawMessage(nil), raw...)
+}
+
+func lockProject(projectPath string) (string, func(), error) {
+	path, err := common.NormalizePath(projectPath)
 	if err != nil {
-		return err
+		return "", nil, err
 	}
-	if err := runSystemctl(ctx, "daemon-reload"); err != nil {
-		return err
-	}
-	if err := runSystemctl(ctx, "enable", "--now", unitName(path)); err != nil {
-		return err
-	}
-	return m.checkReady(ctx, runtimeDir)
-}
-
-type serviceUnitChange struct {
-	path    string
-	digest  string
-	changed bool
-	before  []byte
-	existed bool
-}
-
-func (change serviceUnitChange) restore() error {
-	if change.existed {
-		return writePrivateFile(change.path, change.before)
-	}
-	if err := os.Remove(change.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
-}
-
-func (m *Manager) prepareServiceUnit(projectPath string, previous common.PluginState) (serviceUnitChange, error) {
-	var change serviceUnitChange
-	unit, err := unitPath(projectPath)
-	if previous.UnitPath != "" {
-		unit = previous.UnitPath
-		if err := validateUnitPath(unit, projectPath); err != nil {
-			return change, err
-		}
-	} else if err != nil {
-		return change, err
-	}
-	content, err := m.serviceUnitContent(projectPath)
-	if err != nil {
-		return change, err
-	}
-	change = serviceUnitChange{path: unit, digest: digest(content)}
-	return prepareUnitFile(change, previous.UnitDigest, content)
-}
-
-func prepareUnitFile(change serviceUnitChange, previousDigest string, content []byte) (serviceUnitChange, error) {
-	info, err := os.Lstat(change.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return createUnitFile(change, content)
-	}
-	if err != nil {
-		return change, err
-	}
-	return replaceUnitFile(change, previousDigest, content, info)
-}
-
-func createUnitFile(change serviceUnitChange, content []byte) (serviceUnitChange, error) {
-	if err := os.MkdirAll(filepath.Dir(change.path), 0700); err != nil {
-		return change, err
-	}
-	if err := writePrivateFile(change.path, content); err != nil {
-		return change, err
-	}
-	change.changed = true
-	return change, nil
-}
-
-func replaceUnitFile(change serviceUnitChange, previousDigest string, content []byte, info os.FileInfo) (serviceUnitChange, error) {
-	if !info.Mode().IsRegular() || !ownedByCurrentUser(info) {
-		return change, fmt.Errorf("systemd unit is unsafe")
-	}
-	existing, err := os.ReadFile(change.path)
-	if err != nil {
-		return change, err
-	}
-	if previousDigest == "" || digest(existing) != previousDigest {
-		return change, fmt.Errorf("systemd unit was modified; refusing to replace it")
-	}
-	change.before = existing
-	change.existed = true
-	change.changed = !bytes.Equal(existing, content)
-	if change.changed {
-		if err := writePrivateFile(change.path, content); err != nil {
-			return change, err
-		}
-	}
-	return change, nil
-}
-
-func validateUnitPath(path, projectPath string) error {
-	if !filepath.IsAbs(path) || filepath.Clean(path) != path || filepath.Base(path) != unitName(projectPath) || filepath.Base(filepath.Dir(path)) != "user" || filepath.Base(filepath.Dir(filepath.Dir(path))) != "systemd" {
-		return fmt.Errorf("stored systemd unit path is invalid")
-	}
-	return nil
-}
-
-func (m *Manager) serviceUnitContent(projectPath string) ([]byte, error) {
 	configPath, err := common.ConfigPath()
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	bin, err := os.Executable()
+	hash := sha256.Sum256([]byte(path))
+	lockPath := filepath.Join(filepath.Dir(configPath), ".dch-plugin-"+hex.EncodeToString(hash[:]))
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0700); err != nil {
+		return "", nil, err
+	}
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	content := "[Unit]\nDescription=dch GitHub App credential service\n\n[Service]\nType=simple\nExecStart=" + systemdExecArg(bin) + " _github-app-serve --project " + systemdExecArg(projectPath) + "\nRestart=on-failure\n"
-	for _, key := range []string{"DCH_CONFIG", "XDG_RUNTIME_DIR", "PATH", "GNUPGHOME", "PASSWORD_STORE_DIR"} {
-		value := os.Getenv(key)
-		if key == "DCH_CONFIG" {
-			value = configPath
-		}
-		if value != "" {
-			content += "Environment=" + systemdEnv(key, value) + "\n"
-		}
-	}
-	content += "\n[Install]\nWantedBy=default.target\n"
-	return []byte(content), nil
-}
-
-func ownedByCurrentUser(info os.FileInfo) bool {
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	return ok && int(stat.Uid) == os.Getuid()
-}
-
-func runSystemctl(ctx context.Context, args ...string) error {
-	args = append([]string{"--user"}, args...)
-	commandCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(commandCtx, "systemctl", args...)
-	var output limitedOutput
-	cmd.Stdout = &output
-	cmd.Stderr = &output
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("systemctl %s failed: %s", args[1], strings.TrimSpace(output.String()))
-	}
-	return nil
-}
-
-type limitedOutput struct{ buffer bytes.Buffer }
-
-func (output *limitedOutput) Write(data []byte) (int, error) {
-	const limit = 4096
-	originalLength := len(data)
-	remaining := limit - output.buffer.Len()
-	if remaining > 0 {
-		if len(data) > remaining {
-			data = data[:remaining]
-		}
-		_, _ = output.buffer.Write(data)
-	}
-	return originalLength, nil
-}
-func (output *limitedOutput) String() string { return output.buffer.String() }
-
-func systemdArg(s string) string {
-	return "\"" + strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "\n", "\\n", "\r", "\\r", "%", "%%").Replace(s) + "\""
-}
-func systemdExecArg(s string) string      { return systemdArg(strings.ReplaceAll(s, "$", "$$")) }
-func systemdEnv(key, value string) string { return systemdArg(key + "=" + value) }
-
-func unitName(path string) string { return "dch-github-app-" + digest([]byte(path))[:16] + ".service" }
-func unitPath(path string) (string, error) {
-	config, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	if !filepath.IsAbs(config) {
-		return "", fmt.Errorf("user config directory must be absolute")
-	}
-	return filepath.Join(config, "systemd", "user", unitName(path)), nil
-}
-func managedFragment(path string) string {
-	return filepath.Join(path, ".devcontainer", "devcontainer.local.d", "90-dch-github-app.json")
-}
-func digest(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
-
-func cloneProjectPlugins(project common.ProjectPlugins) common.ProjectPlugins {
-	clone := common.ProjectPlugins{Enabled: make(map[string]githubapp.Config, len(project.Enabled)), States: make(map[string]common.PluginState, len(project.States))}
-	for id, cfg := range project.Enabled {
-		permissions := make(map[string]string, len(cfg.Permissions))
-		for key, value := range cfg.Permissions {
-			permissions[key] = value
-		}
-		cfg.Permissions = permissions
-		clone.Enabled[id] = cfg
-	}
-	for id, state := range project.States {
-		clone.States[id] = state
-	}
-	return clone
-}
-
-func readOwnedFile(path, expected string) ([]byte, bool, error) {
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, false, fmt.Errorf("plugin fragment is not a regular file")
-	}
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	if expected == "" || digest(data) != expected {
-		return nil, false, fmt.Errorf("plugin fragment was modified; refusing to overwrite or remove it")
-	}
-	return data, true, nil
-}
-
-func writePrivateFile(path string, data []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".dch-plugin-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(0600); err != nil {
-		tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
-}
-
-func restoreFile(path string, data []byte, existed bool) error {
-	if existed {
-		return writePrivateFile(path, data)
-	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
-}
-
-func lockConfig() (func(), error) {
-	path, err := common.ConfigPath()
-	if err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return nil, err
-	}
-	fd, err := syscall.Open(path+".plugins.lock", syscall.O_CREAT|syscall.O_RDWR|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0600)
-	if err != nil {
-		return nil, err
-	}
-	file := os.NewFile(uintptr(fd), path+".plugins.lock")
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || !ownedByCurrentUser(info) {
-		_ = file.Close()
-		return nil, fmt.Errorf("plugin config lock is unsafe")
+	if err != nil {
+		file.Close()
+		return "", nil, err
 	}
-	if err := file.Chmod(0600); err != nil {
-		_ = file.Close()
-		return nil, err
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || stat.Uid != uint32(os.Geteuid()) {
+		file.Close()
+		return "", nil, fmt.Errorf("unsafe project operation lock file %s", lockPath)
 	}
-	if err := syscall.Flock(fd, syscall.LOCK_EX); err != nil {
-		_ = file.Close()
-		return nil, err
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+		file.Close()
+		return "", nil, err
 	}
-	return func() { _ = syscall.Flock(fd, syscall.LOCK_UN); _ = file.Close() }, nil
+	return path, func() {
+		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = file.Close()
+	}, nil
 }
