@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"dch/internal/plugins"
 )
@@ -60,6 +61,108 @@ func TestConfigureDiscoveryUsesTwoDeviceFlowsAndRequiresSameUser(t *testing.T) {
 	if fixture.polls[0].Get("repository_id") != "" || fixture.polls[1].Get("repository_id") != "77" {
 		t.Fatalf("discovery/scoped polls = %#v", fixture.polls)
 	}
+}
+
+func TestConfigureAnchorsCandidateExpiryToOAuthResponse(t *testing.T) {
+	setupHostHookTest(t, true)
+	project := gitProject(t, true)
+	fixture := newOAuthFixture(t, []int64{9001})
+	clock := manualAuthClock{now: time.Now()}
+	fixture.clock = clock.read
+	fixture.onIssue = func() { clock.advance(5 * time.Second) }
+	fixture.onScope = func() { clock.advance(10 * time.Second) }
+	ui := &fakeInteraction{selected: "77", onConfirm: func(title string) {
+		if title == "Confirm GitHub account" {
+			clock.advance(20 * time.Second)
+		}
+	}}
+	passPath, secretPath := writablePass(t)
+	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com", PassPath: passPath, Now: clock.read}
+	prepared, err := plugin.Configure(context.Background(), configureContext(project), ui)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener := readyCredentialSocket(t, project)
+	defer listener.Close()
+	if _, err := prepared.Commit(context.Background(), plugins.HostContext{ProjectPath: project, Config: prepared.Config, Store: &testScopedStore{}}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(secretPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var set TokenSet
+	if err := json.Unmarshal(data, &set); err != nil {
+		t.Fatal(err)
+	}
+	if expected := fixture.issuedAt.Add(time.Hour); !set.AccessTokenExpiresAt.Equal(expected) {
+		t.Fatalf("access expiry = %s, want OAuth response expiry %s", set.AccessTokenExpiresAt, expected)
+	}
+	if expected := fixture.issuedAt.Add(2 * time.Hour); !set.RefreshTokenExpiresAt.Equal(expected) {
+		t.Fatalf("refresh expiry = %s, want OAuth response expiry %s", set.RefreshTokenExpiresAt, expected)
+	}
+}
+
+func TestConfigureRejectsTokenExpiredDuringConfirmation(t *testing.T) {
+	project := gitProject(t, true)
+	fixture := newOAuthFixture(t, []int64{9001})
+	fixture.accessExpiresIn = 30
+	clock := manualAuthClock{now: time.Now()}
+	fixture.clock = clock.read
+	fixture.onIssue = func() { clock.advance(5 * time.Second) }
+	fixture.onScope = func() { clock.advance(10 * time.Second) }
+	marker := filepath.Join(t.TempDir(), "pass-used")
+	passPath := filepath.Join(t.TempDir(), "pass")
+	if err := os.WriteFile(passPath, []byte("#!/bin/sh\nprintf called > "+marker+"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ui := &fakeInteraction{selected: "77", onConfirm: func(title string) {
+		if title == "Confirm GitHub account" {
+			clock.advance(20 * time.Second)
+		}
+	}}
+	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com", PassPath: passPath, Now: clock.read}
+	if _, err := plugin.Configure(context.Background(), configureContext(project), ui); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("Configure() error = %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("pass was invoked for expired candidate: %v", err)
+	}
+}
+
+func TestConfigureRejectsNearExpiryAfterScopeVerification(t *testing.T) {
+	project := gitProject(t, true)
+	fixture := newOAuthFixture(t, []int64{9001})
+	fixture.accessExpiresIn = 300
+	clock := manualAuthClock{now: time.Now()}
+	fixture.clock = clock.read
+	fixture.onIssue = func() { clock.advance(5 * time.Second) }
+	fixture.onScope = func() { clock.advance(10 * time.Second) }
+	ui := &fakeInteraction{selected: "77", onConfirm: func(title string) {
+		if title == "Confirm GitHub account" {
+			clock.advance(20 * time.Second)
+		}
+	}}
+	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com", Now: clock.read}
+	if _, err := plugin.Configure(context.Background(), configureContext(project), ui); err == nil || !strings.Contains(err.Error(), "too close") {
+		t.Fatalf("Configure() error = %v", err)
+	}
+}
+
+type manualAuthClock struct{ now time.Time }
+
+func (c *manualAuthClock) read() time.Time         { return c.now }
+func (c *manualAuthClock) advance(d time.Duration) { c.now = c.now.Add(d) }
+
+func writablePass(t *testing.T) (string, string) {
+	t.Helper()
+	passPath, secretPath := filepath.Join(t.TempDir(), "pass"), filepath.Join(t.TempDir(), "secret.json")
+	script := "#!/bin/sh\ncase \"$1\" in\nshow) if [ -f \"$DCH_WRITABLE_SECRET\" ]; then cat \"$DCH_WRITABLE_SECRET\"; else echo 'not in the password store' >&2; exit 1; fi ;;\ninsert) cat > \"$DCH_WRITABLE_SECRET\" ;;\nrm) rm -f \"$DCH_WRITABLE_SECRET\" ;;\nesac\n"
+	if err := os.WriteFile(passPath, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DCH_WRITABLE_SECRET", secretPath)
+	return passPath, secretPath
 }
 
 func TestConfigureStopsDiscoveryWhenUserDeclinesAccountBeforeRepositoryListing(t *testing.T) {
@@ -129,18 +232,22 @@ func assertPreparedUserBinding(t *testing.T, raw json.RawMessage, project string
 }
 
 type fakeInteraction struct {
-	selected string
-	confirms int
-	denyAt   int
-	opened   int
+	selected  string
+	confirms  int
+	denyAt    int
+	opened    int
+	onConfirm func(string)
 }
 
 func (f *fakeInteraction) Notify(context.Context, string, string) error { return nil }
 func (f *fakeInteraction) Select(_ context.Context, _ string, _ []plugins.Choice, _ int) (string, error) {
 	return f.selected, nil
 }
-func (f *fakeInteraction) Confirm(context.Context, string, string) (bool, error) {
+func (f *fakeInteraction) Confirm(_ context.Context, title, _ string) (bool, error) {
 	f.confirms++
+	if f.onConfirm != nil {
+		f.onConfirm(title)
+	}
 	return f.confirms != f.denyAt, nil
 }
 func (f *fakeInteraction) OpenBrowser(context.Context, string) error { f.opened++; return nil }
@@ -152,11 +259,16 @@ type oauthFixture struct {
 	polls               []url.Values
 	userIDs             []int64
 	repositoryListCalls int
+	issuedAt            time.Time
+	clock               func() time.Time
+	onIssue             func()
+	onScope             func()
+	accessExpiresIn     int
 }
 
 func newOAuthFixture(t *testing.T, userIDs []int64) *oauthFixture {
 	t.Helper()
-	fixture := &oauthFixture{userIDs: userIDs}
+	fixture := &oauthFixture{userIDs: userIDs, clock: time.Now}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fixture.handle(w, r) })
 	fixture.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		recorder := httptest.NewRecorder()
@@ -175,10 +287,18 @@ func (f *oauthFixture) handle(w http.ResponseWriter, r *http.Request) {
 		f.deviceRequests = append(f.deviceRequests, values)
 		_, _ = io.WriteString(w, `{"device_code":"device","user_code":"ABCD-EFGH","verification_uri":"https://github.com/login/device","interval":1,"expires_in":600}`)
 	case r.URL.Path == "/login/oauth/access_token":
+		if f.onIssue != nil {
+			f.onIssue()
+		}
+		f.issuedAt = f.clock()
 		body, _ := io.ReadAll(r.Body)
 		values, _ := url.ParseQuery(string(body))
 		f.polls = append(f.polls, values)
-		_, _ = io.WriteString(w, `{"access_token":"opaque-access","refresh_token":"opaque-refresh","expires_in":3600,"refresh_token_expires_in":7200,"token_type":"bearer"}`)
+		expiresIn := f.accessExpiresIn
+		if expiresIn == 0 {
+			expiresIn = 3600
+		}
+		_, _ = fmt.Fprintf(w, `{"access_token":"opaque-access","refresh_token":"opaque-refresh","expires_in":%d,"refresh_token_expires_in":7200,"token_type":"bearer"}`, expiresIn)
 	case r.URL.Path == "/repos/octo/repo":
 		_, _ = io.WriteString(w, `{"id":77,"full_name":"octo/repo"}`)
 	case r.URL.Path == "/user":
@@ -190,8 +310,14 @@ func (f *oauthFixture) handle(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(w, `{"id":%d,"login":"octo-user"}`, id)
 	case r.URL.Path == "/user/installations":
 		f.repositoryListCalls++
+		if f.onScope != nil {
+			f.onScope()
+		}
 		_, _ = io.WriteString(w, `{"total_count":1,"installations":[{"id":3}]}`)
 	case r.URL.Path == "/user/installations/3/repositories":
+		if f.onScope != nil {
+			f.onScope()
+		}
 		_, _ = io.WriteString(w, `{"total_count":1,"repositories":[{"id":77,"full_name":"octo/repo"}]}`)
 	default:
 		w.WriteHeader(http.StatusNotFound)

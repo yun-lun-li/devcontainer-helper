@@ -24,6 +24,7 @@ type Plugin struct {
 	HTTPClient *http.Client
 	APIBaseURL string
 	PassPath   string
+	Now        func() time.Time
 }
 
 func New() *Plugin { return &Plugin{} }
@@ -129,11 +130,11 @@ func (p *Plugin) Configure(ctx context.Context, configure plugins.ConfigureConte
 	if err != nil {
 		return plugins.PreparedConfiguration{}, err
 	}
-	pair, user, err := p.authorizeRepository(ctx, shared.ClientID, resolution.Repository, configure.Host.Config, resolution.DiscoveryUserID, interaction)
+	issued, user, err := p.authorizeRepository(ctx, shared.ClientID, resolution.Repository, configure.Host.Config, resolution.DiscoveryUserID, interaction)
 	if err != nil {
 		return plugins.PreparedConfiguration{}, err
 	}
-	return p.prepareConfiguration(configure.Host.ProjectPath, shared.ClientID, resolution.Repository, user, pair)
+	return p.prepareConfiguration(configure.Host.ProjectPath, shared.ClientID, resolution.Repository, user, issued)
 }
 
 func (p *Plugin) chooseRepository(ctx context.Context, project, clientID string, ui plugins.Interaction) (repositoryResolution, error) {
@@ -152,11 +153,15 @@ func (p *Plugin) chooseRepository(ctx context.Context, project, clientID string,
 	return p.resolveRepository(ctx, selected, clientID, ui)
 }
 
-func (p *Plugin) prepareConfiguration(project, clientID string, repo Repository, user githubUser, pair *api.AccessToken) (plugins.PreparedConfiguration, error) {
+func (p *Plugin) prepareConfiguration(project, clientID string, repo Repository, user githubUser, issued issuedToken) (plugins.PreparedConfiguration, error) {
 	cfg := Config{ClientID: clientID, ProjectPath: project, UserID: user.ID, Login: user.Login, RepositoryID: repo.ID, Repository: repo.FullName}
-	tokens, err := tokenSet(pair, cfg, p.now())
+	tokens, err := tokenSet(issued.Pair, cfg, issued.ReceivedAt)
 	if err != nil {
 		return plugins.PreparedConfiguration{}, err
+	}
+	now := p.now()
+	if !tokens.AccessTokenExpiresAt.After(now.Add(5*time.Minute)) || !tokens.RefreshTokenExpiresAt.After(now) {
+		return plugins.PreparedConfiguration{}, fmt.Errorf("GitHub credential expired or is too close to expiry after authorization checks")
 	}
 	raw, err := json.Marshal(cfg)
 	if err != nil {
@@ -303,18 +308,18 @@ func (p *Plugin) discoverRepository(ctx context.Context, clientID, remoteName st
 	if err := ui.Notify(ctx, "GitHub discovery", "This step uses one additional authorization to list repositories available to your GitHub account."); err != nil {
 		return repositoryResolution{}, err
 	}
-	pair, err := p.requestDeviceToken(ctx, clientID, 0, ui)
+	issued, err := p.requestDeviceToken(ctx, clientID, 0, ui)
 	if err != nil {
 		return repositoryResolution{}, err
 	}
-	discoveryUser, err := p.fetchUser(ctx, pair.Token)
+	discoveryUser, err := p.fetchUser(ctx, issued.Pair.Token)
 	if err != nil {
 		return repositoryResolution{}, err
 	}
 	if err := confirmDiscoveryUser(ctx, ui, discoveryUser); err != nil {
 		return repositoryResolution{}, err
 	}
-	repos, err := ListAccessibleRepositories(ctx, pair.Token, p.repositoryOptions())
+	repos, err := ListAccessibleRepositories(ctx, issued.Pair.Token, p.repositoryOptions())
 	if err != nil {
 		return repositoryResolution{}, fmt.Errorf("could not completely verify repositories available to this account")
 	}
@@ -342,53 +347,58 @@ func (p *Plugin) discoverRepository(ctx context.Context, clientID, remoteName st
 	return repositoryResolution{Repository: repo, DiscoveryUserID: discoveryUser.ID}, nil
 }
 
-func (p *Plugin) authorizeRepository(ctx context.Context, clientID string, repo Repository, previous json.RawMessage, discoveryUserID int64, ui plugins.Interaction) (*api.AccessToken, githubUser, error) {
-	pair, err := p.requestDeviceToken(ctx, clientID, repo.ID, ui)
+func (p *Plugin) authorizeRepository(ctx context.Context, clientID string, repo Repository, previous json.RawMessage, discoveryUserID int64, ui plugins.Interaction) (issuedToken, githubUser, error) {
+	issued, err := p.requestDeviceToken(ctx, clientID, repo.ID, ui)
 	if err != nil {
-		return nil, githubUser{}, err
+		return issuedToken{}, githubUser{}, err
 	}
-	user, err := p.fetchUser(ctx, pair.Token)
+	user, err := p.fetchUser(ctx, issued.Pair.Token)
 	if err != nil {
-		return nil, user, err
+		return issuedToken{}, user, err
 	}
 	if discoveryUserID > 0 && user.ID != discoveryUserID {
-		return nil, user, fmt.Errorf("GitHub account changed between discovery and repository authorization; start again")
+		return issuedToken{}, user, fmt.Errorf("GitHub account changed between discovery and repository authorization; start again")
 	}
 	if err := confirmAuthorizedUser(ctx, ui, user, previous); err != nil {
-		return nil, user, err
+		return issuedToken{}, user, err
 	}
-	if err := VerifyRepositoryScope(ctx, pair.Token, repo, p.repositoryOptions()); err != nil {
-		return nil, user, fmt.Errorf("GitHub did not confirm access limited to the selected repository")
+	if err := VerifyRepositoryScope(ctx, issued.Pair.Token, repo, p.repositoryOptions()); err != nil {
+		return issuedToken{}, user, fmt.Errorf("GitHub did not confirm access limited to the selected repository")
 	}
-	return pair, user, nil
+	return issued, user, nil
 }
 
-func (p *Plugin) requestDeviceToken(ctx context.Context, clientID string, repositoryID int64, ui plugins.Interaction) (*api.AccessToken, error) {
+type issuedToken struct {
+	Pair       *api.AccessToken
+	ReceivedAt time.Time
+}
+
+func (p *Plugin) requestDeviceToken(ctx context.Context, clientID string, repositoryID int64, ui plugins.Interaction) (issuedToken, error) {
 	host, err := oauth.NewGitHubHost("https://github.com")
 	if err != nil {
-		return nil, fmt.Errorf("GitHub device authorization is unavailable")
+		return issuedToken{}, fmt.Errorf("GitHub device authorization is unavailable")
 	}
 	form := contextFormClient{ctx: ctx, client: p.oauthClient(), repositoryID: repositoryID}
 	code, err := device.RequestCode(form, host.DeviceCodeURL, clientID, []string{"offline_access"})
 	if err != nil {
-		return nil, fmt.Errorf("GitHub device authorization could not start: %w", err)
+		return issuedToken{}, fmt.Errorf("GitHub device authorization could not start: %w", err)
 	}
 	if !validDeviceVerificationURL(code.VerificationURI) {
-		return nil, fmt.Errorf("GitHub returned an unsafe verification URL")
+		return issuedToken{}, fmt.Errorf("GitHub returned an unsafe verification URL")
 	}
 	if err := ui.Notify(ctx, "GitHub authorization", fmt.Sprintf("Enter code %s at %s", code.UserCode, code.VerificationURI)); err != nil {
-		return nil, err
+		return issuedToken{}, err
 	}
 	if err := ui.OpenBrowser(ctx, code.VerificationURI); err != nil {
 		if err := ui.Notify(ctx, "Open GitHub manually", code.VerificationURI); err != nil {
-			return nil, err
+			return issuedToken{}, err
 		}
 	}
 	pair, err := device.Wait(ctx, form, host.TokenURL, device.WaitOptions{ClientID: clientID, DeviceCode: code})
 	if err != nil {
-		return nil, fmt.Errorf("GitHub authorization did not complete")
+		return issuedToken{}, fmt.Errorf("GitHub authorization did not complete")
 	}
-	return pair, nil
+	return issuedToken{Pair: pair, ReceivedAt: p.now()}, nil
 }
 
 func confirmDiscoveryUser(ctx context.Context, ui plugins.Interaction, user githubUser) error {
@@ -475,7 +485,12 @@ func (p *Plugin) oauthClient() *http.Client {
 	}
 	return &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
-func (p *Plugin) now() time.Time { return time.Now() }
+func (p *Plugin) now() time.Time {
+	if p.Now != nil {
+		return p.Now()
+	}
+	return time.Now()
+}
 func (p *Plugin) fetchUser(ctx context.Context, token string) (githubUser, error) {
 	apiBase := p.APIBaseURL
 	if apiBase == "" {
