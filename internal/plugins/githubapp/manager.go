@@ -173,9 +173,29 @@ func restoreScoped(host plugins.HostContext) error {
 	return errors.Join(host.Store.SaveConfig(host.PreviousConfig), host.Store.SaveState(host.PreviousState))
 }
 
+func validateDisableConfig(host plugins.HostContext) error {
+	if len(host.Config) == 0 || isLegacyConfig(host.Config) {
+		return nil
+	}
+	cfg, err := decodeConfig(host.Config)
+	if err != nil {
+		return err
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	if filepath.Clean(cfg.ProjectPath) != filepath.Clean(host.ProjectPath) {
+		return fmt.Errorf("GitHub authorization project binding does not match")
+	}
+	return nil
+}
+
 func (p *Plugin) disable(ctx context.Context, host plugins.HostContext) (plugins.Result, error) {
 	if len(host.Config) == 0 && len(host.State) == 0 {
 		return plugins.Result{}, nil
+	}
+	if err := validateDisableConfig(host); err != nil {
+		return plugins.Result{}, err
 	}
 	state, err := decodeState(host.State)
 	if err != nil {
