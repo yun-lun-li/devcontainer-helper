@@ -1,6 +1,7 @@
 package githubapp
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -13,6 +14,53 @@ type Config struct {
 	PrivateKeyPassEntry string            `json:"private_key_pass_entry"`
 	Repository          string            `json:"repository"`
 	Permissions         map[string]string `json:"permissions"`
+}
+
+func (c *Config) UnmarshalJSON(data []byte) error {
+	type configAlias Config
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	appID, err := decodeID(fields["app_id"])
+	if err != nil {
+		return err
+	}
+	installationID, err := decodeID(fields["installation_id"])
+	if err != nil {
+		return err
+	}
+	delete(fields, "app_id")
+	delete(fields, "installation_id")
+	remaining, err := json.Marshal(fields)
+	if err != nil {
+		return err
+	}
+	var decoded configAlias
+	if err := json.Unmarshal(remaining, &decoded); err != nil {
+		return err
+	}
+	decoded.AppID, decoded.InstallationID = appID, installationID
+	*c = Config(decoded)
+	return nil
+}
+
+func decodeID(raw json.RawMessage) (int64, error) {
+	if len(raw) == 0 {
+		return 0, nil
+	}
+	var number int64
+	if raw[0] == '"' {
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return 0, err
+		}
+		return strconv.ParseInt(value, 10, 64)
+	}
+	if err := json.Unmarshal(raw, &number); err != nil {
+		return 0, err
+	}
+	return number, nil
 }
 
 func (c Config) appIDString() string { return strconv.FormatInt(c.AppID, 10) }
