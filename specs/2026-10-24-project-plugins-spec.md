@@ -275,11 +275,14 @@ Installation 應只授權所需 repo；Branch Protection 與 CI 權限另設。
 GitHub 表單只收集 App ID、Installation ID 與所需權限。
 Private key pass entry 與 Owner/repository 不再顯示輸入欄位。
 新設定從 Host pass 的 `dch/github-app/<App ID>/private-key` 讀取私鑰。
+
 新設定省略 Token request 的 repositories，沿用 Installation 已授權的 Repository 範圍。
 既有明確 pass entry 與單一 repo 保留；重新設定不默默擴大原本範圍。
+
 Contents 與 pull_requests 各可選 read／write，或不要求該權限。
 至少必須要求一種權限；兩者都不要求時拒絕啟用。
 既有 repo 限制仍驗證其 Installation 並限制 Token；新設定只限制所選權限。
+
 建立 App、安裝 App 與匯入私鑰由使用者先完成。
 
 使用參數陣列呼叫 pass，不拼接 shell 指令。

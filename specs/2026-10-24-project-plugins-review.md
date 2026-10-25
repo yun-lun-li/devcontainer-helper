@@ -4,7 +4,7 @@ subtitle: 通用 plugin 架構與 github-app · 待使用者最終核准
 lang: zh-Hant
 template: doc
 theme: shadcn
-source: 34b3414 → 9cc1f5f
+source: 34b3414 → 5451f85
 ---
 
 ## A 本次交付
@@ -17,6 +17,10 @@ source: 34b3414 → 9cc1f5f
 - Container 指令由注入的 executor 經 devcontainer exec 執行。
 - GitHub 認證、服務、回滾與接線全部移入 plugins/githubapp。
 - 正式 plugin 只有 github-app；兩個不同 fake plugin 只存在測試。
+- GitHub 表單只詢問 App ID、Installation ID 與兩種權限。
+- 預設 pass 路徑由 App ID 產生；舊自訂路徑仍有效。
+- 未設定 repository 時，Token 可存取 installation 內所有可用 repository。
+- 舊 repository 限制仍有效；至少必須選擇一項權限。
 - local.d 取代舊 local.json。此不相容變更維持原決定。
 - 真實 Linux、Docker、systemd 與 GitHub 驗收仍未執行。
 
@@ -27,8 +31,9 @@ source: 34b3414 → 9cc1f5f
 仍需在對話中明確給予最終核准。
 ```
 
-完整功能版本：`34b3414f2451e2e713a0880d3f533bd48e5b4614` → `9cc1f5f3ded6451752ae4b547dc35fcbe358aa83`。
-架構修訂比較基準：`e1b666a`；最終實作快照：`9cc1f5f`。
+完整功能基準：`34b3414f2451e2e713a0880d3f533bd48e5b4614`。
+架構修訂比較基準：`e1b666a`；先前實作快照：`9cc1f5f`。
+T20 修訂基準：`29e8e6b`；最終實作快照：`5451f858193b38de930cec75c6375b69d3cda45b`。
 完整實作 diff 排除生成的審查頁與 diff 本身。
 
 [完整實作 diff](2026-10-24-project-plugins-changes.diff) · [已核准架構規格](2026-10-24-project-plugins-spec.html)
@@ -112,7 +117,7 @@ internal/
 檔案群組與責任表共同列出實際函式、型別與腳本名稱。
 
 本節不顯示原始碼、diff 或完整檔案展開控制。
-名稱與呼叫關係依最終快照 `9cc1f5f` 核對。
+名稱、呼叫關係與索引依最終快照 `5451f85` 核對。
 
 ### G1 修改：local.d 合併與預覽
 
@@ -150,7 +155,7 @@ group internal/common/devcontainer_config.go: MergedDevcontainerConfig, readJSON
 | `internal/console/devcontainer.go` · `prepareProjectDevcontainer` | 透過 `mergedProjectConfig` 共用合併結果，再分派所有已啟用 plugin 的驗證。後續流程見 G5。 |
 | `.gitignore` | 忽略本 repository 的 local.d 設定。其他 Project 仍須自行設定忽略規則。 |
 
-變更索引（34b3414 → 9cc1f5f；檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 5451f85；檔案與新版本 hunk 起始行）：
 
 - `.gitignore:3`
 - `internal/common/devcontainer_config.go:3,10,19,104`
@@ -205,7 +210,7 @@ ScopedStore 是內建 Go plugin 的責任邊界，不是惡意程式 sandbox。
 停用或移除也清理殘留 Data；清理失敗保留可重試記錄。
 `PluginStatus` 使用通用 Message；ServiceActive 不再是核心必要欄位。
 
-變更索引（34b3414 → 9cc1f5f；檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 5451f85；檔案與新版本 hunk 起始行）：
 
 - `internal/commands/register.go:19`
 - `internal/common/config_store.go:7,95,154`
@@ -216,7 +221,8 @@ ScopedStore 是內建 Go plugin 的責任邊界，不是惡意程式 sandbox。
 
 ### G3 新增：GitHub App provider
 
-確認單一 repository 與選定權限。先用 App JWT 驗證 installation，再申請 Token。
+確認 installation 全範圍與選定權限。
+只有舊設定指定 repository 時，才先核對該 repo 的 installation。
 
 需你 review：是。
 
@@ -235,22 +241,23 @@ Provider.Token -> Provider.refreshToken: 取得更新權時呼叫
 Provider.refreshToken -> Provider.mint: 呼叫
 Provider.mint -> Provider.loadPrivateKey: 呼叫
 Provider.mint -> Provider.createAppJWT: 呼叫
-Provider.mint -> Provider.verifyRepositoryInstallation: 呼叫
-Provider.mint -> Provider.requestInstallationToken: installation 符合才呼叫
+Provider.mint -> Provider.verifyRepositoryInstallation: 僅舊 repository 非空時呼叫
+Provider.mint -> Provider.requestInstallationToken: 無 repository 或核對成功後呼叫
 Provider.refreshToken --> Provider 與 refreshCall: 狀態：快取與等待者結果
 group internal/plugins/githubapp/provider.go: Provider.Token, awaitRefresh, Provider.refreshToken, Provider.mint, Provider.loadPrivateKey, Provider.createAppJWT, Provider.verifyRepositoryInstallation, Provider.requestInstallationToken, Provider 與 refreshCall
 ```
 
 | 檔案／函式或型別 | 責任與後續影響 |
 | --- | --- |
-| `internal/plugins/githubapp/config.go` · `Config`、`Config.Validate` | 限制正整數 ID、單一 owner/repository、contents 與 pull_requests 的 read/write。 |
-| `internal/plugins/githubapp/provider.go` · `Provider`、`ProviderOptions`、`NewProvider` | 保存設定、逾時、HTTP client 與時鐘；停用 HTTP redirect。 |
+| `internal/plugins/githubapp/config.go` · `Config`、`Config.normalized` | 空白 pass entry 衍生為 `dch/github-app/<AppID>/private-key`。明確設定的舊路徑與 repository 保留。 |
+| 同檔 · `Config.Validate`、`validateIDs`、`validatePassEntry`、`validateOptionalRepository`、`validatePermissions` | 驗證正整數 ID、pass 路徑與可選 owner/repository。權限只接受 contents／pull_requests 的 read/write，且不可全空。 |
+| `internal/plugins/githubapp/provider.go` · `Provider`、`ProviderOptions`、`NewProvider` | 先正規化 pass entry，再保存設定、逾時、HTTP client 與時鐘；停用 HTTP redirect。 |
 | 同檔 · `Provider.Token`、`refreshCall`、`awaitRefresh`、`Provider.refreshToken` | mutex 同時保護快取判定與更新權；並行請求共用結果。更新失敗可由下次請求重試。 |
 | 同檔 · `Provider.loadPrivateKey`、`securePassEnvironment`、`parsePrivateKey` | 非互動執行 pass；限制輸出大小；解析 Host RSA 私鑰。 |
-| 同檔 · `Provider.createAppJWT`、`Provider.verifyRepositoryInstallation` | 簽發 App JWT；查詢該 repo 的 installation，必須符合設定 ID。 |
-| 同檔 · `Provider.requestInstallationToken` | 只申請該 repo 與選定權限；驗證 Token 格式及有效期。結果只留 Host 記憶體。 |
+| 同檔 · `Provider.createAppJWT`、`Provider.verifyRepositoryInstallation` | 簽發 App JWT。僅舊 repository 非空時查詢該 repo，且 installation ID 必須符合設定。 |
+| 同檔 · `Provider.requestInstallationToken` | 始終送出選定權限。未設定 repository 時省略 repositories；舊設定只送出該 repo。驗證 Token 格式及有效期，結果只留 Host 記憶體。 |
 
-變更索引（34b3414 → 9cc1f5f；檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 5451f85；檔案與新版本 hunk 起始行）：
 
 - `internal/plugins/githubapp/config.go:1`
 - `internal/plugins/githubapp/provider.go:1`
@@ -300,7 +307,7 @@ group internal/plugins/githubapp/server.go: Serve, prepareCredentialSocket, cred
 | `internal/plugins/githubapp/server.go` · `prepareCredentialSocket`、`listenCredentialSocket`、`acquireServerLock` | 排除重複 server、處理舊 Socket、建立 0600 Unix Socket；不開 TCP。 |
 | 同檔 · `healthHandler`、`credentialHandler`、`CheckCredential` | health 不取 Token；credential 呼叫 Provider.Token 並帶 no-store；啟用驗證不輸出 Token。 |
 
-變更索引（34b3414 → 9cc1f5f；檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 5451f85；檔案與新版本 hunk 起始行）：
 
 - `internal/commands/commands.go:1,134`
 - `internal/plugins/githubapp/manager.go:1`
@@ -352,7 +359,7 @@ group internal/console/devcontainer.go: projectExecutor.Exec, prepareProjectDevc
 容器只需要 Git、gh、curl 與 POSIX shell，不複製 dch binary。
 接線保留既有 lifecycle hooks；腳本從固定 Socket 取得短期 Token。
 
-變更索引（34b3414 → 9cc1f5f；檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 5451f85；檔案與新版本 hunk 起始行）：
 
 - `internal/console/devcontainer.go:1,11,59,95`
 - `internal/plugins/githubapp/adapter.go:1`
@@ -369,6 +376,9 @@ group internal/console/devcontainer.go: projectExecutor.Exec, prepareProjectDevc
 ```
 
 入口：Project → Plugins。Console 只理解 Definition 與通用狀態。
+GitHub metadata 移除 pass entry 與 Owner/repository 提問。
+Notices 顯示預設 pass 路徑與 installation 全範圍。
+既有 JSON 未建模欄位保留；隱藏欄位不會清除舊限制。
 
 ```flow TB
 (Project 選 Plugins) -> pluginsMenu: 選單分派
@@ -405,7 +415,7 @@ group internal/console/devcontainer.go: invokeProjectDevcontainer
 | --- | --- |
 | `internal/console/plugins.go` · `pluginsMenu`、`pluginOptions`、`statusFor` | 按 registry 顯示各 plugin 的啟用、待 Build 與安全訊息。 |
 | 同檔 · `promptPluginConfig`、`promptPluginField`、`getPluginField`、`setPluginField` | 渲染文字與選項欄位，處理巢狀 JSON Path；保留既有未建模值。 |
-| 同檔 · `confirmPluginEnable`、`pluginConfirmationSummary`、`pluginChoiceLabel` | 只顯示 Field.Confirm 指定的非秘密欄位；依通用 metadata 顯示 repo 與權限授權摘要。 |
+| 同檔 · `confirmPluginEnable`、`pluginConfirmationSummary`、`pluginChoiceLabel` | 只顯示 Field.Confirm 指定的非秘密欄位；依通用 metadata 顯示權限授權摘要；installation 範圍由 Notices 說明。 |
 | `internal/plugins/githubapp/plugin.go` · `Plugin.Definition`、`Plugin.ValidateConfig` | GitHub 欄位、權限與驗證全部由具體實作提供。 |
 | `internal/console/up.go` · `startProject`、`startProjectOperation` | 操作前後查 pending；只有新建容器的 Start 在 up 與所有 hook 成功後 MarkBuilt。 |
 | `internal/console/build.go` · `confirmRebuild`、`buildProject`、`buildProjectOperation` | 保留資料移除確認與快取選項；重建與所有 hook 成功後 MarkBuilt。 |
@@ -450,7 +460,7 @@ Shell 程序不綁定結束後即取消的 operation context。
 
 取消註冊保留工作區與容器；清理失敗保留註冊與重試資料。
 
-變更索引（34b3414 → 9cc1f5f；檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 5451f85；檔案與新版本 hunk 起始行）：
 
 - `internal/console/build.go:1,16`
 - `internal/console/connect.go:1`
@@ -473,7 +483,7 @@ Shell 程序不綁定結束後即取消的 operation context。
 GitHub 舊測試已移入 `internal/plugins/githubapp/`，保留認證與 Socket 回歸範圍。
 最終指令、複雜度與 reviewer 結論見 F。
 
-變更索引（34b3414 → 9cc1f5f；檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 5451f85；檔案與新版本 hunk 起始行）：
 
 - `internal/commands/plugin_serve_test.go:1`
 - `internal/commands/register_test.go:28,44`
@@ -510,7 +520,7 @@ README 說明 Console 路徑、GitHub 前置條件、local.d 遷移與人工 Lin
 規格 Markdown／HTML 包含獨立目錄樹、module／file 職責與 Host／Container 邊界。
 `.gitattributes` 保留審查產物中的字面空白。
 
-變更索引（34b3414 → 9cc1f5f；檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 5451f85；檔案與新版本 hunk 起始行）：
 
 - `.gitattributes:1`
 - `README.md:5,21,57,68`
@@ -545,6 +555,9 @@ README 說明 Console 路徑、GitHub 前置條件、local.d 遷移與人工 Lin
 | --- | --- | --- |
 | plugin 架構 | manager 與 Console 綁定 GitHub | 通用 Plugin interface；main 註冊與注入 |
 | 設定表單 | Console 定義 GitHub 欄位 | Plugin.Definition 提供欄位；Console 通用渲染 |
+| GitHub 新設定 | 詢問 pass entry 與 owner/repository | 只詢問兩個 ID 與權限；pass 路徑由 App ID 衍生 |
+| GitHub Token 範圍 | 必須指定單一 repo | 未指定時使用 installation 全範圍；仍受選定權限限制 |
+| GitHub 舊設定 | 明確 pass entry 與 repository | 兩欄保留且生效；不需遷移 |
 | Host JSON | GitHub 型別與專屬摘要 | 通用 RawMessage、BuildPending 與私有 Data |
 | 舊 metadata | 摘要及 unit 路徑直接放 state | 相容解碼保留至 Data；不建立服務、不遺失所有權 |
 | 內部 Host 入口 | `_github-app-serve` | 通用 `_plugin-serve`；舊入口由 metadata alias 相容 |
@@ -563,6 +576,8 @@ README 說明 Console 路徑、GitHub 前置條件、local.d 遷移與人工 Lin
 請自行將個人片段加入版本控制忽略規則。
 ```
 
+T20 無既有設定破壞性變更。
+新設定使用 installation 全範圍，必須先確認 installation 可存取的 repository。
 Build 與容器資料移除仍需原有確認，不自動重建。
 服務在關閉 dch 或 Stop 容器後保留。
 停用立即停止後續憑證供應，但不撤銷已回傳的短期 Token。
@@ -574,9 +589,10 @@ Git 或 gh -> Socket: GET /credential
 Socket -> Provider: 請求 Token
 Provider -> Provider: 檢查記憶體快取
 Provider -> pass: 需要更新才讀取私鑰
-Provider -> GitHub: App JWT 驗證 repo installation
-GitHub --> Provider: installation ID 必須符合設定
-Provider -> GitHub: 申請單一 repo 與選定權限
+Provider -> GitHub: 舊 repository 非空才驗證 repo installation
+GitHub --> Provider: 舊設定的 installation ID 必須符合
+Provider -> GitHub: POST installation Token 與選定權限
+note Provider, GitHub: 無 repository 時省略 repositories；舊設定只送出單一 repo
 Provider --> Socket: 短期 Token
 Socket --> Git 或 gh: no-store 回應
 ```
@@ -592,76 +608,62 @@ Socket --> Git 或 gh: no-store 回應
 | Socket | 目前使用者擁有的 XDG_RUNTIME_DIR；目錄 0700、Socket 0600 |
 | 掛載 | 整個 runtime 目錄唯讀；服務重啟後可看見新 Socket |
 | 信任 | 可連 Socket 的程序可取得該 Project Token；Docker 管理員亦可存取 |
-| 不支援 | Compose、遠端 Docker、GitHub Enterprise、SSH 認證、多 repo Token |
+| pass | 未指定 entry 時使用 `dch/github-app/<AppID>/private-key`；舊自訂 entry 保留 |
+| Token 範圍 | 無 repository 時使用 installation 可用 repository；舊 repository 限制保留 |
+| 不支援 | Compose、遠端 Docker、GitHub Enterprise、SSH 認證、自訂多 repo 清單 |
 
 容器 UID 必須能連線 Socket；錯誤訊息提示檢查 UID。
 此環境未驗證真實容器 UID 與重啟行為。
 
 ## F 測試與獨立 Review
 
-最終驗證快照：`9cc1f5f3ded6451752ae4b547dc35fcbe358aa83`。
-主代理已在此快照完成測試、編譯與靜態檢查。
+T20 最終驗證快照：`5451f858193b38de930cec75c6375b69d3cda45b`。
+本輪修訂基準為 `29e8e6b`。
+下列歷史結果不代表 T20 或更新後 HTML 已通過覆核。
 
-| 複雜度檢查 | 結果 |
-| --- | --- |
-| 工具 | gocognit v1.3.0；-json -exact-recursion . |
-| 判定範圍 | 相對原始 34b3414；AST 辨識 424 個新增／修改具名函式，包含測試與 main |
-| 匿名函式 | 納入所屬函式計分 |
-| 最終值 | 最高 15；0 項違規；未抑制 findings |
-
-以下八個 legacy 函式未修改，超過 15，屬本次範圍外。
-此結果不表示整個 repository 已無既存違規。
-
-| 未修改函式 | 複雜度 |
-| --- | --- |
-| `internal/common/project.go` · `jsoncToJSON` | 56 |
-| `internal/commands/update.go` · `update` | 53 |
-| `internal/console/menu.go` · `arrowChoose` | 46 |
-| `internal/console/logs.go` · `showLogs` | 41 |
-| `internal/console/projects_menu_test.go` · `TestStopHandlesContainersDisappearing` | 40 |
-| `internal/console/stop.go` · `stopProject` | 26 |
-| `internal/console/devcontainer.go` · `rebaseConfigPaths` | 26 |
-| `internal/console/menu.go` · `chooseView` | 19 |
-
-| 指令或範圍 | 結果 | 證據與限制 |
+| 本輪指令或範圍 | 結果 | 證據與限制 |
 | --- | --- | --- |
-| go test ./... -count=1 | PASS | 主代理於 9cc1f5f 執行；全部 6 個 package 通過 |
-| go build ./... | PASS | 主代理於最終快照編譯 |
-| go vet ./... | PASS | 主代理於最終快照靜態檢查 |
-| git diff --check 34b3414..9cc1f5f | PASS | 主代理檢查整體功能差異；產物另執行工作區格式檢查 |
-| 通用契約與狀態 | PASS | 兩個不同 fake plugin；獨立欄位／Data、排序、事件、pending 聯集與失敗保留 |
-| 鎖與 Connect | PASS | 同 Project 序列化；最後 pending 守門與 CLI Start 在鎖內；互動等待在鎖外 |
-| 容器 executor | PASS | 原始參數、stdout、overflow、stderr 與合併設定；假 devcontainer，非真實容器 |
-| GitHub 認證與服務 | PASS | 假 pass／systemctl、httptest、可控時間、真實暫存 Unix Socket 與 Git plumbing |
-| 相容與資源保護 | PASS | 舊 JSON、摘要／unit 路徑保留、手改保護、回滾與清理重試 |
-| 授權確認表單 | PASS | metadata 的非秘密 Confirm 欄位；repo／權限摘要與選項標籤 |
-| 通用表單擷取 | PASS | 最終快照真實測試輸出見 G；未連線 GitHub 或 Docker |
-| go run . help | NOT RUN | 本輪未重跑；不沿用舊 smoke check 當作本輪證據 |
-| go test -race ./... | NOT RUN | CGO 關閉，且無 C compiler |
+| go test ./... -count=1 | PASS | 主代理於 5451f85 執行；全部 6 個 package 通過 |
+| go build ./... | PASS | 主代理於 5451f85 執行；通過 |
+| go vet ./... | PASS | 主代理於 5451f85 執行；通過 |
+| Cognitive Complexity | PASS | gocognit v1.3.0；AST 辨識 439 個新增／修改具名函式，最高 15，0 違規 |
+| git diff --check | PASS | 主代理檢查 34b3414 → 5451f85 完整差異 |
+| 最終完整 diff 與索引 | PASS | 34b3414 → 5451f85；主代理已更新完整 diff，逐檔核對新版本 hunk 起始行 |
+| 更新後 HTML 產生與內容 | PASS | am render --no-open；7 panels、10 flow、1 tree、1 sequence；6 個未勾選框；C 無原始碼、diff 或展開控制 |
+| 更新後 HTML 瀏覽器與互動 | PASS | Chromium 155；1440×900 與 390×844；10 個 flow、6 個可切換勾選框；無頁面溢出或 CSP 錯誤 |
 | 真實 Linux 驗收 | NOT RUN | 未驗收 Docker／systemd／pass／GPG／GitHub 整合 |
 | UID／重啟／關閉 dch 後認證 | NOT RUN | 需在真實 Linux 容器執行 README 驗收 |
-| HTML 內容與完整索引 | PASS | 53 個整體功能檔案與 hunk；另列 12 個架構修訂移除舊路徑 |
-| HTML 產生與內容 | PASS | am render --no-open；10 個 flow、1 個 tree、1 個 sequence；0 項 STE 警告；C 無原始碼或 diff；6 個未勾選框 |
-| HTML 瀏覽器流程與版面 | PASS | 主代理以 Chromium 155 覆核 9cc1f5f；10 個 flow 可見；G1–G8 與關鍵函式齊全；1440×900、390×844 無水平溢出 |
-| HTML 瀏覽器互動 | PASS | 六框初始未勾選，可勾選及取消；0 項 CSP 錯誤；無舊左右對照或完整原始碼 |
+| go test -race ./... | NOT RUN | CGO 關閉，且無 C compiler |
+
+| 本輪獨立 reviewer | 範圍 | 結論 |
+| --- | --- | --- |
+| Standards＋Spec | 29e8e6b → 5451f85；簡化表單、預設 pass 與 installation 範圍 | 最終重查 0 項未解決 finding；複雜度超標已修正 |
+| Security | 29e8e6b → 5451f85；表單、舊設定、Token 請求與 pass 邊界 | 最終重查 0 項安全 finding；靜態 review，未連線真實 GitHub |
+
+匿名函式納入所屬函式計分；未抑制 findings。
+八個既有超標函式未修改，仍屬本次範圍外。
+此結果不表示整個 repository 已無既存違規。
+
+本輪報告：`simplified-code.md`、`simplified-security.md`。
+報告位於 `.scratch/project-plugins/reviews/`。
+
+| 歷史證據 | 快照與結果 | 限制 |
+| --- | --- | --- |
+| 測試／編譯／vet | 9cc1f5f；PASS，全部 6 個 package 通過 | 尚未簡化 GitHub 表單 |
+| Cognitive Complexity | 9cc1f5f；424 個新增／修改具名函式，最高 15，0 違規 | gocognit v1.3.0；匿名函式納入所屬函式計分 |
+| Standards／Spec／Security | 9cc1f5f；0 項未解決 finding | generic-standards.md、generic-spec.md、generic-security.md |
+| 舊 HTML 版面與互動 | Chromium 155；1440×900、390×844 無水平溢出；六框可切換 | 僅先前頁面；不涵蓋本輪新內容 |
+| 通用表單擷取 | 9cc1f5f；真實測試輸出見 G | Sample metadata，未連線 GitHub 或 Docker |
 
 已保存 red → green 證據：executor stdout、overflow 與 Connect 最後守門。
 T13／T19 未完整保存最初行為 red 紀錄，部分只有編譯失敗。
 因此不宣稱所有項目均有完整 TDD 歷程證據。
 
-| 獨立 reviewer | 最終範圍 | 結論 |
-| --- | --- | --- |
-| Standards | e1b666a → 9cc1f5f；契約文件、核心、表單與 Connect | 0 項未解決 finding；早期文件 Low 已修正 |
-| Spec | 已核准通用架構；最終 9cc1f5f，含 Connect 與授權摘要 | 0 項未解決規格 finding |
-| Security | 通用核心、opaque state、GH 認證／服務、executor、Connect 與表單；最終 9cc1f5f | 0 項可採取行動的安全 finding |
+T20 最初 red 只有缺少 Config.normalized 的編譯失敗。
+後續 focused package 為 green；不宣稱已保存完整行為 red。
+證據：`.scratch/project-plugins/simplified-setup-evidence.md`。
 
-獨立報告：`generic-standards.md`、`generic-spec.md`、`generic-security.md`。
-報告位於 `.scratch/project-plugins/reviews/`。
 Source review 不取代真實環境驗收。
-
-瀏覽器檢查使用獨立 Chromium，不是應用程式內預覽。
-未驗收中文字型顯示。
-真實 Linux 整合驗收仍未執行。
 Root 執行測試時，DAC 拒絕案例會跳過。
 假指令與 Socket 測試不代表真實 UID 或 systemd 驗收已完成。
 

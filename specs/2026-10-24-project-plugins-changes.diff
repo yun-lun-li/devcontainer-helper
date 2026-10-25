@@ -18,7 +18,7 @@ index c31985e..4bf530f 100644
  .devcontainer/devcontainer.local.json
 +.devcontainer/devcontainer.local.d/
 diff --git a/README.md b/README.md
-index 9c3f336..7336dce 100644
+index 9c3f336..393d102 100644
 --- a/README.md
 +++ b/README.md
 @@ -5,7 +5,8 @@
@@ -67,7 +67,7 @@ index 9c3f336..7336dce 100644
 +
 +### GitHub App plugin
 +
-+The built-in GitHub App plugin is Linux-only and gives one project access to one selected GitHub repository. It requires local Docker, a systemd user service, `pass`, and a GPG agent on the host. Create and install the GitHub App, then store its RSA private key in the host's `pass` store. The key entry must be readable by the host user running the dch systemd user service.
++The built-in GitHub App plugin is Linux-only and, by default, gives one project access to every repository available to its GitHub App installation, limited by the selected permissions. It requires local Docker, a systemd user service, `pass`, and a GPG agent on the host. Create and install the GitHub App, then store its RSA private key in the host's `pass` store as `dch/github-app/<AppID>/private-key` (for example, `dch/github-app/12345/private-key`). The key entry must be readable by the host user running the dch systemd user service.
 +
 +Before enabling the plugin, unlock the host GPG agent without printing the key:
 +
@@ -77,7 +77,7 @@ index 9c3f336..7336dce 100644
 +
 +The GPG agent must be able to decrypt without opening a prompt. dch invokes `pass` non-interactively; if the GPG agent's cached unlock expires, unlock the entry again before the next token refresh. The private key remains on the host and is never mounted into the container.
 +
-+Open **Project → Plugins** to configure and enable the plugin. Enter the App ID, installation ID, pass entry, repository (`owner/repository`), and choose `read`, `write`, or disabled for `contents` and `pull_requests`. dch verifies the service and credential before enabling. The resulting installation token is limited to that repository and selected permissions.
++Open **Project → Plugins** to configure and enable the plugin. Enter the App ID and installation ID, then choose `read`, `write`, or disabled for `contents` and `pull_requests`. dch verifies the service and credential before enabling. The resulting installation token can access every repository available to that installation, limited by the selected permissions. Existing configurations with an explicit `repository` setting keep their single-repository scope.
 +
 +The container needs Git 2.30 or newer, GitHub CLI (`gh`), curl, and POSIX `sh`. The plugin adds a read-only mount at `/run/dch-github`, a Git credential helper for HTTPS `github.com`, and a `gh` wrapper available from Connect shells. The wrapper requests a token for each invocation and sets `GH_TOKEN` only for that `gh` process. Other Git hosts keep their existing credential helpers; SSH URLs are unchanged. Existing lifecycle hooks are preserved. The socket directory is mode `0700` and the socket is mode `0600`; the container user must be able to connect to it, so a mismatched UID will fail.
 +
@@ -4341,10 +4341,10 @@ index 0000000..e78f083
 +}
 diff --git a/internal/plugins/githubapp/config.go b/internal/plugins/githubapp/config.go
 new file mode 100644
-index 0000000..987ece5
+index 0000000..e928f00
 --- /dev/null
 +++ b/internal/plugins/githubapp/config.go
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,153 @@
 +package githubapp
 +
 +import (
@@ -4412,23 +4412,59 @@ index 0000000..987ece5
 +
 +func (c Config) appIDString() string { return strconv.FormatInt(c.AppID, 10) }
 +
++func (c Config) normalized() Config {
++	if c.PrivateKeyPassEntry == "" && c.AppID > 0 {
++		c.PrivateKeyPassEntry = "dch/github-app/" + c.appIDString() + "/private-key"
++	}
++	return c
++}
++
 +var passEntryPattern = regexp.MustCompile(`^[A-Za-z0-9_./-]+$`)
 +
 +func (c Config) Validate() error {
++	c = c.normalized()
++	if err := validateIDs(c); err != nil {
++		return err
++	}
++	if err := validatePassEntry(c.PrivateKeyPassEntry); err != nil {
++		return err
++	}
++	if err := validateOptionalRepository(c.Repository); err != nil {
++		return err
++	}
++	return validatePermissions(c.Permissions)
++}
++
++func validateIDs(c Config) error {
 +	if c.AppID <= 0 || c.InstallationID <= 0 {
 +		return fmt.Errorf("app and installation IDs must be positive")
 +	}
-+	if c.PrivateKeyPassEntry == "" || strings.HasPrefix(c.PrivateKeyPassEntry, "-") || !passEntryPattern.MatchString(c.PrivateKeyPassEntry) || strings.Contains(c.PrivateKeyPassEntry, "..") {
++	return nil
++}
++
++func validatePassEntry(entry string) error {
++	if entry == "" || strings.HasPrefix(entry, "-") || !passEntryPattern.MatchString(entry) || strings.Contains(entry, "..") {
 +		return fmt.Errorf("invalid pass entry")
 +	}
-+	parts := strings.Split(c.Repository, "/")
++	return nil
++}
++
++func validateOptionalRepository(repository string) error {
++	if repository == "" {
++		return nil
++	}
++	parts := strings.Split(repository, "/")
 +	if len(parts) != 2 || !validOwner(parts[0]) || !validRepository(parts[1]) {
 +		return fmt.Errorf("repository must be owner/repository")
 +	}
-+	if len(c.Permissions) == 0 {
++	return nil
++}
++
++func validatePermissions(permissions map[string]string) error {
++	if len(permissions) == 0 {
 +		return fmt.Errorf("at least one permission is required")
 +	}
-+	for name, level := range c.Permissions {
++	for name, level := range permissions {
 +		if name != "contents" && name != "pull_requests" {
 +			return fmt.Errorf("unsupported permission")
 +		}
@@ -4464,13 +4500,23 @@ index 0000000..987ece5
 +}
 diff --git a/internal/plugins/githubapp/config_test.go b/internal/plugins/githubapp/config_test.go
 new file mode 100644
-index 0000000..f452a62
+index 0000000..98f7585
 --- /dev/null
 +++ b/internal/plugins/githubapp/config_test.go
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,41 @@
 +package githubapp
 +
 +import "testing"
++
++func TestConfigDefaultsPassEntryAndAllowsInstallationWideScope(t *testing.T) {
++	cfg := Config{AppID: 12, InstallationID: 34, Permissions: map[string]string{"contents": "read"}}
++	if err := cfg.Validate(); err != nil {
++		t.Fatalf("Validate() error = %v", err)
++	}
++	if got := cfg.normalized().PrivateKeyPassEntry; got != "dch/github-app/12/private-key" {
++		t.Fatalf("default pass entry = %q", got)
++	}
++}
 +
 +func TestConfigValidateAcceptsSingleRepositoryAndSupportedPermissions(t *testing.T) {
 +	cfg := Config{AppID: 12, InstallationID: 34, PrivateKeyPassEntry: "dch/project/key", Repository: "octo/repo", Permissions: map[string]string{"contents": "read", "pull_requests": "write"}}
@@ -5328,10 +5374,10 @@ index 0000000..ce552e5
 +}
 diff --git a/internal/plugins/githubapp/plugin.go b/internal/plugins/githubapp/plugin.go
 new file mode 100644
-index 0000000..1d9cde5
+index 0000000..f6feddb
 --- /dev/null
 +++ b/internal/plugins/githubapp/plugin.go
-@@ -0,0 +1,109 @@
+@@ -0,0 +1,110 @@
 +package githubapp
 +
 +import (
@@ -5351,14 +5397,15 @@ index 0000000..1d9cde5
 +
 +func (p *Plugin) Definition() plugins.Definition {
 +	return plugins.Definition{
-+		ID: pluginID, Name: "GitHub App", Description: "Provide scoped GitHub credentials to this project.",
++		ID: pluginID, Name: "GitHub App", Description: "Provide GitHub credentials to this project.",
 +		ServiceAliases: []string{"_github-app-serve"},
-+		Notices:        []string{"Create and install a GitHub App, then store its RSA private key with pass."},
++		Notices: []string{
++			"Store the RSA private key with pass as dch/github-app/<AppID>/private-key.",
++			"Without a legacy repository setting, tokens can access every repository in the GitHub App installation, limited by the selected permissions.",
++		},
 +		Fields: []plugins.Field{
 +			{Name: "app_id", Label: "App ID", Required: true, Kind: plugins.FieldText},
 +			{Name: "installation_id", Label: "Installation ID", Required: true, Kind: plugins.FieldText},
-+			{Name: "private_key_pass_entry", Label: "Private key pass entry", Required: true, Kind: plugins.FieldText},
-+			{Name: "repository", Label: "Owner/repository", Required: true, Confirm: true, Kind: plugins.FieldText},
 +			{Name: "contents", Label: "Contents permission", Confirm: true, Kind: plugins.FieldChoice, Options: permissionChoices(), Path: []string{"permissions", "contents"}},
 +			{Name: "pull_requests", Label: "Pull requests permission", Confirm: true, Kind: plugins.FieldChoice, Options: permissionChoices(), Path: []string{"permissions", "pull_requests"}},
 +		},
@@ -5443,10 +5490,10 @@ index 0000000..1d9cde5
 +}
 diff --git a/internal/plugins/githubapp/plugin_contract_test.go b/internal/plugins/githubapp/plugin_contract_test.go
 new file mode 100644
-index 0000000..1cdcd59
+index 0000000..ad13cd1
 --- /dev/null
 +++ b/internal/plugins/githubapp/plugin_contract_test.go
-@@ -0,0 +1,538 @@
+@@ -0,0 +1,583 @@
 +package githubapp
 +
 +import (
@@ -5466,27 +5513,65 @@ index 0000000..1cdcd59
 +
 +func TestDefinitionProvidesGitHubFieldsAndLegacyAlias(t *testing.T) {
 +	definition := New().Definition()
++	assertDefinitionIdentity(t, definition)
++	assertSetupNotices(t, definition)
++	fields := fieldsByName(definition.Fields)
++	assertSetupFields(t, fields)
++	assertPermissionField(t, fields["contents"])
++	assertFieldConfirmations(t, fields)
++}
++
++func assertDefinitionIdentity(t *testing.T, definition plugins.Definition) {
++	t.Helper()
 +	if definition.ID != "github-app" || !reflect.DeepEqual(definition.ServiceAliases, []string{"_github-app-serve"}) {
 +		t.Fatalf("unexpected plugin definition: %+v", definition)
 +	}
++}
++
++func assertSetupNotices(t *testing.T, definition plugins.Definition) {
++	t.Helper()
++	if len(definition.Notices) < 2 || !strings.Contains(definition.Notices[0], "dch/github-app/<AppID>/private-key") || !strings.Contains(definition.Notices[1], "every repository") {
++		t.Fatalf("setup notices do not explain defaults and repository access: %v", definition.Notices)
++	}
++}
++
++func fieldsByName(definitionFields []plugins.Field) map[string]plugins.Field {
 +	fields := map[string]plugins.Field{}
-+	for _, field := range definition.Fields {
++	for _, field := range definitionFields {
 +		fields[field.Name] = field
 +	}
-+	for _, name := range []string{"app_id", "installation_id", "private_key_pass_entry", "repository", "contents", "pull_requests"} {
++	return fields
++}
++
++func assertSetupFields(t *testing.T, fields map[string]plugins.Field) {
++	t.Helper()
++	for _, name := range []string{"app_id", "installation_id", "contents", "pull_requests"} {
 +		if _, exists := fields[name]; !exists {
 +			t.Errorf("missing field %q", name)
 +		}
 +	}
-+	if fields["contents"].Path[1] != "contents" {
-+		t.Fatalf("contents permission path = %v", fields["contents"].Path)
++	for _, name := range []string{"private_key_pass_entry", "repository"} {
++		if _, exists := fields[name]; exists {
++			t.Errorf("unexpected setup field %q", name)
++		}
 +	}
-+	for _, name := range []string{"repository", "contents", "pull_requests"} {
++}
++
++func assertPermissionField(t *testing.T, field plugins.Field) {
++	t.Helper()
++	if len(field.Path) < 2 || field.Path[1] != "contents" {
++		t.Fatalf("contents permission path = %v", field.Path)
++	}
++}
++
++func assertFieldConfirmations(t *testing.T, fields map[string]plugins.Field) {
++	t.Helper()
++	for _, name := range []string{"contents", "pull_requests"} {
 +		if !fields[name].Confirm {
 +			t.Errorf("field %q is missing from the enable confirmation", name)
 +		}
 +	}
-+	for _, name := range []string{"app_id", "installation_id", "private_key_pass_entry"} {
++	for _, name := range []string{"app_id", "installation_id"} {
 +		if fields[name].Confirm {
 +			t.Errorf("sensitive field %q is included in the enable confirmation", name)
 +		}
@@ -5505,6 +5590,13 @@ index 0000000..1cdcd59
 +	}
 +	if _, exists := cfg.Permissions["pull_requests"]; exists {
 +		t.Fatal("empty optional permission was retained")
++	}
++}
++
++func TestValidateConfigAcceptsDefaultPassEntryAndInstallationWideAccess(t *testing.T) {
++	raw := json.RawMessage(`{"app_id":"12","installation_id":"34","permissions":{"contents":"read"}}`)
++	if err := New().ValidateConfig(raw); err != nil {
++		t.Fatalf("ValidateConfig() error = %v", err)
 +	}
 +}
 +
@@ -5987,10 +6079,10 @@ index 0000000..1cdcd59
 +}
 diff --git a/internal/plugins/githubapp/provider.go b/internal/plugins/githubapp/provider.go
 new file mode 100644
-index 0000000..24c7843
+index 0000000..ea1a9f1
 --- /dev/null
 +++ b/internal/plugins/githubapp/provider.go
-@@ -0,0 +1,289 @@
+@@ -0,0 +1,301 @@
 +package githubapp
 +
 +import (
@@ -6042,6 +6134,7 @@ index 0000000..24c7843
 +}
 +
 +func NewProvider(cfg Config, options ...ProviderOptions) (*Provider, error) {
++	cfg = cfg.normalized()
 +	if err := cfg.Validate(); err != nil {
 +		return nil, err
 +	}
@@ -6137,11 +6230,13 @@ index 0000000..24c7843
 +	if err != nil {
 +		return "", time.Time{}, err
 +	}
-+	owner, repo, _ := strings.Cut(p.cfg.Repository, "/")
-+	if err := p.verifyRepositoryInstallation(ctx, jwt, owner, repo); err != nil {
-+		return "", time.Time{}, err
++	if p.cfg.Repository != "" {
++		owner, repo, _ := strings.Cut(p.cfg.Repository, "/")
++		if err := p.verifyRepositoryInstallation(ctx, jwt, owner, repo); err != nil {
++			return "", time.Time{}, err
++		}
 +	}
-+	return p.requestInstallationToken(ctx, jwt, repo)
++	return p.requestInstallationToken(ctx, jwt)
 +}
 +
 +func (p *Provider) loadPrivateKey(ctx context.Context) (*rsa.PrivateKey, error) {
@@ -6155,9 +6250,13 @@ index 0000000..24c7843
 +	var keyOutput boundedBuffer
 +	cmd.Stdout = &keyOutput
 +	if err := cmd.Run(); err != nil || keyOutput.overflow {
-+		return nil, fmt.Errorf("pass failed")
++		return nil, fmt.Errorf("pass failed for entry %s", p.cfg.PrivateKeyPassEntry)
 +	}
-+	return parsePrivateKey(keyOutput.Bytes())
++	key, err := parsePrivateKey(keyOutput.Bytes())
++	if err != nil {
++		return nil, fmt.Errorf("invalid private key in pass entry %s", p.cfg.PrivateKeyPassEntry)
++	}
++	return key, nil
 +}
 +
 +func (p *Provider) createAppJWT(key *rsa.PrivateKey) (string, error) {
@@ -6195,13 +6294,18 @@ index 0000000..24c7843
 +	return nil
 +}
 +
-+func (p *Provider) requestInstallationToken(ctx context.Context, jwt, repo string) (string, time.Time, error) {
++func (p *Provider) requestInstallationToken(ctx context.Context, jwt string) (string, time.Time, error) {
 +	var body bytes.Buffer
 +	permissions := make(map[string]string, len(p.cfg.Permissions))
 +	for k, v := range p.cfg.Permissions {
 +		permissions[k] = v
 +	}
-+	if err := json.NewEncoder(&body).Encode(map[string]any{"repositories": []string{repo}, "permissions": permissions}); err != nil {
++	requestBody := map[string]any{"permissions": permissions}
++	if p.cfg.Repository != "" {
++		_, repo, _ := strings.Cut(p.cfg.Repository, "/")
++		requestBody["repositories"] = []string{repo}
++	}
++	if err := json.NewEncoder(&body).Encode(requestBody); err != nil {
 +		return "", time.Time{}, err
 +	}
 +	u := strings.TrimRight(p.opts.APIBaseURL, "/") + fmt.Sprintf("/app/installations/%d/access_tokens", p.cfg.InstallationID)
@@ -6282,10 +6386,10 @@ index 0000000..24c7843
 +}
 diff --git a/internal/plugins/githubapp/provider_test.go b/internal/plugins/githubapp/provider_test.go
 new file mode 100644
-index 0000000..3050c27
+index 0000000..ba878c3
 --- /dev/null
 +++ b/internal/plugins/githubapp/provider_test.go
-@@ -0,0 +1,450 @@
+@@ -0,0 +1,513 @@
 +package githubapp
 +
 +import (
@@ -6349,6 +6453,69 @@ index 0000000..3050c27
 +	}
 +	if tokenCalls != 1 || repoCalls != 1 {
 +		t.Fatalf("calls token=%d installation=%d", tokenCalls, repoCalls)
++	}
++}
++
++func TestProviderDefaultsPassEntryForDirectConfig(t *testing.T) {
++	pass := filepath.Join(t.TempDir(), "pass")
++	if err := os.WriteFile(pass, []byte("#!/bin/sh\nprintf '%s' \"$2\" > \"$PASS_ARG_FILE\"\nexit 1\n"), 0700); err != nil {
++		t.Fatal(err)
++	}
++	argFile := filepath.Join(t.TempDir(), "arg")
++	t.Setenv("PASS_ARG_FILE", argFile)
++	p, err := NewProvider(Config{AppID: 12, InstallationID: 34, Permissions: map[string]string{"contents": "read"}}, ProviderOptions{PassPath: pass})
++	if err != nil {
++		t.Fatal(err)
++	}
++	_, err = p.Token(context.Background())
++	if err == nil || !strings.Contains(err.Error(), "dch/github-app/12/private-key") || strings.Contains(err.Error(), "exit") {
++		t.Fatalf("Token() error = %v", err)
++	}
++	entry, readErr := os.ReadFile(argFile)
++	if readErr != nil || string(entry) != "dch/github-app/12/private-key" {
++		t.Fatalf("pass entry = %q, %v", entry, readErr)
++	}
++}
++
++func TestProviderRequestsInstallationWideTokenWithoutRepositoryLookup(t *testing.T) {
++	key := testPrivateKey(t)
++	var lookupCalls atomic.Int32
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if strings.HasSuffix(r.URL.Path, "/installation") {
++			lookupCalls.Add(1)
++			t.Errorf("unexpected repository installation lookup: %s", r.URL.Path)
++			return
++		}
++		if r.URL.Path != "/app/installations/34/access_tokens" {
++			http.NotFound(w, r)
++			return
++		}
++		var body map[string]any
++		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
++			t.Error(err)
++		}
++		if _, hasRepos := body["repositories"]; hasRepos {
++			t.Errorf("installation-wide body restricted repositories: %#v", body)
++		}
++		if body["permissions"].(map[string]any)["contents"] != "read" {
++			t.Errorf("unexpected permissions: %#v", body)
++		}
++		writeScopedTokenResponse(w)
++	}))
++	defer srv.Close()
++	pass := filepath.Join(t.TempDir(), "pass")
++	if err := os.WriteFile(pass, []byte("#!/bin/sh\ncat <<'KEY'\n"+key+"\nKEY\n"), 0700); err != nil {
++		t.Fatal(err)
++	}
++	p, err := NewProvider(Config{AppID: 1, InstallationID: 34, Permissions: map[string]string{"contents": "read"}}, ProviderOptions{PassPath: pass, APIBaseURL: srv.URL, HTTPClient: srv.Client()})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, err := p.Token(context.Background()); err != nil {
++		t.Fatalf("Token() error = %v", err)
++	}
++	if lookupCalls.Load() != 0 {
++		t.Fatalf("repository lookups = %d", lookupCalls.Load())
 +	}
 +}
 +
@@ -11839,10 +12006,10 @@ index 0000000..60fce18
 +</html>
 diff --git a/specs/2026-10-24-project-plugins-spec.md b/specs/2026-10-24-project-plugins-spec.md
 new file mode 100644
-index 0000000..33588fa
+index 0000000..e102beb
 --- /dev/null
 +++ b/specs/2026-10-24-project-plugins-spec.md
-@@ -0,0 +1,435 @@
+@@ -0,0 +1,440 @@
 +---
 +title: Project Plugins 與 GitHub App 認證規格
 +subtitle: 已核准：通用 plugin 架構修訂
@@ -12085,7 +12252,8 @@ index 0000000..33588fa
 +```
 +
 +Host server 由 githubapp 實作，使用同一份 dch binary。
-+每個 server 固定服務一個 Project 與一個 owner/repository。
++每個 server 固定服務一個 Project 與指定 Installation。
++新設定沿用 Installation 授權的 Repository 範圍；既有明確 repo 限制繼續有效。
 +容器不能指定 pass entry、App、repository 或權限。
 +HTTP 只監聽 Unix Socket，不開 TCP port。
 +
@@ -12111,19 +12279,23 @@ index 0000000..33588fa
 +能連接 Socket 的容器程序可取得該 Project Token。
 +此設計不提供不可信任容器的完整隔離。
 +Docker 管理員仍能存取掛載。
-+授權限於所需 repo；Branch Protection 與 CI 權限另設。
++Installation 應只授權所需 repo；Branch Protection 與 CI 權限另設。
 +不掛載 pass、GPG Key 或 App Private Key。
 +
 +## F GitHub Token、Git 與 gh
 +
-+GitHub 表單收集 App ID、Installation ID 與 pass entry。
-+同時收集 owner/repository 與所需權限。
-+Contents 與 pull_requests 各可選 read／write。
-+驗證 repo 屬於指定 owner，Token 限制在該 repo 與權限。
++GitHub 表單只收集 App ID、Installation ID 與所需權限。
++Private key pass entry 與 Owner/repository 不再顯示輸入欄位。
++新設定從 Host pass 的 `dch/github-app/<App ID>/private-key` 讀取私鑰。
++新設定省略 Token request 的 repositories，沿用 Installation 已授權的 Repository 範圍。
++既有明確 pass entry 與單一 repo 保留；重新設定不默默擴大原本範圍。
++Contents 與 pull_requests 各可選 read／write，或不要求該權限。
++至少必須要求一種權限；兩者都不要求時拒絕啟用。
++既有 repo 限制仍驗證其 Installation 並限制 Token；新設定只限制所選權限。
 +建立 App、安裝 App 與匯入私鑰由使用者先完成。
 +
 +使用參數陣列呼叫 pass，不拼接 shell 指令。
-+拒絕空白或選項形式的 pass entry。
++缺少 pass entry 時使用上述預設；拒絕不安全或選項形式的明確 pass entry。
 +支援 GitHub 提供的 RSA PEM 私鑰。
 +JWT 使用 RS256，iss 使用 App ID。
 +iat 回溯 60 秒，exp 不超過未來 10 分鐘。
