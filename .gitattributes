@@ -1,0 +1,4 @@
+# Review artifacts preserve literal whitespace from the source diff.
+specs/2026-10-24-project-plugins-changes.diff -whitespace
+specs/2026-10-24-project-plugins-review.md -whitespace
+specs/2026-10-24-project-plugins-review.html -whitespace
