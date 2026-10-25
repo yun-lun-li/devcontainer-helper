@@ -2,161 +2,73 @@ package githubapp
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"reflect"
+	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
 type Config struct {
-	AppID               int64             `json:"app_id"`
-	InstallationID      int64             `json:"installation_id"`
-	PrivateKeyPassEntry string            `json:"private_key_pass_entry"`
-	Repository          string            `json:"repository"`
-	Permissions         map[string]string `json:"permissions"`
+	ClientID     string `json:"client_id"`
+	ProjectPath  string `json:"project_path"`
+	UserID       int64  `json:"user_id"`
+	Login        string `json:"login"`
+	RepositoryID int64  `json:"repository_id"`
+	Repository   string `json:"repository"`
 }
 
-type configFieldError string
+type SharedConfig struct {
+	ClientID string `json:"client_id"`
+}
 
-func (err configFieldError) Error() string { return string(err) }
+var clientIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{4,128}$`)
 
-func (c *Config) UnmarshalJSON(data []byte) error {
-	type configAlias Config
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return err
+func (p *Plugin) ValidateSharedSettings(raw json.RawMessage) error {
+	var cfg SharedConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return fmt.Errorf("invalid GitHub App shared settings")
 	}
-	appID, err := decodeID(fields["app_id"])
-	if err != nil {
-		return configFieldError("app_id must be a decimal numeric App ID (not Client ID)")
+	if strings.TrimSpace(cfg.ClientID) != cfg.ClientID || !clientIDPattern.MatchString(cfg.ClientID) {
+		return fmt.Errorf("GitHub App Client ID is required")
 	}
-	installationID, err := decodeID(fields["installation_id"])
-	if err != nil {
-		return configFieldError("installation_id must be the numeric installation ID from the installation settings URL, not the App ID or Client ID")
-	}
-	delete(fields, "app_id")
-	delete(fields, "installation_id")
-	remaining, err := json.Marshal(fields)
-	if err != nil {
-		return err
-	}
-	var decoded configAlias
-	if err := json.Unmarshal(remaining, &decoded); err != nil {
-		return safeConfigTypeError(err)
-	}
-	decoded.AppID, decoded.InstallationID = appID, installationID
-	*c = Config(decoded)
 	return nil
 }
 
-func safeConfigTypeError(err error) error {
-	var typeErr *json.UnmarshalTypeError
-	if !errors.As(err, &typeErr) {
-		return err
+func isLegacyConfig(raw json.RawMessage) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return false
 	}
-	switch strings.ToLower(typeErr.Field) {
-	case "repository":
-		return configFieldError("repository must be a string")
-	case "privatekeypassentry", "private_key_pass_entry":
-		return configFieldError("private_key_pass_entry must be a string")
-	case "permissions":
-		if typeErr.Type == reflect.TypeOf(map[string]string(nil)) {
-			return configFieldError("permissions must be an object")
-		}
-		return configFieldError("permissions values must be strings")
-	}
-	if strings.HasPrefix(strings.ToLower(typeErr.Field), "permissions.") {
-		return configFieldError("permissions values must be strings")
-	}
-	return err
+	_, app := fields["app_id"]
+	_, installation := fields["installation_id"]
+	_, privateKey := fields["private_key_pass_entry"]
+	return app || installation || privateKey
 }
 
-func decodeID(raw json.RawMessage) (int64, error) {
-	if len(raw) == 0 {
-		return 0, nil
+func decodeConfig(raw json.RawMessage) (Config, error) {
+	if isLegacyConfig(raw) {
+		return Config{}, fmt.Errorf("GitHub App requires user authorization; legacy installation credentials are not used")
 	}
-	var number int64
-	if raw[0] == '"' {
-		var value string
-		if err := json.Unmarshal(raw, &value); err != nil {
-			return 0, err
-		}
-		return strconv.ParseInt(value, 10, 64)
+	var cfg Config
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return Config{}, fmt.Errorf("invalid GitHub App configuration")
 	}
-	if err := json.Unmarshal(raw, &number); err != nil {
-		return 0, err
-	}
-	return number, nil
+	return cfg, nil
 }
-
-func (c Config) appIDString() string { return strconv.FormatInt(c.AppID, 10) }
-
-func (c Config) normalized() Config {
-	if c.PrivateKeyPassEntry == "" && c.AppID > 0 {
-		c.PrivateKeyPassEntry = "dch/github-app/" + c.appIDString() + "/private-key"
-	}
-	return c
-}
-
-var passEntryPattern = regexp.MustCompile(`^[A-Za-z0-9_./-]+$`)
 
 func (c Config) Validate() error {
-	c = c.normalized()
-	if err := validateIDs(c); err != nil {
-		return err
+	if !clientIDPattern.MatchString(c.ClientID) || !filepath.IsAbs(c.ProjectPath) || filepath.Clean(c.ProjectPath) != c.ProjectPath || c.UserID <= 0 || c.RepositoryID <= 0 || c.Repository == "" {
+		return fmt.Errorf("GitHub App user authorization is incomplete")
 	}
-	if err := validatePassEntry(c.PrivateKeyPassEntry); err != nil {
-		return err
-	}
-	if err := validateOptionalRepository(c.Repository); err != nil {
-		return err
-	}
-	return validatePermissions(c.Permissions)
-}
-
-func validateIDs(c Config) error {
-	if c.AppID <= 0 {
-		return configFieldError("app_id must be a positive numeric App ID")
-	}
-	if c.InstallationID <= 0 {
-		return configFieldError("installation_id must be a positive numeric installation ID")
+	if !validRepositoryName(c.Repository) {
+		return fmt.Errorf("GitHub App repository binding is invalid")
 	}
 	return nil
 }
 
-func validatePassEntry(entry string) error {
-	if entry == "" || strings.HasPrefix(entry, "-") || !passEntryPattern.MatchString(entry) || strings.Contains(entry, "..") {
-		return fmt.Errorf("invalid pass entry")
-	}
-	return nil
-}
-
-func validateOptionalRepository(repository string) error {
-	if repository == "" {
-		return nil
-	}
-	parts := strings.Split(repository, "/")
-	if len(parts) != 2 || !validOwner(parts[0]) || !validRepository(parts[1]) {
-		return fmt.Errorf("repository must be owner/repository")
-	}
-	return nil
-}
-
-func validatePermissions(permissions map[string]string) error {
-	if len(permissions) == 0 {
-		return fmt.Errorf("at least one permission is required")
-	}
-	for name, level := range permissions {
-		if name != "contents" && name != "pull_requests" {
-			return fmt.Errorf("unsupported permission")
-		}
-		if level != "read" && level != "write" {
-			return fmt.Errorf("invalid permission level")
-		}
-	}
-	return nil
+func validRepositoryName(name string) bool {
+	parts := strings.Split(name, "/")
+	return len(parts) == 2 && validOwner(parts[0]) && validRepository(parts[1])
 }
 
 func validOwner(name string) bool {
@@ -172,7 +84,7 @@ func validOwner(name string) bool {
 }
 
 func validRepository(name string) bool {
-	if name == "" || len(name) > 100 || name == "." || name == ".." || strings.HasSuffix(name, ".git") || strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") {
+	if name == "" || len(name) > 100 || name == "." || name == ".." || strings.HasSuffix(name, ".git") || strings.HasSuffix(name, ".") {
 		return false
 	}
 	for _, r := range name {

@@ -174,7 +174,9 @@ func repositoryClient(opts RepositoryOptions) (*http.Client, string, error) {
 		base = "https://api.github.com"
 	}
 	u, err := url.Parse(base)
-	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost"))) {
+	isGitHubAPI := u != nil && u.Scheme == "https" && u.Host == "api.github.com"
+	isLocalTest := u != nil && u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost")
+	if err != nil || u == nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (!isGitHubAPI && !isLocalTest) {
 		return nil, "", ErrRepositoryUnavailable
 	}
 	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}

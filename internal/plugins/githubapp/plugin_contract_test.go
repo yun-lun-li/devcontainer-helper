@@ -15,92 +15,33 @@ import (
 	"dch/internal/plugins"
 )
 
-func TestDefinitionProvidesGitHubFieldsAndLegacyAlias(t *testing.T) {
+func TestDefinitionUsesSharedClientIDAndNoProjectCredentialFields(t *testing.T) {
 	definition := New().Definition()
-	assertDefinitionIdentity(t, definition)
-	assertSetupNotices(t, definition)
-	fields := fieldsByName(definition.Fields)
-	assertSetupFields(t, fields)
-	assertPermissionField(t, fields["contents"])
-	assertFieldConfirmations(t, fields)
-}
-
-func assertDefinitionIdentity(t *testing.T, definition plugins.Definition) {
-	t.Helper()
-	if definition.ID != "github-app" || !reflect.DeepEqual(definition.ServiceAliases, []string{"_github-app-serve"}) {
-		t.Fatalf("unexpected plugin definition: %+v", definition)
+	if definition.ID != pluginID || len(definition.SharedFields) != 1 || definition.SharedFields[0].Name != "client_id" {
+		t.Fatalf("definition = %#v", definition)
+	}
+	if len(definition.Fields) != 0 {
+		t.Fatalf("project fields = %#v", definition.Fields)
 	}
 }
 
-func assertSetupNotices(t *testing.T, definition plugins.Definition) {
-	t.Helper()
-	if len(definition.Notices) < 2 || !strings.Contains(definition.Notices[0], "dch/github-app/<AppID>/private-key") || !strings.Contains(definition.Notices[1], "every repository") {
-		t.Fatalf("setup notices do not explain defaults and repository access: %v", definition.Notices)
-	}
-}
-
-func fieldsByName(definitionFields []plugins.Field) map[string]plugins.Field {
-	fields := map[string]plugins.Field{}
-	for _, field := range definitionFields {
-		fields[field.Name] = field
-	}
-	return fields
-}
-
-func assertSetupFields(t *testing.T, fields map[string]plugins.Field) {
-	t.Helper()
-	for _, name := range []string{"app_id", "installation_id", "contents", "pull_requests"} {
-		if _, exists := fields[name]; !exists {
-			t.Errorf("missing field %q", name)
-		}
-	}
-	for _, name := range []string{"private_key_pass_entry", "repository"} {
-		if _, exists := fields[name]; exists {
-			t.Errorf("unexpected setup field %q", name)
-		}
-	}
-}
-
-func assertPermissionField(t *testing.T, field plugins.Field) {
-	t.Helper()
-	if len(field.Path) < 2 || field.Path[1] != "contents" {
-		t.Fatalf("contents permission path = %v", field.Path)
-	}
-}
-
-func assertFieldConfirmations(t *testing.T, fields map[string]plugins.Field) {
-	t.Helper()
-	for _, name := range []string{"contents", "pull_requests"} {
-		if !fields[name].Confirm {
-			t.Errorf("field %q is missing from the enable confirmation", name)
-		}
-	}
-	for _, name := range []string{"app_id", "installation_id"} {
-		if fields[name].Confirm {
-			t.Errorf("sensitive field %q is included in the enable confirmation", name)
-		}
-	}
-}
-
-func TestValidateConfigAcceptsTextIDsAndOmitsEmptyPermissionChoices(t *testing.T) {
-	raw := json.RawMessage(`{"app_id":"12","installation_id":"34","private_key_pass_entry":"key","repository":"octo/repo","permissions":{"contents":"read","pull_requests":""}}`)
-	plugin := New()
-	if err := plugin.ValidateConfig(raw); err != nil {
-		t.Fatalf("text form config rejected: %v", err)
-	}
-	cfg, err := decodeConfig(raw)
+func TestStatusRecognizesLegacyInstallationAsAuthorizationRequired(t *testing.T) {
+	status, err := New().Status(context.Background(), plugins.HostContext{ProjectPath: t.TempDir(), Config: json.RawMessage(`{"app_id":2,"installation_id":3}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, exists := cfg.Permissions["pull_requests"]; exists {
-		t.Fatal("empty optional permission was retained")
+	if !status.Enabled || status.Message == "" {
+		t.Fatalf("status = %#v", status)
 	}
 }
 
-func TestValidateConfigAcceptsDefaultPassEntryAndInstallationWideAccess(t *testing.T) {
-	raw := json.RawMessage(`{"app_id":"12","installation_id":"34","permissions":{"contents":"read"}}`)
-	if err := New().ValidateConfig(raw); err != nil {
-		t.Fatalf("ValidateConfig() error = %v", err)
+func TestStatusDoesNotCheckSystemdWhenDisabled(t *testing.T) {
+	status, err := New().Status(context.Background(), plugins.HostContext{ProjectPath: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Enabled {
+		t.Fatal("disabled plugin reported enabled")
 	}
 }
 
@@ -124,8 +65,9 @@ func TestStatusDoesNotCheckSystemdWhenPluginIsDisabled(t *testing.T) {
 
 func TestStatusReportsInactiveCredentialService(t *testing.T) {
 	setupHostHookTest(t, false)
-	config, _ := json.Marshal(testConfig())
-	status, err := New().Status(context.Background(), plugins.HostContext{ProjectPath: t.TempDir(), Config: config})
+	project := t.TempDir()
+	config, _ := json.Marshal(testConfig(project))
+	status, err := New().Status(context.Background(), plugins.HostContext{ProjectPath: project, Config: config})
 	if err != nil || !status.Enabled || status.ID != pluginID || status.Message == "" {
 		t.Fatalf("inactive service status was not reported: %+v, %v", status, err)
 	}
@@ -179,7 +121,7 @@ func TestEnablePersistsOwnershipAfterCredentialReadiness(t *testing.T) {
 	listener := readyCredentialSocket(t, project)
 	defer listener.Close()
 	store := &testScopedStore{}
-	config, _ := json.Marshal(testConfig())
+	config, _ := json.Marshal(testConfig(project))
 	result, err := New().HandleHost(context.Background(), plugins.HostContext{ProjectPath: project, Config: config, Store: store}, plugins.EventEnable)
 	if err != nil {
 		t.Fatal(err)
@@ -223,9 +165,9 @@ func TestEnableRestartsActiveServiceWhenConfigChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldState, _ := json.Marshal(ownershipState{FragmentDigest: digest(fragment), UnitDigest: unit.digest, UnitPath: unit.path})
-	oldConfig, _ := json.Marshal(testConfig())
-	updated := testConfig()
-	updated.AppID = 9
+	oldConfig, _ := json.Marshal(testConfig(project))
+	updated := testConfig(project)
+	updated.ClientID = "Iv1_updated"
 	updatedConfig, _ := json.Marshal(updated)
 	listener := readyCredentialSocket(t, project)
 	defer listener.Close()
@@ -235,8 +177,8 @@ func TestEnableRestartsActiveServiceWhenConfigChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := readTestFile(t, os.Getenv("DCH_TEST_SYSTEMCTL_LOG"))
-	if !strings.Contains(log, "restart") || strings.Contains(log, "enable") || !result.NeedsBuild {
-		t.Fatalf("active reconfiguration did not restart service: result=%+v log=%s", result, log)
+	if !strings.Contains(log, "restart") || strings.Contains(log, "enable") || result.NeedsBuild {
+		t.Fatalf("active reauthorization did not restart without adding pending Build: result=%+v log=%s", result, log)
 	}
 }
 
@@ -256,7 +198,7 @@ func TestEnableReadinessFailureRestoresPriorScopedValuesAndFragment(t *testing.T
 	previousConfig := json.RawMessage(`{"previous":true}`)
 	previousState, _ := json.Marshal(ownershipState{FragmentDigest: digest(previousFragment)})
 	store := &testScopedStore{config: previousConfig, state: previousState}
-	config, _ := json.Marshal(testConfig())
+	config, _ := json.Marshal(testConfig(project))
 	_, err := New().HandleHost(context.Background(), plugins.HostContext{ProjectPath: project, Config: config, State: previousState, PreviousConfig: previousConfig, PreviousState: previousState, Store: store}, plugins.EventEnable)
 	if err == nil {
 		t.Fatal("credential check failure was accepted")
@@ -299,7 +241,7 @@ func TestEnsureRestartsWithUpdatedOwnedSystemdUnit(t *testing.T) {
 	t.Setenv("PATH", oldPath+string(os.PathListSeparator)+"updated-path")
 	listener := readyCredentialSocket(t, project)
 	defer listener.Close()
-	config, _ := json.Marshal(testConfig())
+	config, _ := json.Marshal(testConfig(project))
 	state, _ := json.Marshal(ownershipState{FragmentDigest: digest(fragment), UnitDigest: unit.digest, UnitPath: unit.path})
 	store := &testScopedStore{state: state}
 	result, err := New().HandleHost(context.Background(), plugins.HostContext{ProjectPath: project, Config: config, State: state, Store: store}, plugins.EventStart)
@@ -354,7 +296,7 @@ func TestEnsureRestartFailureRestoresOwnedUnitAndPrivateState(t *testing.T) {
 	defer listener.Close()
 	state, _ := json.Marshal(ownershipState{FragmentDigest: digest(fragment), UnitDigest: unit.digest, UnitPath: unit.path})
 	store := &testScopedStore{state: state}
-	config, _ := json.Marshal(testConfig())
+	config, _ := json.Marshal(testConfig(project))
 	_, err = New().HandleHost(context.Background(), plugins.HostContext{ProjectPath: project, Config: config, State: state, Store: store}, plugins.EventStart)
 	if err == nil {
 		t.Fatal("failed restart was accepted")
@@ -377,7 +319,7 @@ func TestEnableCleanupFailureKeepsSettingsAndOwnershipForRetry(t *testing.T) {
 	listener := readyCredentialSocketStatus(t, project, http.StatusServiceUnavailable)
 	defer listener.Close()
 	store := &testScopedStore{}
-	config, _ := json.Marshal(testConfig())
+	config, _ := json.Marshal(testConfig(project))
 	_, err := New().HandleHost(context.Background(), plugins.HostContext{ProjectPath: project, Config: config, Store: store}, plugins.EventEnable)
 	if err == nil || !strings.Contains(err.Error(), "cleanup failed") {
 		t.Fatalf("cleanup failure was not reported: %v", err)
@@ -396,7 +338,7 @@ func TestEnableRejectsRemoteDockerBeforeWritingProjectResources(t *testing.T) {
 	}
 	t.Setenv("DOCKER_HOST", "tcp://remote.example:2375")
 	store := &testScopedStore{}
-	config, _ := json.Marshal(testConfig())
+	config, _ := json.Marshal(testConfig(project))
 	if _, err := New().HandleHost(context.Background(), plugins.HostContext{ProjectPath: project, Config: config, Store: store}, plugins.EventEnable); err == nil {
 		t.Fatal("remote Docker host was accepted")
 	}
@@ -421,7 +363,7 @@ func TestDisableRefusesEditedUnitBeforeSystemctl(t *testing.T) {
 	if err := os.WriteFile(unit, []byte("user modified"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	config, _ := json.Marshal(testConfig())
+	config, _ := json.Marshal(testConfig(project))
 	state, _ := json.Marshal(ownershipState{UnitPath: unit, UnitDigest: digest([]byte("dch generated"))})
 	if _, err := New().HandleHost(context.Background(), plugins.HostContext{ProjectPath: project, Config: config, State: state}, plugins.EventDisable); err == nil {
 		t.Fatal("edited unit was removed")
@@ -448,7 +390,7 @@ func TestDisableRefusesEditedFragmentBeforeStoppingService(t *testing.T) {
 	if err := os.WriteFile(fragmentPath, []byte("manual edit"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	config, _ := json.Marshal(testConfig())
+	config, _ := json.Marshal(testConfig(project))
 	state, _ := json.Marshal(ownershipState{FragmentDigest: digest([]byte("generated")), UnitDigest: unit.digest, UnitPath: unit.path})
 	if _, err := New().HandleHost(context.Background(), plugins.HostContext{ProjectPath: project, Config: config, State: state}, plugins.EventDisable); err == nil {
 		t.Fatal("edited fragment was removed")
@@ -475,7 +417,7 @@ func TestEnablePreservesForeignSystemdUnit(t *testing.T) {
 	if err := os.WriteFile(unit, foreign, 0600); err != nil {
 		t.Fatal(err)
 	}
-	config, _ := json.Marshal(testConfig())
+	config, _ := json.Marshal(testConfig(project))
 	store := &testScopedStore{}
 	if _, err := New().HandleHost(context.Background(), plugins.HostContext{ProjectPath: project, Config: config, Store: store}, plugins.EventEnable); err == nil {
 		t.Fatal("foreign unit was replaced")
@@ -578,6 +520,6 @@ func readyCredentialSocketStatus(t *testing.T, project string, status int) net.L
 	return listener
 }
 
-func testConfig() Config {
-	return Config{AppID: 1, InstallationID: 2, PrivateKeyPassEntry: "github/key", Repository: "owner/repo", Permissions: map[string]string{"contents": "read"}}
+func testConfig(project string) Config {
+	return Config{ClientID: "Iv1_example", ProjectPath: project, UserID: 1, Login: "tester", RepositoryID: 2, Repository: "owner/repo"}
 }

@@ -20,9 +20,10 @@ import (
 )
 
 type ownershipState struct {
-	FragmentDigest string `json:"fragment_digest,omitempty"`
-	UnitDigest     string `json:"unit_digest,omitempty"`
-	UnitPath       string `json:"unit_path,omitempty"`
+	FragmentDigest    string   `json:"fragment_digest,omitempty"`
+	UnitDigest        string   `json:"unit_digest,omitempty"`
+	UnitPath          string   `json:"unit_path,omitempty"`
+	CredentialCleanup []string `json:"credential_cleanup,omitempty"`
 }
 
 func decodeState(raw json.RawMessage) (ownershipState, error) {
@@ -61,7 +62,7 @@ func (p *Plugin) enable(ctx context.Context, host plugins.HostContext) (plugins.
 	if err := checkReady(ctx, resources.runtimeDir); err != nil {
 		return plugins.Result{}, p.rollbackEnable(host, resources, err, true)
 	}
-	return plugins.Result{NeedsBuild: true, State: encodeState(resources.state)}, nil
+	return plugins.Result{NeedsBuild: len(host.PreviousConfig) == 0, State: encodeState(resources.state)}, nil
 }
 
 type enableResources struct {
@@ -84,6 +85,9 @@ func prepareEnableResources(ctx context.Context, host plugins.HostContext) (enab
 	}
 	if err := cfg.Validate(); err != nil {
 		return resources, err
+	}
+	if filepath.Clean(cfg.ProjectPath) != filepath.Clean(host.ProjectPath) {
+		return resources, fmt.Errorf("GitHub authorization project binding does not match")
 	}
 	if err := requireLocalDocker(); err != nil {
 		return resources, err
@@ -110,7 +114,7 @@ func prepareEnableResources(ctx context.Context, host plugins.HostContext) (enab
 	if err != nil {
 		return resources, errors.Join(err, resources.restoreFragment())
 	}
-	resources.state = ownershipState{FragmentDigest: digest(fragment), UnitDigest: resources.unit.digest, UnitPath: resources.unit.path}
+	resources.state = ownershipState{FragmentDigest: digest(fragment), UnitDigest: resources.unit.digest, UnitPath: resources.unit.path, CredentialCleanup: oldState.CredentialCleanup}
 	return resources, nil
 }
 
@@ -187,18 +191,76 @@ func (p *Plugin) disable(ctx context.Context, host plugins.HostContext) (plugins
 	if err := removePluginFiles(ctx, host.ProjectPath, unitFile, state.FragmentDigest); err != nil {
 		return plugins.Result{}, err
 	}
+	if !isLegacyConfig(host.Config) && len(host.Config) > 0 {
+		cfg, configErr := decodeConfig(host.Config)
+		if configErr != nil {
+			return plugins.Result{}, configErr
+		}
+		secret := p.secretStore(cfg)
+		if err := secret.WithLock(ctx, func() error { return secret.Delete(ctx) }); err != nil {
+			return plugins.Result{}, fmt.Errorf("credential cleanup failed; disable can be retried: %w", err)
+		}
+	}
+	if err := p.removeCredentialEntries(ctx, host, state.CredentialCleanup); err != nil {
+		return plugins.Result{}, fmt.Errorf("credential cleanup failed; disable can be retried: %w", err)
+	}
 	if err := host.Store.SaveState(nil); err != nil {
 		return plugins.Result{}, err
 	}
 	return plugins.Result{NeedsBuild: true}, nil
 }
 
-func (p *Plugin) ensure(ctx context.Context, host plugins.HostContext) (plugins.Result, error) {
+func (p *Plugin) removeCredentialEntries(ctx context.Context, host plugins.HostContext, clients []string) error {
+	for _, clientID := range clients {
+		if !clientIDPattern.MatchString(clientID) {
+			return fmt.Errorf("credential cleanup metadata is invalid")
+		}
+		cfg := Config{ClientID: clientID, ProjectPath: host.ProjectPath}
+		store := p.secretStore(cfg)
+		if err := store.WithLock(ctx, func() error { return store.Delete(ctx) }); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *Plugin) retryCredentialCleanup(ctx context.Context, host plugins.HostContext, state ownershipState) (ownershipState, error) {
+	pending := make([]string, 0, len(state.CredentialCleanup))
+	var failures []error
+	for _, clientID := range state.CredentialCleanup {
+		if !clientIDPattern.MatchString(clientID) {
+			pending = append(pending, clientID)
+			failures = append(failures, fmt.Errorf("credential cleanup metadata is invalid"))
+			continue
+		}
+		cfg := Config{ClientID: clientID, ProjectPath: host.ProjectPath}
+		store := p.secretStore(cfg)
+		err := store.WithLock(ctx, func() error { return store.Delete(ctx) })
+		if err != nil {
+			pending = append(pending, clientID)
+			failures = append(failures, err)
+		}
+	}
+	state.CredentialCleanup = pending
+	return state, errors.Join(failures...)
+}
+
+func validateEnabledHost(host plugins.HostContext) error {
 	cfg, err := decodeConfig(host.Config)
 	if err != nil {
-		return plugins.Result{}, err
+		return err
 	}
 	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	if filepath.Clean(cfg.ProjectPath) != filepath.Clean(host.ProjectPath) {
+		return fmt.Errorf("GitHub authorization project binding does not match")
+	}
+	return nil
+}
+
+func (p *Plugin) ensure(ctx context.Context, host plugins.HostContext) (plugins.Result, error) {
+	if err := validateEnabledHost(host); err != nil {
 		return plugins.Result{}, err
 	}
 	if err := requireLocalDocker(); err != nil {
@@ -242,6 +304,10 @@ func (p *Plugin) ensure(ctx context.Context, host plugins.HostContext) (plugins.
 	if err := checkReady(ctx, runtimeDir); err != nil {
 		return plugins.Result{}, p.rollbackEnsure(host, oldState, unit, err)
 	}
+	state, _ = p.retryCredentialCleanup(ctx, host, state)
+	if err := host.Store.SaveState(encodeState(state)); err != nil {
+		return plugins.Result{}, err
+	}
 	return plugins.Result{State: encodeState(state)}, nil
 }
 
@@ -277,6 +343,9 @@ func (p *Plugin) ServeHost(ctx context.Context, host plugins.HostContext) error 
 	}
 	if err := cfg.Validate(); err != nil {
 		return err
+	}
+	if filepath.Clean(cfg.ProjectPath) != filepath.Clean(host.ProjectPath) {
+		return fmt.Errorf("GitHub authorization project binding does not match")
 	}
 	runtimeDir, err := RuntimeDir(host.ProjectPath)
 	if err != nil {

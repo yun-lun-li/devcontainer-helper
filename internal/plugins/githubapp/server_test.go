@@ -17,7 +17,7 @@ func TestServerServesCredentialAndHealthOnlyOverUnixSocket(t *testing.T) {
 	if err := os.Chmod(filepath.Dir(sock), 0700); err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{AppID: 1, InstallationID: 2, PrivateKeyPassEntry: "key", Repository: "octo/repo", Permissions: map[string]string{"contents": "read"}}
+	cfg := Config{ClientID: "Iv1_example", ProjectPath: t.TempDir(), UserID: 2, Login: "tester", RepositoryID: 3, Repository: "octo/repo"}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = Serve(ctx, sock, cfg) }()
@@ -82,7 +82,7 @@ func TestServerRecoversStaleSocketAfterCrash(t *testing.T) {
 	if err := stale.Close(); err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{AppID: 1, InstallationID: 2, PrivateKeyPassEntry: "key", Repository: "octo/repo", Permissions: map[string]string{"contents": "read"}}
+	cfg := Config{ClientID: "Iv1_example", ProjectPath: t.TempDir(), UserID: 2, Login: "tester", RepositoryID: 3, Repository: "octo/repo"}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	result := make(chan error, 1)
