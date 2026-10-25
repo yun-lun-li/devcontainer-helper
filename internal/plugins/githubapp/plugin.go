@@ -3,6 +3,7 @@ package githubapp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -22,6 +23,7 @@ func (p *Plugin) Definition() plugins.Definition {
 		Notices: []string{
 			"Store the RSA private key with pass as dch/github-app/<AppID>/private-key.",
 			"Without a legacy repository setting, tokens can access every repository in the GitHub App installation, limited by the selected permissions.",
+			"Use the numeric installation ID from the GitHub App installation settings URL; do not enter the App ID or Client ID.",
 		},
 		Fields: []plugins.Field{
 			{Name: "app_id", Label: "App ID", Required: true, Kind: plugins.FieldText},
@@ -47,6 +49,10 @@ func (p *Plugin) ValidateConfig(raw json.RawMessage) error {
 func decodeConfig(raw json.RawMessage) (Config, error) {
 	var cfg Config
 	if err := json.Unmarshal(raw, &cfg); err != nil {
+		var fieldErr configFieldError
+		if errors.As(err, &fieldErr) {
+			return Config{}, fieldErr
+		}
 		return Config{}, fmt.Errorf("invalid GitHub App configuration")
 	}
 	for name, value := range cfg.Permissions {

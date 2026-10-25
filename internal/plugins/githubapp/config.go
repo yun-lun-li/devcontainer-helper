@@ -2,7 +2,9 @@ package githubapp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -16,6 +18,10 @@ type Config struct {
 	Permissions         map[string]string `json:"permissions"`
 }
 
+type configFieldError string
+
+func (err configFieldError) Error() string { return string(err) }
+
 func (c *Config) UnmarshalJSON(data []byte) error {
 	type configAlias Config
 	var fields map[string]json.RawMessage
@@ -24,11 +30,11 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	}
 	appID, err := decodeID(fields["app_id"])
 	if err != nil {
-		return err
+		return configFieldError("app_id must be a decimal numeric App ID (not Client ID)")
 	}
 	installationID, err := decodeID(fields["installation_id"])
 	if err != nil {
-		return err
+		return configFieldError("installation_id must be the numeric installation ID from the installation settings URL, not the App ID or Client ID")
 	}
 	delete(fields, "app_id")
 	delete(fields, "installation_id")
@@ -38,11 +44,33 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	}
 	var decoded configAlias
 	if err := json.Unmarshal(remaining, &decoded); err != nil {
-		return err
+		return safeConfigTypeError(err)
 	}
 	decoded.AppID, decoded.InstallationID = appID, installationID
 	*c = Config(decoded)
 	return nil
+}
+
+func safeConfigTypeError(err error) error {
+	var typeErr *json.UnmarshalTypeError
+	if !errors.As(err, &typeErr) {
+		return err
+	}
+	switch strings.ToLower(typeErr.Field) {
+	case "repository":
+		return configFieldError("repository must be a string")
+	case "privatekeypassentry", "private_key_pass_entry":
+		return configFieldError("private_key_pass_entry must be a string")
+	case "permissions":
+		if typeErr.Type == reflect.TypeOf(map[string]string(nil)) {
+			return configFieldError("permissions must be an object")
+		}
+		return configFieldError("permissions values must be strings")
+	}
+	if strings.HasPrefix(strings.ToLower(typeErr.Field), "permissions.") {
+		return configFieldError("permissions values must be strings")
+	}
+	return err
 }
 
 func decodeID(raw json.RawMessage) (int64, error) {
@@ -89,8 +117,11 @@ func (c Config) Validate() error {
 }
 
 func validateIDs(c Config) error {
-	if c.AppID <= 0 || c.InstallationID <= 0 {
-		return fmt.Errorf("app and installation IDs must be positive")
+	if c.AppID <= 0 {
+		return configFieldError("app_id must be a positive numeric App ID")
+	}
+	if c.InstallationID <= 0 {
+		return configFieldError("installation_id must be a positive numeric installation ID")
 	}
 	return nil
 }

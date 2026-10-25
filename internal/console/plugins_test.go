@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"dch/internal/plugins"
+	"dch/internal/plugins/githubapp"
 )
 
 func TestPromptPluginConfigUsesGenericFieldsAndNestedPaths(t *testing.T) {
@@ -38,6 +39,43 @@ func TestPromptPluginConfigUsesGenericFieldsAndNestedPaths(t *testing.T) {
 	}
 	if name != "Alice" || permissions["contents"] != "write" {
 		t.Fatalf("config = %s, want generic fields and nested permissions", got)
+	}
+}
+
+func TestGitHubAppPromptOutputPassesPluginValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		current json.RawMessage
+		input   string
+		wantErr string
+	}{
+		{name: "text IDs", input: "123\n456\n2\n1\n"},
+		{name: "numeric current IDs", current: json.RawMessage(`{"app_id":123,"installation_id":456}`), input: "\n\n2\n1\n"},
+		{name: "App ID URL", input: "https://github.com/apps/example\n456\n2\n1\n", wantErr: "app_id must be a decimal numeric App ID (not Client ID)"},
+		{name: "Installation ID Client ID", input: "123\nIv1.example\n2\n1\n", wantErr: "installation_id must be the numeric installation ID from the installation settings URL, not the App ID or Client ID"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			previous := input
+			input = bufio.NewReader(strings.NewReader(tt.input))
+			defer func() { input = previous }()
+
+			definition := githubapp.New().Definition()
+			got, err := promptPluginConfig(definition, tt.current)
+			if err != nil {
+				t.Fatalf("promptPluginConfig() error = %v", err)
+			}
+			err = githubapp.New().ValidateConfig(got)
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Fatalf("GitHub App validation error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("GitHub App rejected prompt output %s: %v", got, err)
+			}
+		})
 	}
 }
 
