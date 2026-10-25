@@ -99,40 +99,59 @@ func (p *Provider) Token(ctx context.Context) (string, error) {
 		}
 		if call := p.refreshing; call != nil {
 			p.mu.Unlock()
-			select {
-			case <-call.done:
-				if call.err != nil {
-					return "", call.err
-				}
-				return call.token, nil
-			case <-ctx.Done():
-				return "", ctx.Err()
-			}
+			return awaitRefresh(ctx, call)
 		}
 		call := &refreshCall{done: make(chan struct{})}
 		p.refreshing = call
 		p.mu.Unlock()
-		token, expiry, err := p.mint(ctx)
-		p.mu.Lock()
-		if err == nil {
-			p.token, p.expires = token, expiry
-		}
-		if err != nil {
-			call.err = err
-		} else {
-			call.token = token
-		}
-		p.refreshing = nil
-		close(call.done)
-		p.mu.Unlock()
-		if err != nil {
-			return "", err
-		}
-		return token, nil
+		return p.refreshToken(ctx, call)
 	}
 }
 
+func awaitRefresh(ctx context.Context, call *refreshCall) (string, error) {
+	select {
+	case <-call.done:
+		if call.err != nil {
+			return "", call.err
+		}
+		return call.token, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func (p *Provider) refreshToken(ctx context.Context, call *refreshCall) (string, error) {
+	token, expiry, err := p.mint(ctx)
+	p.mu.Lock()
+	if err == nil {
+		p.token, p.expires = token, expiry
+		call.token = token
+	} else {
+		call.err = err
+	}
+	p.refreshing = nil
+	close(call.done)
+	p.mu.Unlock()
+	return token, err
+}
+
 func (p *Provider) mint(ctx context.Context) (string, time.Time, error) {
+	key, err := p.loadPrivateKey(ctx)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	jwt, err := p.createAppJWT(key)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	owner, repo, _ := strings.Cut(p.cfg.Repository, "/")
+	if err := p.verifyRepositoryInstallation(ctx, jwt, owner, repo); err != nil {
+		return "", time.Time{}, err
+	}
+	return p.requestInstallationToken(ctx, jwt, repo)
+}
+
+func (p *Provider) loadPrivateKey(ctx context.Context) (*rsa.PrivateKey, error) {
 	passCtx, cancel := context.WithTimeout(ctx, p.opts.PassTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(passCtx, p.opts.PassPath, "show", p.cfg.PrivateKeyPassEntry)
@@ -143,13 +162,12 @@ func (p *Provider) mint(ctx context.Context) (string, time.Time, error) {
 	var keyOutput boundedBuffer
 	cmd.Stdout = &keyOutput
 	if err := cmd.Run(); err != nil || keyOutput.overflow {
-		return "", time.Time{}, fmt.Errorf("pass failed")
+		return nil, fmt.Errorf("pass failed")
 	}
-	keyPEM := keyOutput.Bytes()
-	key, err := parsePrivateKey(keyPEM)
-	if err != nil {
-		return "", time.Time{}, err
-	}
+	return parsePrivateKey(keyOutput.Bytes())
+}
+
+func (p *Provider) createAppJWT(key *rsa.PrivateKey) (string, error) {
 	now := p.opts.Now()
 	issued := now.Add(-60 * time.Second)
 	claims, _ := json.Marshal(map[string]any{"iat": issued.Unix(), "exp": now.Add(9 * time.Minute).Unix(), "iss": p.cfg.appIDString()})
@@ -158,10 +176,12 @@ func (p *Provider) mint(ctx context.Context) (string, time.Time, error) {
 	digest := sha256.Sum256([]byte(unsigned))
 	signature, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
 	if err != nil {
-		return "", time.Time{}, err
+		return "", err
 	}
-	jwt := unsigned + "." + base64.RawURLEncoding.EncodeToString(signature)
-	owner, repo, _ := strings.Cut(p.cfg.Repository, "/")
+	return unsigned + "." + base64.RawURLEncoding.EncodeToString(signature), nil
+}
+
+func (p *Provider) verifyRepositoryInstallation(ctx context.Context, jwt, owner, repo string) error {
 	verifyURL := strings.TrimRight(p.opts.APIBaseURL, "/") + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/installation"
 	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, verifyURL, nil)
 	verifyReq.Header.Set("Authorization", "Bearer "+jwt)
@@ -169,7 +189,7 @@ func (p *Provider) mint(ctx context.Context) (string, time.Time, error) {
 	verifyReq.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	verifyResp, err := p.opts.HTTPClient.Do(verifyReq)
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("repository installation verification failed")
+		return fmt.Errorf("repository installation verification failed")
 	}
 	defer verifyResp.Body.Close()
 	verifyData, err := io.ReadAll(io.LimitReader(verifyResp.Body, maxResponseBytes+1))
@@ -177,8 +197,12 @@ func (p *Provider) mint(ctx context.Context) (string, time.Time, error) {
 		ID int64 `json:"id"`
 	}
 	if err != nil || len(verifyData) > maxResponseBytes || verifyResp.StatusCode != http.StatusOK || json.Unmarshal(verifyData, &installation) != nil || installation.ID != p.cfg.InstallationID {
-		return "", time.Time{}, fmt.Errorf("repository installation verification failed")
+		return fmt.Errorf("repository installation verification failed")
 	}
+	return nil
+}
+
+func (p *Provider) requestInstallationToken(ctx context.Context, jwt, repo string) (string, time.Time, error) {
 	var body bytes.Buffer
 	permissions := make(map[string]string, len(p.cfg.Permissions))
 	for k, v := range p.cfg.Permissions {

@@ -46,23 +46,28 @@ func TestRemoveProjectRegistrationPreservesUnknownPluginMetadata(t *testing.T) {
 		{name: "plugin state", plugins: ProjectPlugins{States: map[string]PluginState{"future-plugin": {BuildPending: true}}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			config := Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]ProjectPlugins{project: tc.plugins}}
-			if err := SaveConfig(config); err != nil {
-				t.Fatal(err)
-			}
-			if err := RemoveProjectRegistration(project); err == nil {
-				t.Fatal("expected removal to reject unknown plugin metadata")
-			}
-			loaded, err := LoadConfig()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(loaded.Projects) != 1 || loaded.Projects[0] != project {
-				t.Fatalf("unknown plugin project was removed: %v", loaded.Projects)
-			}
-			if _, exists := loaded.ProjectPlugins[project]; !exists {
-				t.Fatal("unknown plugin metadata was removed")
-			}
+			assertUnknownPluginMetadataPreserved(t, project, tc.plugins)
 		})
+	}
+}
+
+func assertUnknownPluginMetadataPreserved(t *testing.T, project string, plugins ProjectPlugins) {
+	t.Helper()
+	config := Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]ProjectPlugins{project: plugins}}
+	if err := SaveConfig(config); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveProjectRegistration(project); err == nil {
+		t.Fatal("expected removal to reject unknown plugin metadata")
+	}
+	loaded, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Projects) != 1 || loaded.Projects[0] != project {
+		t.Fatalf("unknown plugin project was removed: %v", loaded.Projects)
+	}
+	if _, exists := loaded.ProjectPlugins[project]; !exists {
+		t.Fatal("unknown plugin metadata was removed")
 	}
 }

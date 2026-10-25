@@ -14,56 +14,85 @@ import (
 )
 
 func Serve(ctx context.Context, socketPath string, cfg Config) error {
-	if err := cfg.Validate(); err != nil {
-		return err
-	}
-	if len(socketPath) > 100 {
-		return fmt.Errorf("socket path is too long")
-	}
-	parentInfo, err := os.Lstat(filepath.Dir(socketPath))
-	if err != nil || !parentInfo.IsDir() || parentInfo.Mode()&os.ModeSymlink != 0 || !ownedByCurrentUser(parentInfo) || parentInfo.Mode().Perm() != 0700 {
-		return fmt.Errorf("socket directory is unsafe")
-	}
-	releaseLock, err := acquireServerLock(socketPath + ".lock")
+	listener, provider, releaseLock, err := prepareCredentialSocket(socketPath, cfg)
 	if err != nil {
 		return err
 	}
 	defer releaseLock()
+	server := &http.Server{Handler: credentialMux(provider), ReadHeaderTimeout: 5 * time.Second}
+	return serveUntilCancelled(ctx, server, listener, socketPath)
+}
+
+func prepareCredentialSocket(socketPath string, cfg Config) (net.Listener, *Provider, func(), error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, nil, nil, err
+	}
+	if len(socketPath) > 100 {
+		return nil, nil, nil, fmt.Errorf("socket path is too long")
+	}
+	parentInfo, err := os.Lstat(filepath.Dir(socketPath))
+	if err != nil || !parentInfo.IsDir() || parentInfo.Mode()&os.ModeSymlink != 0 || !ownedByCurrentUser(parentInfo) || parentInfo.Mode().Perm() != 0700 {
+		return nil, nil, nil, fmt.Errorf("socket directory is unsafe")
+	}
+	releaseLock, err := acquireServerLock(socketPath + ".lock")
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	listener, provider, err := listenCredentialSocket(socketPath, cfg)
+	if err != nil {
+		releaseLock()
+		return nil, nil, nil, err
+	}
+	return listener, provider, releaseLock, nil
+}
+
+func listenCredentialSocket(socketPath string, cfg Config) (net.Listener, *Provider, error) {
 	if info, err := os.Lstat(socketPath); err == nil {
 		if info.Mode()&os.ModeSocket == 0 {
-			return fmt.Errorf("socket path is unsafe")
+			return nil, nil, fmt.Errorf("socket path is unsafe")
 		}
 		if err := os.Remove(socketPath); err != nil {
-			return fmt.Errorf("cannot remove stale socket")
+			return nil, nil, fmt.Errorf("cannot remove stale socket")
 		}
 	} else if !os.IsNotExist(err) {
-		return err
+		return nil, nil, err
 	}
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
-		return fmt.Errorf("cannot listen on credential socket")
+		return nil, nil, fmt.Errorf("cannot listen on credential socket")
 	}
 	if err := os.Chmod(socketPath, 0600); err != nil {
 		listener.Close()
 		os.Remove(socketPath)
-		return fmt.Errorf("cannot secure credential socket")
+		return nil, nil, fmt.Errorf("cannot secure credential socket")
 	}
 	provider, err := NewProvider(cfg)
 	if err != nil {
 		listener.Close()
 		os.Remove(socketPath)
-		return err
+		return nil, nil, err
 	}
+	return listener, provider, nil
+}
+
+func credentialMux(provider *Provider) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, "ok\n")
-	})
-	mux.HandleFunc("/credential", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/credential", credentialHandler(provider))
+	return mux
+}
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, "ok\n")
+}
+
+func credentialHandler(provider *Provider) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -76,8 +105,10 @@ func Serve(ctx context.Context, socketPath string, cfg Config) error {
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = io.WriteString(w, token)
-	})
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	}
+}
+
+func serveUntilCancelled(ctx context.Context, server *http.Server, listener net.Listener, socketPath string) error {
 	done := make(chan struct{})
 	go func() {
 		select {
@@ -86,7 +117,7 @@ func Serve(ctx context.Context, socketPath string, cfg Config) error {
 		case <-done:
 		}
 	}()
-	err = server.Serve(listener)
+	err := server.Serve(listener)
 	close(done)
 	_ = os.Remove(socketPath)
 	if err == http.ErrServerClosed {

@@ -41,51 +41,7 @@ func TestProviderMintsScopedTokenAndCachesIt(t *testing.T) {
 	}
 	now := time.Date(2029, 12, 31, 0, 0, 0, 0, time.UTC)
 	var tokenCalls, repoCalls int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/repos/octo/repo/installation" {
-			repoCalls++
-			if r.Header.Get("Authorization") == "" || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
-				t.Error("installation lookup did not use App JWT")
-			}
-			_, _ = w.Write([]byte(`{"id":34}`))
-			return
-		}
-		if r.URL.Path == "/app/installations/34/access_tokens" {
-			tokenCalls++
-			jwt := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			parts := strings.Split(jwt, ".")
-			if len(parts) != 3 {
-				t.Fatalf("invalid JWT: %q", jwt)
-			}
-			headerJSON, _ := base64.RawURLEncoding.DecodeString(parts[0])
-			var header map[string]string
-			_ = json.Unmarshal(headerJSON, &header)
-			if header["alg"] != "RS256" || header["typ"] != "JWT" {
-				t.Errorf("unexpected JWT header: %#v", header)
-			}
-			unsigned := parts[0] + "." + parts[1]
-			digest := sha256.Sum256([]byte(unsigned))
-			sig, decodeErr := base64.RawURLEncoding.DecodeString(parts[2])
-			if decodeErr != nil || rsa.VerifyPKCS1v15(&privateKey.PublicKey, crypto.SHA256, digest[:], sig) != nil {
-				t.Error("JWT signature did not verify")
-			}
-			claimsJSON, _ := base64.RawURLEncoding.DecodeString(parts[1])
-			var claims map[string]any
-			_ = json.Unmarshal(claimsJSON, &claims)
-			if claims["iss"] != "12" || claims["iat"] != float64(now.Unix()-60) || claims["exp"] != float64(now.Unix()+9*60) {
-				t.Errorf("unexpected claims: %#v", claims)
-			}
-			var body map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			if body["repositories"].([]any)[0] != "repo" || body["permissions"].(map[string]any)["contents"] != "read" {
-				t.Errorf("unexpected scope: %#v", body)
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"token":"opaque-token","expires_at":"2030-01-01T00:00:00Z"}`))
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	srv := httptest.NewServer(scopedTokenHandler(t, privateKey, now, &tokenCalls, &repoCalls))
 	defer srv.Close()
 	pass := filepath.Join(t.TempDir(), "pass")
 	fakePass := "#!/bin/sh\n[ \"$1\" = show ] && [ \"$2\" = key ] || exit 9\n[ -z \"$GPG_TTY\" ] || exit 10\n[ \"$PASSWORD_STORE_GPG_OPTS\" = '--no-tty --pinentry-mode loopback --batch --pinentry-mode error' ] || exit 11\ncat <<'KEY'\n" + key + "\nKEY\n"
@@ -106,6 +62,87 @@ func TestProviderMintsScopedTokenAndCachesIt(t *testing.T) {
 	if tokenCalls != 1 || repoCalls != 1 {
 		t.Fatalf("calls token=%d installation=%d", tokenCalls, repoCalls)
 	}
+}
+
+func scopedTokenHandler(t *testing.T, privateKey *rsa.PrivateKey, now time.Time, tokenCalls, repoCalls *int) http.HandlerFunc {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/octo/repo/installation" {
+			*repoCalls++
+			assertBearerAuthorization(t, r)
+			_, _ = w.Write([]byte(`{"id":34}`))
+			return
+		}
+		if r.URL.Path == "/app/installations/34/access_tokens" {
+			*tokenCalls++
+			assertScopedTokenRequest(t, r, privateKey, now)
+			writeScopedTokenResponse(w)
+			return
+		}
+		http.NotFound(w, r)
+	})
+}
+
+func assertBearerAuthorization(t *testing.T, r *http.Request) {
+	t.Helper()
+	if r.Header.Get("Authorization") == "" || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+		t.Error("installation lookup did not use App JWT")
+	}
+}
+
+func assertScopedTokenRequest(t *testing.T, r *http.Request, privateKey *rsa.PrivateKey, now time.Time) {
+	t.Helper()
+	parts := strings.Split(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), ".")
+	if len(parts) != 3 {
+		t.Fatalf("invalid JWT: %q", r.Header.Get("Authorization"))
+	}
+	assertJWTHeader(t, parts[0])
+	assertJWTSignature(t, parts, privateKey)
+	assertJWTClaims(t, parts[1], now)
+	assertTokenScope(t, r)
+}
+
+func assertJWTHeader(t *testing.T, encoded string) {
+	t.Helper()
+	headerJSON, _ := base64.RawURLEncoding.DecodeString(encoded)
+	var header map[string]string
+	_ = json.Unmarshal(headerJSON, &header)
+	if header["alg"] != "RS256" || header["typ"] != "JWT" {
+		t.Errorf("unexpected JWT header: %#v", header)
+	}
+}
+
+func assertJWTSignature(t *testing.T, parts []string, privateKey *rsa.PrivateKey) {
+	t.Helper()
+	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil || rsa.VerifyPKCS1v15(&privateKey.PublicKey, crypto.SHA256, digest[:], signature) != nil {
+		t.Error("JWT signature did not verify")
+	}
+}
+
+func assertJWTClaims(t *testing.T, encoded string, now time.Time) {
+	t.Helper()
+	claimsJSON, _ := base64.RawURLEncoding.DecodeString(encoded)
+	var claims map[string]any
+	_ = json.Unmarshal(claimsJSON, &claims)
+	if claims["iss"] != "12" || claims["iat"] != float64(now.Unix()-60) || claims["exp"] != float64(now.Unix()+9*60) {
+		t.Errorf("unexpected claims: %#v", claims)
+	}
+}
+
+func assertTokenScope(t *testing.T, r *http.Request) {
+	t.Helper()
+	var body map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body["repositories"].([]any)[0] != "repo" || body["permissions"].(map[string]any)["contents"] != "read" {
+		t.Errorf("unexpected scope: %#v", body)
+	}
+}
+
+func writeScopedTokenResponse(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"token":"opaque-token","expires_at":"2030-01-01T00:00:00Z"}`))
 }
 
 func TestProviderRejectsWrongRepositoryInstallationBeforeMinting(t *testing.T) {
@@ -155,76 +192,94 @@ func TestProviderRejectsFailedRepositoryInstallationLookup(t *testing.T) {
 		status     int
 	}{{"not found", `{"message":"Not Found"}`, http.StatusNotFound}, {"malformed", `{"id":"bad"}`, http.StatusOK}} {
 		t.Run(tc.name, func(t *testing.T) {
-			key := testPrivateKey(t)
-			var tokenCalls atomic.Int32
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/repos/octo/repo/installation" {
-					w.WriteHeader(tc.status)
-					_, _ = w.Write([]byte(tc.body))
-					return
-				}
-				if strings.HasSuffix(r.URL.Path, "/access_tokens") {
-					tokenCalls.Add(1)
-					_, _ = w.Write([]byte(`{"token":"must-not-mint","expires_at":"2030-01-01T00:00:00Z"}`))
-					return
-				}
-				http.NotFound(w, r)
-			}))
-			defer srv.Close()
-			pass := filepath.Join(t.TempDir(), "pass")
-			if err := os.WriteFile(pass, []byte("#!/bin/sh\ncat <<'KEY'\n"+key+"\nKEY\n"), 0700); err != nil {
-				t.Fatal(err)
-			}
-			p, err := NewProvider(Config{AppID: 1, InstallationID: 34, PrivateKeyPassEntry: "key", Repository: "octo/repo", Permissions: map[string]string{"contents": "read"}}, ProviderOptions{PassPath: pass, APIBaseURL: srv.URL, HTTPClient: srv.Client()})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if token, err := p.Token(context.Background()); err == nil || token != "" {
-				t.Fatalf("Token() = %q, %v; want lookup failure", token, err)
-			}
-			if tokenCalls.Load() != 0 {
-				t.Fatalf("minted %d tokens after failed lookup", tokenCalls.Load())
-			}
+			assertFailedInstallationLookup(t, tc.status, tc.body)
 		})
 	}
+}
+
+func assertFailedInstallationLookup(t *testing.T, status int, body string) {
+	t.Helper()
+	key := testPrivateKey(t)
+	var tokenCalls atomic.Int32
+	srv := httptest.NewServer(failedInstallationHandler(status, body, &tokenCalls))
+	defer srv.Close()
+	pass := filepath.Join(t.TempDir(), "pass")
+	if err := os.WriteFile(pass, []byte("#!/bin/sh\ncat <<'KEY'\n"+key+"\nKEY\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewProvider(Config{AppID: 1, InstallationID: 34, PrivateKeyPassEntry: "key", Repository: "octo/repo", Permissions: map[string]string{"contents": "read"}}, ProviderOptions{PassPath: pass, APIBaseURL: srv.URL, HTTPClient: srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token, err := p.Token(context.Background()); err == nil || token != "" {
+		t.Fatalf("Token() = %q, %v; want lookup failure", token, err)
+	}
+	if tokenCalls.Load() != 0 {
+		t.Fatalf("minted %d tokens after failed lookup", tokenCalls.Load())
+	}
+}
+
+func failedInstallationHandler(status int, body string, tokenCalls *atomic.Int32) http.HandlerFunc {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/octo/repo/installation" {
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/access_tokens") {
+			tokenCalls.Add(1)
+			_, _ = w.Write([]byte(`{"token":"must-not-mint","expires_at":"2030-01-01T00:00:00Z"}`))
+			return
+		}
+		http.NotFound(w, r)
+	})
 }
 
 func TestProviderRejectsMalformedOrExpiredResponsesAndRetries(t *testing.T) {
 	cases := []struct{ name, response string }{{"malformed", `{"token":`}, {"expired", `{"token":"old-token","expires_at":"2000-01-01T00:00:00Z"}`}, {"invalid-expiry", `{"token":"bad-expiry","expires_at":"tomorrow"}`}, {"invalid-token", `{"token":"bad\ntoken","expires_at":"2030-01-01T00:00:00Z"}`}}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			key := testPrivateKey(t)
-			var calls atomic.Int32
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/app/installations/2/access_tokens" {
-					if calls.Add(1) == 1 {
-						_, _ = w.Write([]byte(tc.response))
-						return
-					}
-					_, _ = w.Write([]byte(`{"token":"retry-token","expires_at":"2030-01-01T00:00:00Z"}`))
-					return
-				}
-				_, _ = w.Write([]byte(`{"id":2}`))
-			}))
-			defer srv.Close()
-			pass := filepath.Join(t.TempDir(), "pass")
-			_ = os.WriteFile(pass, []byte("#!/bin/sh\ncat <<'KEY'\n"+key+"\nKEY\n"), 0700)
-			p, err := NewProvider(Config{AppID: 1, InstallationID: 2, PrivateKeyPassEntry: "key", Repository: "octo/repo", Permissions: map[string]string{"contents": "read"}}, ProviderOptions{PassPath: pass, APIBaseURL: srv.URL, HTTPClient: srv.Client()})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := p.Token(context.Background()); err == nil {
-				t.Fatal("invalid response accepted")
-			}
-			got, err := p.Token(context.Background())
-			if err != nil || got != "retry-token" {
-				t.Fatalf("retry = %q, %v", got, err)
-			}
-			if calls.Load() != 2 {
-				t.Fatalf("API calls=%d", calls.Load())
-			}
+			assertInvalidResponseRetries(t, tc.response)
 		})
 	}
+}
+
+func assertInvalidResponseRetries(t *testing.T, response string) {
+	t.Helper()
+	key := testPrivateKey(t)
+	var calls atomic.Int32
+	srv := httptest.NewServer(invalidResponseHandler(response, &calls))
+	defer srv.Close()
+	pass := filepath.Join(t.TempDir(), "pass")
+	_ = os.WriteFile(pass, []byte("#!/bin/sh\ncat <<'KEY'\n"+key+"\nKEY\n"), 0700)
+	p, err := NewProvider(Config{AppID: 1, InstallationID: 2, PrivateKeyPassEntry: "key", Repository: "octo/repo", Permissions: map[string]string{"contents": "read"}}, ProviderOptions{PassPath: pass, APIBaseURL: srv.URL, HTTPClient: srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Token(context.Background()); err == nil {
+		t.Fatal("invalid response accepted")
+	}
+	got, err := p.Token(context.Background())
+	if err != nil || got != "retry-token" {
+		t.Fatalf("retry = %q, %v", got, err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("API calls=%d", calls.Load())
+	}
+}
+
+func invalidResponseHandler(response string, calls *atomic.Int32) http.HandlerFunc {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/app/installations/2/access_tokens" {
+			if calls.Add(1) == 1 {
+				_, _ = w.Write([]byte(response))
+				return
+			}
+			_, _ = w.Write([]byte(`{"token":"retry-token","expires_at":"2030-01-01T00:00:00Z"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":2}`))
+	})
 }
 
 func TestProviderSanitizesAPIErrorAndRetriesNextRequest(t *testing.T) {

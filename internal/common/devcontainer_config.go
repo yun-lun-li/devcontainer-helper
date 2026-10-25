@@ -104,22 +104,26 @@ func mergeConfigValues(base, local any) any {
 	baseArray, baseIsArray := base.([]any)
 	localArray, localIsArray := local.([]any)
 	if baseIsArray && localIsArray {
-		merged := make([]any, 0, len(baseArray)+len(localArray))
-		seen := make(map[string]struct{}, len(baseArray)+len(localArray))
-		for _, item := range append(append([]any{}, baseArray...), localArray...) {
-			encoded, err := json.Marshal(item)
-			if err != nil {
-				// Values decoded from JSON are always marshalable.
-				continue
-			}
-			key := string(encoded)
-			if _, exists := seen[key]; exists {
-				continue
-			}
-			seen[key] = struct{}{}
-			merged = append(merged, item)
-		}
-		return merged
+		return mergeConfigArrays(baseArray, localArray)
 	}
 	return local
+}
+
+func mergeConfigArrays(base, local []any) []any {
+	merged := make([]any, 0, len(base)+len(local))
+	seen := make(map[string]struct{}, len(base)+len(local))
+	for _, item := range append(append([]any{}, base...), local...) {
+		encoded, err := json.Marshal(item)
+		if err != nil {
+			// Values decoded from JSON are always marshalable.
+			continue
+		}
+		key := string(encoded)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		merged = append(merged, item)
+	}
+	return merged
 }
