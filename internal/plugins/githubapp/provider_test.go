@@ -1,18 +1,14 @@
 package githubapp
 
 import (
+	"bytes"
 	"context"
-	"crypto"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,492 +18,377 @@ import (
 	"time"
 )
 
-func testPrivateKey(t *testing.T) string {
-	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+func TestSecretStoreWritesAndReadsCompleteJSON(t *testing.T) {
+	pass := filepath.Join(t.TempDir(), "pass")
+	_ = os.WriteFile(pass, []byte("#!/bin/sh\nif [ \"$1\" = insert ]; then cat > \"$PASS_SECRET\"; exit; fi\ncat \"$PASS_SECRET\"\n"), 0700)
+	cfg := Config{ClientID: "Iv1_example", ProjectPath: "/tmp/p", UserID: 8, Login: "tester", RepositoryID: 9, Repository: "octo/repo"}
+	now := time.Now()
+	set := TokenSet{Schema: 1, ClientID: cfg.ClientID, ProjectPath: cfg.ProjectPath, UserID: cfg.UserID, RepositoryID: cfg.RepositoryID, Repository: cfg.Repository, AccessToken: "access", RefreshToken: "refresh", AccessTokenExpiresAt: now.Add(time.Hour), RefreshTokenExpiresAt: now.Add(24 * time.Hour)}
+	entry := filepath.Join(t.TempDir(), "secret.json")
+	store := &SecretStore{PassPath: pass, Entry: "entry"}
+	t.Setenv("PASS_SECRET", entry)
+	if err := store.Write(context.Background(), set); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Read(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	if got.AccessToken != set.AccessToken || got.RefreshToken != set.RefreshToken || !got.AccessTokenExpiresAt.Equal(set.AccessTokenExpiresAt) || !got.RefreshTokenExpiresAt.Equal(set.RefreshTokenExpiresAt) {
+		t.Fatalf("got %#v want %#v", got, set)
+	}
 }
 
-func TestProviderMintsScopedTokenAndCachesIt(t *testing.T) {
-	key := testPrivateKey(t)
-	t.Setenv("GPG_TTY", "/dev/pts/9")
-	t.Setenv("PASSWORD_STORE_GPG_OPTS", "--no-tty --pinentry-mode loopback")
-	privateKey, err := parsePrivateKey([]byte(key))
+func TestContextFormClientAddsRepositoryIDOnlyToDevicePollAndHonorsCancellation(t *testing.T) {
+	var poll, request string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(data), "device_code") {
+			poll = string(data)
+		} else {
+			request = string(data)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	client := contextFormClient{ctx: context.Background(), client: srv.Client(), repositoryID: 41}
+	_, _ = client.PostForm(srv.URL, url.Values{"grant_type": {"urn:ietf:params:oauth:grant-type:device_code"}})
+	_, _ = client.PostForm(srv.URL, url.Values{"grant_type": {"refresh_token"}, "scope": {"offline_access"}})
+	if !strings.Contains(poll, "repository_id=41") || strings.Contains(request, "repository_id") {
+		t.Fatalf("poll=%q request=%q", poll, request)
+	}
+}
+
+func TestSecretStoreAllowsExpiredAccessWhileRefreshTokenIsValid(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	cfg := testProviderConfig()
+	set := testTokenSet(cfg, now.Add(-time.Minute), now.Add(time.Hour))
+	store := newTestSecretStore(t, set)
+	store.Now = func() time.Time { return now }
+	got, err := store.Read(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2029, 12, 31, 0, 0, 0, 0, time.UTC)
-	var tokenCalls, repoCalls int
-	srv := httptest.NewServer(scopedTokenHandler(t, privateKey, now, &tokenCalls, &repoCalls))
-	defer srv.Close()
-	pass := filepath.Join(t.TempDir(), "pass")
-	fakePass := "#!/bin/sh\n[ \"$1\" = show ] && [ \"$2\" = key ] || exit 9\n[ -z \"$GPG_TTY\" ] || exit 10\n[ \"$PASSWORD_STORE_GPG_OPTS\" = '--no-tty --pinentry-mode loopback --batch --pinentry-mode error' ] || exit 11\ncat <<'KEY'\n" + key + "\nKEY\n"
-	if err := os.WriteFile(pass, []byte(fakePass), 0700); err != nil {
+	if got.AccessTokenExpiresAt.After(now) {
+		t.Fatalf("expected expired access token, got %s", got.AccessTokenExpiresAt)
+	}
+}
+
+func TestProviderCachesValidTokenInMemory(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	cfg := testProviderConfig()
+	set := testTokenSet(cfg, now.Add(time.Hour), now.Add(24*time.Hour))
+	store := newTestSecretStore(t, set)
+	store.Now = func() time.Time { return now }
+	provider, err := NewProvider(cfg, ProviderOptions{Now: func() time.Time { return now }, Secret: store, VerifyScope: noVerifyScope, VerifyUser: noVerifyUser})
+	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{AppID: 12, InstallationID: 34, PrivateKeyPassEntry: "key", Repository: "octo/repo", Permissions: map[string]string{"contents": "read"}}
-	p, err := NewProvider(cfg, ProviderOptions{PassPath: pass, APIBaseURL: srv.URL, HTTPClient: srv.Client(), Now: func() time.Time { return now }})
+	first, err := provider.Token(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := provider.Token(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != set.AccessToken || second != first {
+		t.Fatalf("tokens = %q, %q", first, second)
+	}
+}
+
+func TestProviderRefreshVerifiesUserAndScopeBeforeSavingRotatedPair(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	cfg := testProviderConfig()
+	previous := testTokenSet(cfg, now.Add(-time.Minute), now.Add(time.Hour))
+	store := newTestSecretStore(t, previous)
+	store.Now = func() time.Time { return now }
+	transport := providerTransport(func(req *http.Request) *http.Response {
+		if req.URL.String() != "https://github.com/login/oauth/access_token" {
+			return providerResponse(req, http.StatusNotFound, "")
+		}
+		return providerResponse(req, http.StatusOK, `{"access_token":"fresh","refresh_token":"rotated","expires_in":3600,"refresh_token_expires_in":86400}`)
+	})
+	scopes, users := 0, 0
+	provider, err := NewProvider(cfg, ProviderOptions{Now: func() time.Time { return now }, Secret: store, HTTPClient: &http.Client{Transport: transport}, VerifyScope: func(_ context.Context, token string, got Config) error {
+		scopes++
+		if token != "fresh" || got.RepositoryID != cfg.RepositoryID {
+			t.Fatal("scope verification received wrong binding")
+		}
+		return nil
+	}, VerifyUser: func(_ context.Context, token string, userID int64) error {
+		users++
+		if token != "fresh" || userID != cfg.UserID {
+			t.Fatal("identity verification received wrong binding")
+		}
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := provider.Token(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "fresh" || scopes != 1 || users != 1 {
+		t.Fatalf("token %q, scope checks %d, user checks %d", token, scopes, users)
+	}
+	saved, err := store.Read(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.RefreshToken != "rotated" || saved.AccessToken != "fresh" {
+		t.Fatalf("saved %#v", saved)
+	}
+}
+
+func TestProviderDoesNotSaveOrPublishRefreshWhenScopeFails(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	cfg := testProviderConfig()
+	previous := testTokenSet(cfg, now.Add(-time.Minute), now.Add(time.Hour))
+	store := newTestSecretStore(t, previous)
+	store.Now = func() time.Time { return now }
+	transport := providerTransport(func(req *http.Request) *http.Response {
+		return providerResponse(req, http.StatusOK, `{"access_token":"fresh","refresh_token":"rotated","expires_in":3600,"refresh_token_expires_in":86400}`)
+	})
+	provider, err := NewProvider(cfg, ProviderOptions{Now: func() time.Time { return now }, Secret: store, HTTPClient: &http.Client{Transport: transport}, VerifyScope: func(context.Context, string, Config) error { return fmt.Errorf("scope mismatch") }, VerifyUser: noVerifyUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token, err := provider.Token(context.Background()); err == nil || token != "" {
+		t.Fatalf("got token %q, err %v", token, err)
+	}
+	saved, err := store.Read(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.RefreshToken != previous.RefreshToken || saved.AccessToken != previous.AccessToken {
+		t.Fatalf("rotated pair was saved: %#v", saved)
+	}
+}
+
+type providerRoundTripFunc func(*http.Request) *http.Response
+
+func (f providerRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req), nil
+}
+func providerTransport(fn providerRoundTripFunc) http.RoundTripper { return fn }
+func providerResponse(req *http.Request, status int, body string) *http.Response {
+	headers := make(http.Header)
+	headers.Set("Content-Type", "application/json")
+	return &http.Response{StatusCode: status, Header: headers, Body: io.NopCloser(strings.NewReader(body)), Request: req}
+}
+func noVerifyScope(context.Context, string, Config) error { return nil }
+func noVerifyUser(context.Context, string, int64) error   { return nil }
+func testProviderConfig() Config {
+	return Config{ClientID: "Iv1_test", ProjectPath: "/tmp/project", UserID: 8, Login: "tester", RepositoryID: 9, Repository: "octo/repo"}
+}
+func testTokenSet(cfg Config, accessExpiry, refreshExpiry time.Time) TokenSet {
+	return TokenSet{Schema: 1, ClientID: cfg.ClientID, ProjectPath: cfg.ProjectPath, UserID: cfg.UserID, RepositoryID: cfg.RepositoryID, Repository: cfg.Repository, AccessToken: "access", RefreshToken: "refresh", AccessTokenExpiresAt: accessExpiry, RefreshTokenExpiresAt: refreshExpiry}
+}
+func newTestSecretStore(t *testing.T, initial TokenSet) *SecretStore {
+	t.Helper()
+	pass := filepath.Join(t.TempDir(), "pass")
+	entry := filepath.Join(t.TempDir(), "entry.json")
+	script := "#!/bin/sh\necho \"$1\" >> \"$PASS_LOG\"\ncase \"$1\" in\ninsert) cat > \"$PASS_SECRET\" ;;\nshow) cat \"$PASS_SECRET\" ;;\n*) exit 2 ;;\nesac\n"
+	if err := os.WriteFile(pass, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PASS_SECRET", entry)
+	t.Setenv("PASS_LOG", filepath.Join(t.TempDir(), "commands"))
+	store := &SecretStore{PassPath: pass, Entry: "entry", LockDir: filepath.Join(t.TempDir(), "locks")}
+	raw, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entry, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func TestProvidersShareOneCrossProcessRefresh(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	cfg := testProviderConfig()
+	previous := testTokenSet(cfg, now.Add(-time.Minute), now.Add(time.Hour))
+	store := newTestSecretStore(t, previous)
+	store.Now = func() time.Time { return now }
+	var requests atomic.Int32
+	transport := providerRoundTripFunc(func(req *http.Request) *http.Response {
+		requests.Add(1)
+		time.Sleep(30 * time.Millisecond)
+		return providerResponse(req, http.StatusOK, `{"access_token":"fresh","refresh_token":"rotated","expires_in":3600,"refresh_token_expires_in":86400}`)
+	})
+	options := ProviderOptions{Now: func() time.Time { return now }, Secret: store, HTTPClient: &http.Client{Transport: transport}, VerifyScope: noVerifyScope, VerifyUser: noVerifyUser}
+	first, err := NewProvider(cfg, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewProvider(cfg, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providers := []*Provider{first, second}
+	var wait sync.WaitGroup
+	failures := make(chan error, len(providers))
+	for _, provider := range providers {
+		wait.Add(1)
+		go func(provider *Provider) {
+			defer wait.Done()
+			token, err := provider.Token(context.Background())
+			if err != nil {
+				failures <- err
+				return
+			}
+			if token != "fresh" {
+				failures <- fmt.Errorf("unexpected token")
+			}
+		}(provider)
+	}
+	wait.Wait()
+	close(failures)
+	for err := range failures {
+		t.Error(err)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("refresh requests = %d, want 1", got)
+	}
+}
+
+func TestProviderValidMemoryCacheAvoidsSecondSecretRead(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	cfg := testProviderConfig()
+	store := newTestSecretStore(t, testTokenSet(cfg, now.Add(time.Hour), now.Add(24*time.Hour)))
+	store.Now = func() time.Time { return now }
+	provider, err := NewProvider(cfg, ProviderOptions{Now: func() time.Time { return now }, Secret: store, VerifyScope: noVerifyScope, VerifyUser: noVerifyUser})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
-		got, err := p.Token(context.Background())
-		if err != nil || got != "opaque-token" {
-			t.Fatalf("Token() = %q, %v", got, err)
+		if _, err := provider.Token(context.Background()); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if tokenCalls != 1 || repoCalls != 1 {
-		t.Fatalf("calls token=%d installation=%d", tokenCalls, repoCalls)
-	}
-}
-
-func TestProviderDefaultsPassEntryForDirectConfig(t *testing.T) {
-	pass := filepath.Join(t.TempDir(), "pass")
-	if err := os.WriteFile(pass, []byte("#!/bin/sh\nprintf '%s' \"$2\" > \"$PASS_ARG_FILE\"\nexit 1\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	argFile := filepath.Join(t.TempDir(), "arg")
-	t.Setenv("PASS_ARG_FILE", argFile)
-	p, err := NewProvider(Config{AppID: 12, InstallationID: 34, Permissions: map[string]string{"contents": "read"}}, ProviderOptions{PassPath: pass})
+	log, err := os.ReadFile(os.Getenv("PASS_LOG"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = p.Token(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "dch/github-app/12/private-key") || strings.Contains(err.Error(), "exit") {
-		t.Fatalf("Token() error = %v", err)
-	}
-	entry, readErr := os.ReadFile(argFile)
-	if readErr != nil || string(entry) != "dch/github-app/12/private-key" {
-		t.Fatalf("pass entry = %q, %v", entry, readErr)
+	if got := strings.Count(string(log), "show\n"); got != 1 {
+		t.Fatalf("pass show calls = %d, want 1; log %q", got, log)
 	}
 }
 
-func TestProviderRequestsInstallationWideTokenWithoutRepositoryLookup(t *testing.T) {
-	key := testPrivateKey(t)
-	var lookupCalls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/installation") {
-			lookupCalls.Add(1)
-			t.Errorf("unexpected repository installation lookup: %s", r.URL.Path)
-			return
+func TestProviderVerifiesTheBoundGitHubUser(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer fresh" {
+			t.Errorf("authorization = %q", r.Header.Get("Authorization"))
 		}
-		if r.URL.Path != "/app/installations/34/access_tokens" {
-			http.NotFound(w, r)
-			return
-		}
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Error(err)
-		}
-		if _, hasRepos := body["repositories"]; hasRepos {
-			t.Errorf("installation-wide body restricted repositories: %#v", body)
-		}
-		if body["permissions"].(map[string]any)["contents"] != "read" {
-			t.Errorf("unexpected permissions: %#v", body)
-		}
-		writeScopedTokenResponse(w)
+		_, _ = io.WriteString(w, `{"id":8}`)
 	}))
-	defer srv.Close()
-	pass := filepath.Join(t.TempDir(), "pass")
-	if err := os.WriteFile(pass, []byte("#!/bin/sh\ncat <<'KEY'\n"+key+"\nKEY\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	p, err := NewProvider(Config{AppID: 1, InstallationID: 34, Permissions: map[string]string{"contents": "read"}}, ProviderOptions{PassPath: pass, APIBaseURL: srv.URL, HTTPClient: srv.Client()})
+	defer server.Close()
+	provider, err := NewProvider(testProviderConfig(), ProviderOptions{APIBaseURL: server.URL, VerifyScope: noVerifyScope})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Token(context.Background()); err != nil {
-		t.Fatalf("Token() error = %v", err)
-	}
-	if lookupCalls.Load() != 0 {
-		t.Fatalf("repository lookups = %d", lookupCalls.Load())
-	}
-}
-
-func scopedTokenHandler(t *testing.T, privateKey *rsa.PrivateKey, now time.Time, tokenCalls, repoCalls *int) http.HandlerFunc {
-	t.Helper()
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/repos/octo/repo/installation" {
-			*repoCalls++
-			assertBearerAuthorization(t, r)
-			_, _ = w.Write([]byte(`{"id":34}`))
-			return
-		}
-		if r.URL.Path == "/app/installations/34/access_tokens" {
-			*tokenCalls++
-			assertScopedTokenRequest(t, r, privateKey, now)
-			writeScopedTokenResponse(w)
-			return
-		}
-		http.NotFound(w, r)
-	})
-}
-
-func assertBearerAuthorization(t *testing.T, r *http.Request) {
-	t.Helper()
-	if r.Header.Get("Authorization") == "" || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
-		t.Error("installation lookup did not use App JWT")
-	}
-}
-
-func assertScopedTokenRequest(t *testing.T, r *http.Request, privateKey *rsa.PrivateKey, now time.Time) {
-	t.Helper()
-	parts := strings.Split(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), ".")
-	if len(parts) != 3 {
-		t.Fatalf("invalid JWT: %q", r.Header.Get("Authorization"))
-	}
-	assertJWTHeader(t, parts[0])
-	assertJWTSignature(t, parts, privateKey)
-	assertJWTClaims(t, parts[1], now)
-	assertTokenScope(t, r)
-}
-
-func assertJWTHeader(t *testing.T, encoded string) {
-	t.Helper()
-	headerJSON, _ := base64.RawURLEncoding.DecodeString(encoded)
-	var header map[string]string
-	_ = json.Unmarshal(headerJSON, &header)
-	if header["alg"] != "RS256" || header["typ"] != "JWT" {
-		t.Errorf("unexpected JWT header: %#v", header)
-	}
-}
-
-func assertJWTSignature(t *testing.T, parts []string, privateKey *rsa.PrivateKey) {
-	t.Helper()
-	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
-	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil || rsa.VerifyPKCS1v15(&privateKey.PublicKey, crypto.SHA256, digest[:], signature) != nil {
-		t.Error("JWT signature did not verify")
-	}
-}
-
-func assertJWTClaims(t *testing.T, encoded string, now time.Time) {
-	t.Helper()
-	claimsJSON, _ := base64.RawURLEncoding.DecodeString(encoded)
-	var claims map[string]any
-	_ = json.Unmarshal(claimsJSON, &claims)
-	if claims["iss"] != "12" || claims["iat"] != float64(now.Unix()-60) || claims["exp"] != float64(now.Unix()+9*60) {
-		t.Errorf("unexpected claims: %#v", claims)
-	}
-}
-
-func assertTokenScope(t *testing.T, r *http.Request) {
-	t.Helper()
-	var body map[string]any
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	if body["repositories"].([]any)[0] != "repo" || body["permissions"].(map[string]any)["contents"] != "read" {
-		t.Errorf("unexpected scope: %#v", body)
-	}
-}
-
-func writeScopedTokenResponse(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"token":"opaque-token","expires_at":"2030-01-01T00:00:00Z"}`))
-}
-
-func TestProviderRejectsWrongRepositoryInstallationBeforeMinting(t *testing.T) {
-	key := testPrivateKey(t)
-	var tokenCalls, lookupCalls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/repos/octo/repo/installation" {
-			lookupCalls.Add(1)
-			_, _ = w.Write([]byte(`{"id":99}`))
-			return
-		}
-		if r.URL.Path == "/app/installations/34/access_tokens" {
-			tokenCalls.Add(1)
-			_, _ = w.Write([]byte(`{"token":"wrong-installation-token","expires_at":"2030-01-01T00:00:00Z"}`))
-			return
-		}
-		if r.URL.Path == "/repos/octo/repo" {
-			// GitHub returns public repository metadata without installation scope.
-			_, _ = w.Write([]byte(`{"full_name":"octo/repo"}`))
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer srv.Close()
-	pass := filepath.Join(t.TempDir(), "pass")
-	if err := os.WriteFile(pass, []byte("#!/bin/sh\ncat <<'KEY'\n"+key+"\nKEY\n"), 0700); err != nil {
+	if err := provider.opts.VerifyUser(context.Background(), "fresh", 8); err != nil {
 		t.Fatal(err)
 	}
-	p, err := NewProvider(Config{AppID: 1, InstallationID: 34, PrivateKeyPassEntry: "key", Repository: "octo/repo", Permissions: map[string]string{"contents": "read"}}, ProviderOptions{PassPath: pass, APIBaseURL: srv.URL, HTTPClient: srv.Client()})
+	if err := provider.opts.VerifyUser(context.Background(), "fresh", 9); err == nil {
+		t.Fatal("accepted a different GitHub user")
+	}
+}
+
+func TestSecretStoreSnapshotRestoreAndDelete(t *testing.T) {
+	dir := t.TempDir()
+	pass := filepath.Join(dir, "pass")
+	entry := filepath.Join(dir, "entry")
+	script := "#!/bin/sh\ncase \"$1\" in\nshow) if [ -f \"$PASS_SECRET\" ]; then cat \"$PASS_SECRET\"; else echo 'Error: not in the password store' >&2; exit 1; fi ;;\ninsert) cat > \"$PASS_SECRET\" ;;\nrm) rm -f \"$PASS_SECRET\" ;;\n*) exit 2 ;;\nesac\n"
+	if err := os.WriteFile(pass, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PASS_SECRET", entry)
+	store := &SecretStore{PassPath: pass, Entry: "entry"}
+	if _, err := store.Snapshot(context.Background()); err != ErrSecretMissing {
+		t.Fatalf("missing snapshot err = %v", err)
+	}
+	cfg := testProviderConfig()
+	now := time.Now()
+	set := testTokenSet(cfg, now.Add(time.Hour), now.Add(24*time.Hour))
+	raw, err := json.Marshal(set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if token, err := p.Token(context.Background()); err == nil || token != "" {
-		t.Fatalf("Token() = %q, %v; want rejected installation", token, err)
-	}
-	if tokenCalls.Load() != 0 {
-		t.Fatalf("minted %d tokens for wrong installation", tokenCalls.Load())
-	}
-	if lookupCalls.Load() != 1 {
-		t.Fatalf("installation lookup calls=%d; want 1", lookupCalls.Load())
-	}
-}
-
-func TestProviderRejectsFailedRepositoryInstallationLookup(t *testing.T) {
-	for _, tc := range []struct {
-		name, body string
-		status     int
-	}{{"not found", `{"message":"Not Found"}`, http.StatusNotFound}, {"malformed", `{"id":"bad"}`, http.StatusOK}} {
-		t.Run(tc.name, func(t *testing.T) {
-			assertFailedInstallationLookup(t, tc.status, tc.body)
-		})
-	}
-}
-
-func assertFailedInstallationLookup(t *testing.T, status int, body string) {
-	t.Helper()
-	key := testPrivateKey(t)
-	var tokenCalls atomic.Int32
-	srv := httptest.NewServer(failedInstallationHandler(status, body, &tokenCalls))
-	defer srv.Close()
-	pass := filepath.Join(t.TempDir(), "pass")
-	if err := os.WriteFile(pass, []byte("#!/bin/sh\ncat <<'KEY'\n"+key+"\nKEY\n"), 0700); err != nil {
+	if err := store.RestoreRaw(context.Background(), raw); err != nil {
 		t.Fatal(err)
 	}
-	p, err := NewProvider(Config{AppID: 1, InstallationID: 34, PrivateKeyPassEntry: "key", Repository: "octo/repo", Permissions: map[string]string{"contents": "read"}}, ProviderOptions{PassPath: pass, APIBaseURL: srv.URL, HTTPClient: srv.Client()})
+	got, err := store.Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if token, err := p.Token(context.Background()); err == nil || token != "" {
-		t.Fatalf("Token() = %q, %v; want lookup failure", token, err)
+	if !bytes.Equal(bytes.TrimSpace(got), raw) {
+		t.Fatal("snapshot did not preserve the full credential JSON")
 	}
-	if tokenCalls.Load() != 0 {
-		t.Fatalf("minted %d tokens after failed lookup", tokenCalls.Load())
-	}
-}
-
-func failedInstallationHandler(status int, body string, tokenCalls *atomic.Int32) http.HandlerFunc {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/repos/octo/repo/installation" {
-			w.WriteHeader(status)
-			_, _ = w.Write([]byte(body))
-			return
-		}
-		if strings.HasSuffix(r.URL.Path, "/access_tokens") {
-			tokenCalls.Add(1)
-			_, _ = w.Write([]byte(`{"token":"must-not-mint","expires_at":"2030-01-01T00:00:00Z"}`))
-			return
-		}
-		http.NotFound(w, r)
-	})
-}
-
-func TestProviderRejectsMalformedOrExpiredResponsesAndRetries(t *testing.T) {
-	cases := []struct{ name, response string }{{"malformed", `{"token":`}, {"expired", `{"token":"old-token","expires_at":"2000-01-01T00:00:00Z"}`}, {"invalid-expiry", `{"token":"bad-expiry","expires_at":"tomorrow"}`}, {"invalid-token", `{"token":"bad\ntoken","expires_at":"2030-01-01T00:00:00Z"}`}}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assertInvalidResponseRetries(t, tc.response)
-		})
-	}
-}
-
-func assertInvalidResponseRetries(t *testing.T, response string) {
-	t.Helper()
-	key := testPrivateKey(t)
-	var calls atomic.Int32
-	srv := httptest.NewServer(invalidResponseHandler(response, &calls))
-	defer srv.Close()
-	pass := filepath.Join(t.TempDir(), "pass")
-	_ = os.WriteFile(pass, []byte("#!/bin/sh\ncat <<'KEY'\n"+key+"\nKEY\n"), 0700)
-	p, err := NewProvider(Config{AppID: 1, InstallationID: 2, PrivateKeyPassEntry: "key", Repository: "octo/repo", Permissions: map[string]string{"contents": "read"}}, ProviderOptions{PassPath: pass, APIBaseURL: srv.URL, HTTPClient: srv.Client()})
-	if err != nil {
+	if err := store.Delete(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Token(context.Background()); err == nil {
-		t.Fatal("invalid response accepted")
-	}
-	got, err := p.Token(context.Background())
-	if err != nil || got != "retry-token" {
-		t.Fatalf("retry = %q, %v", got, err)
-	}
-	if calls.Load() != 2 {
-		t.Fatalf("API calls=%d", calls.Load())
-	}
 }
 
-func invalidResponseHandler(response string, calls *atomic.Int32) http.HandlerFunc {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/app/installations/2/access_tokens" {
-			if calls.Add(1) == 1 {
-				_, _ = w.Write([]byte(response))
-				return
-			}
-			_, _ = w.Write([]byte(`{"token":"retry-token","expires_at":"2030-01-01T00:00:00Z"}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"id":2}`))
-	})
-}
-
-func TestProviderSanitizesAPIErrorAndRetriesNextRequest(t *testing.T) {
-	key := testPrivateKey(t)
-	var tokenCalls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/app/installations/2/access_tokens" {
-			if tokenCalls.Add(1) == 1 {
-				http.Error(w, "sensitive github body", http.StatusForbidden)
-				return
-			}
-			_, _ = w.Write([]byte(`{"token":"retry-token","expires_at":"2030-01-01T00:00:00Z"}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"id":2}`))
-	}))
-	defer srv.Close()
-	pass := filepath.Join(t.TempDir(), "pass")
-	_ = os.WriteFile(pass, []byte("#!/bin/sh\ncat <<'KEY'\n"+key+"\nKEY\n"), 0700)
-	p, err := NewProvider(Config{AppID: 1, InstallationID: 2, PrivateKeyPassEntry: "key", Repository: "octo/repo", Permissions: map[string]string{"contents": "read"}}, ProviderOptions{PassPath: pass, APIBaseURL: srv.URL, HTTPClient: srv.Client()})
-	if err != nil {
+func TestSecretStoreRejectsSymlinkLockDirectory(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.Mkdir(target, 0700); err != nil {
 		t.Fatal(err)
 	}
-	_, err = p.Token(context.Background())
-	if err == nil || strings.Contains(err.Error(), "sensitive") {
-		t.Fatalf("unsafe error: %v", err)
-	}
-	got, err := p.Token(context.Background())
-	if err != nil || got != "retry-token" {
-		t.Fatalf("retry Token() = %q, %v", got, err)
-	}
-}
-
-func TestProviderRefreshesWhenTokenHasFiveMinutesLeft(t *testing.T) {
-	testProviderRefresh(t, time.Date(2029, 12, 31, 23, 54, 0, 0, time.UTC), 2)
-}
-
-func TestProviderCoalescesConcurrentMints(t *testing.T) {
-	key := testPrivateKey(t)
-	var calls atomic.Int32
-	release := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/app/installations/2/access_tokens" {
-			calls.Add(1)
-			<-release
-			_, _ = w.Write([]byte(`{"token":"shared-token","expires_at":"2030-01-01T00:00:00Z"}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"id":2}`))
-	}))
-	defer srv.Close()
-	pass := filepath.Join(t.TempDir(), "pass")
-	_ = os.WriteFile(pass, []byte("#!/bin/sh\ncat <<'KEY'\n"+key+"\nKEY\n"), 0700)
-	p, err := NewProvider(Config{AppID: 1, InstallationID: 2, PrivateKeyPassEntry: "key", Repository: "octo/repo", Permissions: map[string]string{"contents": "read"}}, ProviderOptions{PassPath: pass, APIBaseURL: srv.URL, HTTPClient: srv.Client()})
-	if err != nil {
+	lockPath := filepath.Join(dir, "locks")
+	if err := os.Symlink(target, lockPath); err != nil {
 		t.Fatal(err)
 	}
-	var wg sync.WaitGroup
-	errs := make(chan error, 12)
-	for i := 0; i < 12; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			token, err := p.Token(context.Background())
-			if err == nil && token != "shared-token" {
-				err = fmt.Errorf("token=%q", token)
-			}
-			errs <- err
-		}()
-	}
-	time.Sleep(25 * time.Millisecond)
-	close(release)
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Error(err)
-		}
-	}
-	if calls.Load() != 1 {
-		t.Fatalf("mint calls=%d", calls.Load())
+	store := &SecretStore{Entry: "entry", LockDir: lockPath}
+	if err := store.WithLock(context.Background(), func() error { return nil }); err == nil {
+		t.Fatal("accepted a symlink lock directory")
 	}
 }
 
-func TestProviderCoalescesConcurrentFailureAndAllowsLaterRetry(t *testing.T) {
-	key := testPrivateKey(t)
-	var calls atomic.Int32
-	release := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/app/installations/2/access_tokens" {
-			if calls.Add(1) == 1 {
-				<-release
-				http.Error(w, "private API details", http.StatusTooManyRequests)
-				return
-			}
-			_, _ = w.Write([]byte(`{"token":"recovered-token","expires_at":"2030-01-01T00:00:00Z"}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"id":2}`))
-	}))
-	defer srv.Close()
-	pass := filepath.Join(t.TempDir(), "pass")
-	_ = os.WriteFile(pass, []byte("#!/bin/sh\ncat <<'KEY'\n"+key+"\nKEY\n"), 0700)
-	p, err := NewProvider(Config{AppID: 1, InstallationID: 2, PrivateKeyPassEntry: "key", Repository: "octo/repo", Permissions: map[string]string{"contents": "read"}}, ProviderOptions{PassPath: pass, APIBaseURL: srv.URL, HTTPClient: srv.Client()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var wg sync.WaitGroup
-	errs := make(chan error, 8)
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() { defer wg.Done(); _, err := p.Token(context.Background()); errs <- err }()
-	}
-	time.Sleep(25 * time.Millisecond)
-	close(release)
-	wg.Wait()
-	close(errs)
-	for err := range errs {
+func TestContextFormClientCancelsInflightRequest(t *testing.T) {
+	started := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	client := contextFormClient{ctx: ctx, client: &http.Client{Transport: blockingTransport{started: started}}}
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.PostForm("https://github.com/login/oauth/access_token", url.Values{"grant_type": {"refresh_token"}})
+		done <- err
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
 		if err == nil {
-			t.Error("expected shared failed refresh")
+			t.Fatal("canceled request succeeded")
 		}
-	}
-	if calls.Load() != 1 {
-		t.Fatalf("concurrent failed mint calls=%d", calls.Load())
-	}
-	got, err := p.Token(context.Background())
-	if err != nil || got != "recovered-token" {
-		t.Fatalf("retry = %q, %v", got, err)
+	case <-time.After(time.Second):
+		t.Fatal("request ignored context cancellation")
 	}
 }
 
-func testProviderRefresh(t *testing.T, now time.Time, expectedCalls int32) {
-	t.Helper()
-	key := testPrivateKey(t)
-	var calls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/app/installations/2/access_tokens" {
-			count := calls.Add(1)
-			if count == 1 {
-				_, _ = w.Write([]byte(`{"token":"refresh-token","expires_at":"2030-01-01T00:00:00Z"}`))
-			} else {
-				_, _ = w.Write([]byte(`{"token":"refresh-token-2","expires_at":"2030-01-01T01:00:00Z"}`))
-			}
-			return
+type blockingTransport struct{ started chan struct{} }
+
+func (b blockingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	close(b.started)
+	<-req.Context().Done()
+	return nil, req.Context().Err()
+}
+
+func TestContextFormClientAllowsOnlyGitHubDeviceAndTokenEndpoints(t *testing.T) {
+	for _, target := range []string{"https://github.com/login/device/code", "https://github.com/login/oauth/access_token"} {
+		parsed, err := url.Parse(target)
+		if err != nil || !allowedOAuthEndpoint(parsed) {
+			t.Errorf("rejected endpoint %q", target)
 		}
-		_, _ = w.Write([]byte(`{"id":2}`))
-	}))
-	defer srv.Close()
-	pass := filepath.Join(t.TempDir(), "pass")
-	_ = os.WriteFile(pass, []byte("#!/bin/sh\ncat <<'KEY'\n"+key+"\nKEY\n"), 0700)
-	current := now
-	p, err := NewProvider(Config{AppID: 1, InstallationID: 2, PrivateKeyPassEntry: "key", Repository: "octo/repo", Permissions: map[string]string{"contents": "read"}}, ProviderOptions{PassPath: pass, APIBaseURL: srv.URL, HTTPClient: srv.Client(), Now: func() time.Time { return current }})
-	if err != nil {
-		t.Fatal(err)
 	}
-	_, err = p.Token(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	current = current.Add(time.Minute)
-	_, err = p.Token(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if calls.Load() != expectedCalls {
-		t.Fatalf("mint calls=%d want %d", calls.Load(), expectedCalls)
+	for _, target := range []string{"https://github.com/other", "https://user@github.com/login/device/code", "https://github.com/login/device/code?x=y"} {
+		parsed, err := url.Parse(target)
+		if err != nil || allowedOAuthEndpoint(parsed) {
+			t.Errorf("accepted endpoint %q", target)
+		}
 	}
 }
