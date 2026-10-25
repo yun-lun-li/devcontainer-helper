@@ -245,6 +245,20 @@ func (p *Plugin) retryCredentialCleanup(ctx context.Context, host plugins.HostCo
 	return state, errors.Join(failures...)
 }
 
+func (p *Plugin) quarantineLegacy(ctx context.Context, host plugins.HostContext) error {
+	state, err := decodeState(host.State)
+	if err != nil {
+		return err
+	}
+	if state.UnitDigest == "" || state.UnitPath == "" {
+		return nil
+	}
+	if _, err := ownedUnitPath(host.ProjectPath, state); err != nil {
+		return fmt.Errorf("refusing to stop a unit without verified ownership: %w", err)
+	}
+	return runSystemctl(ctx, "stop", unitName(host.ProjectPath))
+}
+
 func validateEnabledHost(host plugins.HostContext) error {
 	cfg, err := decodeConfig(host.Config)
 	if err != nil {
@@ -259,18 +273,39 @@ func validateEnabledHost(host plugins.HostContext) error {
 	return nil
 }
 
-func (p *Plugin) ensure(ctx context.Context, host plugins.HostContext) (plugins.Result, error) {
-	if err := validateEnabledHost(host); err != nil {
-		return plugins.Result{}, err
+func (p *Plugin) rejectLegacy(ctx context.Context, host plugins.HostContext) error {
+	if !isLegacyConfig(host.Config) {
+		return nil
 	}
+	if err := p.quarantineLegacy(ctx, host); err != nil {
+		return fmt.Errorf("legacy credential service quarantine failed: %w", err)
+	}
+	return fmt.Errorf("authorization required: legacy installation credentials are no longer used")
+}
+
+func (p *Plugin) ensureState(host plugins.HostContext) (ownershipState, error) {
 	if err := requireLocalDocker(); err != nil {
-		return plugins.Result{}, err
+		return ownershipState{}, err
 	}
 	state, err := decodeState(host.State)
 	if err != nil {
-		return plugins.Result{}, err
+		return state, err
 	}
 	if err := validateManagedFragment(host.ProjectPath, state.FragmentDigest); err != nil {
+		return state, err
+	}
+	return state, nil
+}
+
+func (p *Plugin) ensure(ctx context.Context, host plugins.HostContext) (plugins.Result, error) {
+	if err := p.rejectLegacy(ctx, host); err != nil {
+		return plugins.Result{}, err
+	}
+	if err := validateEnabledHost(host); err != nil {
+		return plugins.Result{}, err
+	}
+	state, err := p.ensureState(host)
+	if err != nil {
 		return plugins.Result{}, err
 	}
 	runtimeDir, err := RuntimeDir(host.ProjectPath)
@@ -337,6 +372,12 @@ func (p *Plugin) startAndCheck(ctx context.Context, projectPath string) error {
 }
 
 func (p *Plugin) ServeHost(ctx context.Context, host plugins.HostContext) error {
+	if isLegacyConfig(host.Config) {
+		if err := p.quarantineLegacy(ctx, host); err != nil {
+			return fmt.Errorf("legacy credential service quarantine failed: %w", err)
+		}
+		return fmt.Errorf("authorization required: legacy installation credentials are no longer used")
+	}
 	cfg, err := decodeConfig(host.Config)
 	if err != nil {
 		return err
