@@ -4,7 +4,7 @@ subtitle: github-app · hard dev-flow · 待使用者最終核准
 lang: zh-Hant
 template: doc
 theme: shadcn
-source: 34b3414 → 0fecc5e
+source: 34b3414 → 6f092a6
 ---
 
 ## A 本次交付
@@ -23,7 +23,7 @@ source: 34b3414 → 0fecc5e
 仍需在對話中明確給予最終核准。
 ```
 
-完整版本：`34b3414f2451e2e713a0880d3f533bd48e5b4614` → `0fecc5ec14dec722b8952476a8a223a301e3eadd`。
+完整版本：`34b3414f2451e2e713a0880d3f533bd48e5b4614` → `6f092a63bbf1951934f163d0a19f291f3ec849d3`。
 
 完整實作 diff 排除生成的審查頁與 diff 本身。
 
@@ -52,7 +52,7 @@ G7 是測試；G8 是文件。
 實線標示函式呼叫或明示的外部操作；虛線標示資料、狀態或流程。
 圖中群組是檔案；表格補充函式、型別與腳本責任。
 
-名稱與呼叫關係依實作快照 `0fecc5e` 核對。
+名稱與呼叫關係依實作快照 `6f092a6` 核對。
 本節不顯示原始碼或 diff。
 
 ### G1 修改：local.d 合併與預覽
@@ -131,11 +131,14 @@ group internal/common/config_store.go: SaveConfig, ProjectPlugins 與 PluginStat
 | `internal/plugins/registry.go` · `Plugin`、`Builtins` | 宣告內建 github-app 資訊；此流程由 Console 直接管理 GitHub App。 |
 | `internal/plugins/manager.go` · `Manager.Enable`、`renderFragment` | 驗證設定並鎖定 config；產生片段與 Project 專屬 runtime 路徑。 |
 | 同檔 · `prepareServiceUnit`、`serviceUnitChange` | 準備 systemd user unit。使用內容摘要拒絕覆蓋手改 unit。 |
-| `internal/plugins/manager_enable.go` · `replaceManagedFragment`、`saveEnabledPlugin` | 拒絕覆蓋未管理或手改片段；儲存設定、檔案摘要、Build 指紋與待 Build 狀態。 |
+| `internal/plugins/manager_enable.go` · `replaceManagedFragment`、`saveEnabledPlugin` | 拒絕覆蓋未管理或手改片段；儲存設定、檔案摘要與待 Build 狀態。 |
 | 同檔 · `enableRollback`、`ensureRollback` | 啟用失敗時還原檔案與設定。清理失敗則回報錯誤，保留可重試設定。 |
 | `internal/common/config_store.go` · `Config`、`ProjectPlugins`、`PluginState`、`LoadConfig`、`SaveConfig` | 用正規化 Project 路徑分開儲存啟用設定與管理狀態；原子替換 config。 |
 | `internal/plugins/manager.go` · `Manager.Ensure`、`Manager.Status`、`Manager.MarkBuilt` | `Ensure` 修復已啟用服務；停用時直接返回。Status 回報狀態；MarkBuilt 清除待 Build。 |
 | 同檔 · `Manager.Disable`、`ownedUnitPath`、`removePluginFiles` | 驗證所有權後停止服務、刪除產物；成功才停用設定並標記待 Build。 |
+
+已移除未使用的 `BuildFingerprint` 欄位與計算。
+待 Build 判定仍使用 `BuildPending`；片段與 unit 摘要保護保持不變。
 
 `Enable` 也呼叫 `WriteAdapterScripts` 與 `prepareServiceUnit`。
 `checkReady` 呼叫 `githubapp.CheckCredential`，實際驗證 Token 可取得。
@@ -385,6 +388,9 @@ group internal/common/config_store.go: SaveConfig
 它確認停用且保留待 Build 狀態時，`Ensure` 不啟動服務。
 此案例經 red → green；完整驗證結果見 F。
 
+本輪更新 `TestEnableRestartsActiveServiceWhenConfigurationChanges`。
+首次啟用後先 MarkBuilt，再確認修改設定會重新標記待 Build。
+
 變更索引（檔案與新版本 hunk 起始行）：
 
 - `internal/commands/plugin_serve_test.go:1`
@@ -478,12 +484,14 @@ Socket --> Git 或 gh: no-store 回應
 ## F 測試與獨立 Review
 
 本輪使用者新增 Cognitive Complexity ≤15 要求。
-規格未改；本輪抽出具名 helper，保留既有行為。
+先前已抽出具名 helper，保留既有行為。
+本輪依最新要求移除未使用的 BuildFingerprint。
+既有 JSON 的舊欄位會被忽略；下次存檔時省略。
 
 | 複雜度檢查 | 結果 |
 | --- | --- |
 | 工具 | gocognit v1.3.0；-json -exact-recursion . |
-| 判定範圍 | 相對 34b3414；本功能新增／修改 267 個具名函式，包含測試 |
+| 判定範圍 | 相對 34b3414；本功能新增／修改 266 個具名函式，包含測試 |
 | 匿名函式 | 納入所屬函式計分 |
 | 最終值 | 最高 15；0 項違規 |
 
@@ -526,12 +534,12 @@ Token 快取檢查、加入等待與刷新擁有權維持同一個 critical sect
 | go test -race ./... | NOT RUN | CGO 關閉，且無 C compiler |
 | 真實 Linux 驗收 | NOT RUN | 缺 Docker／systemctl／pass；未用真實 GitHub 與 GPG |
 | UID／重啟／關閉 dch 後認證 | NOT RUN | 需在真實 Linux 容器執行 README 驗收 |
-| HTML 功能流程 | PASS | G1–G6 對照 0fecc5e 函式、型別與呼叫；40 個實作變更檔案均列入索引 |
+| HTML 功能流程 | PASS | G1–G6 對照 6f092a6 函式、型別與呼叫；40 個實作變更檔案均列入索引 |
 | HTML 產生與內容 | PASS | am render --no-open；9 個 flow；0 項 STE 警告；C 無原始碼或 diff；六個未勾選框 |
-| HTML 流程與版面 | PASS | 主代理以 Chromium 驗證 9 個原生 flow；1440×900 與 390×844 無頁面水平溢出 |
-| HTML 互動 | PASS | 六框初始未勾選，可勾選及取消；無左右對照或完整原始碼；0 項 CSP 錯誤 |
+| HTML 流程與版面 | PASS | 主代理覆核 6f092a6；9 個 flow 可見；G1–G8 與關鍵函式齊全；1440×900、390×844 無水平溢出 |
+| HTML 互動 | PASS | 六框初始未勾選，可勾選及取消；0 項 CSP 錯誤；無舊左右對照或完整原始碼 |
 
-此次流程版已由主代理以獨立 Chromium 覆核。
+本輪 6f092a6 流程版已由主代理以獨立 Chromium 覆核。
 檢查涵蓋 DOM、流程圖、勾選互動與視窗寬度。
 未驗收中文字型顯示。
 真實 Linux 整合驗收仍未執行。
@@ -542,10 +550,13 @@ Root 執行測試時，DAC 拒絕案例會跳過。
 
 | 獨立 reviewer | 範圍 | 最終結論 |
 | --- | --- | --- |
-| Code reviewer | 本輪 d1591ef → 0fecc5e；Standards、Spec 與複雜度 | 0 項未解決有效 finding |
-| Security reviewer | 本輪重構；憑證邊界、快取互斥、生命週期與設定 | 0 項未解決可採取行動的安全 finding |
+| Code reviewer（歷史） | d1591ef → 0fecc5e；完整功能重構的 Standards、Spec 與複雜度 | 0 項未解決有效 finding |
+| Security reviewer（歷史） | 截至 0fecc5e；憑證邊界、快取互斥、生命週期與設定 | 0 項未解決可採取行動的安全 finding |
+| Standards 與 Spec reviewer（本輪） | 5f7ac13 → 6f092a6；欄位、計算移除與待 Build 回歸測試 | 各 0 項 finding |
+| Security reviewer（本輪） | 5f7ac13 → 6f092a6；狀態移除、所有權摘要與舊 JSON 相容性 | 0 項安全 finding |
 
-兩位 reviewer 均覆核最終版本 0fecc5e。
+本輪獨立報告：`fingerprint-standards.md`、`fingerprint-spec.md`、`fingerprint-security.md`。
+報告位於 `.scratch/project-plugins/reviews/`。
 獨立 source review 不取代真實環境驗收。
 
 ## G 真實擷取與核准提示

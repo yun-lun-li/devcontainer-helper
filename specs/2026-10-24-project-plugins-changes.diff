@@ -406,10 +406,10 @@ index 898400f..3918def 100644
  	path := filepath.Join(t.TempDir(), ".dch", "config")
  	t.Setenv("DCH_CONFIG", path)
 diff --git a/internal/common/config_store.go b/internal/common/config_store.go
-index 891c8c8..9fad571 100644
+index 891c8c8..01cb7cd 100644
 --- a/internal/common/config_store.go
 +++ b/internal/common/config_store.go
-@@ -7,13 +7,34 @@ import (
+@@ -7,13 +7,33 @@ import (
  	"os"
  	"path/filepath"
  	"strings"
@@ -433,11 +433,10 @@ index 891c8c8..9fad571 100644
  
 +// PluginState tracks generated-file ownership and whether containers need a Build.
 +type PluginState struct {
-+	FragmentDigest   string `json:"fragment_digest,omitempty"`
-+	UnitDigest       string `json:"unit_digest,omitempty"`
-+	UnitPath         string `json:"unit_path,omitempty"`
-+	BuildFingerprint string `json:"build_fingerprint,omitempty"`
-+	BuildPending     bool   `json:"build_pending,omitempty"`
++	FragmentDigest string `json:"fragment_digest,omitempty"`
++	UnitDigest     string `json:"unit_digest,omitempty"`
++	UnitPath       string `json:"unit_path,omitempty"`
++	BuildPending   bool   `json:"build_pending,omitempty"`
 +}
 +
 +// ConfigPath returns the absolute path used to load and save the host configuration.
@@ -4678,10 +4677,10 @@ index 0000000..9252176
 +}
 diff --git a/internal/plugins/manager.go b/internal/plugins/manager.go
 new file mode 100644
-index 0000000..8840cf5
+index 0000000..8f29378
 --- /dev/null
 +++ b/internal/plugins/manager.go
-@@ -0,0 +1,715 @@
+@@ -0,0 +1,705 @@
 +package plugins
 +
 +import (
@@ -4689,7 +4688,6 @@ index 0000000..8840cf5
 +	"context"
 +	"crypto/sha256"
 +	"encoding/hex"
-+	"encoding/json"
 +	"errors"
 +	"fmt"
 +	"net"
@@ -4971,7 +4969,6 @@ index 0000000..8840cf5
 +	state.FragmentDigest = ""
 +	state.UnitDigest = ""
 +	state.UnitPath = ""
-+	state.BuildFingerprint = ""
 +	state.BuildPending = true
 +	project.States[githubAppID] = state
 +	config.ProjectPlugins[path] = project
@@ -5287,14 +5284,6 @@ index 0000000..8840cf5
 +}
 +func digest(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
 +
-+func buildFingerprint(config githubapp.Config, fragmentDigest string) string {
-+	data, _ := json.Marshal(struct {
-+		Config         githubapp.Config `json:"config"`
-+		FragmentDigest string           `json:"fragment_digest"`
-+	}{config, fragmentDigest})
-+	return digest(data)
-+}
-+
 +func cloneProjectPlugins(project common.ProjectPlugins) common.ProjectPlugins {
 +	clone := common.ProjectPlugins{Enabled: make(map[string]githubapp.Config, len(project.Enabled)), States: make(map[string]common.PluginState, len(project.States))}
 +	for id, cfg := range project.Enabled {
@@ -5399,10 +5388,10 @@ index 0000000..8840cf5
 +}
 diff --git a/internal/plugins/manager_enable.go b/internal/plugins/manager_enable.go
 new file mode 100644
-index 0000000..1588246
+index 0000000..27adfe8
 --- /dev/null
 +++ b/internal/plugins/manager_enable.go
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,195 @@
 +package plugins
 +
 +import (
@@ -5433,7 +5422,6 @@ index 0000000..1588246
 +	state.FragmentDigest = digest(fragment)
 +	state.UnitDigest = unit.digest
 +	state.UnitPath = unit.path
-+	state.BuildFingerprint = buildFingerprint(cfg, state.FragmentDigest)
 +	state.BuildPending = true
 +	project := cloneProjectPlugins(old)
 +	if project.Enabled == nil {
@@ -5601,10 +5589,10 @@ index 0000000..1588246
 +}
 diff --git a/internal/plugins/manager_test.go b/internal/plugins/manager_test.go
 new file mode 100644
-index 0000000..0331f75
+index 0000000..ff51929
 --- /dev/null
 +++ b/internal/plugins/manager_test.go
-@@ -0,0 +1,558 @@
+@@ -0,0 +1,563 @@
 +package plugins
 +
 +import (
@@ -5668,7 +5656,7 @@ index 0000000..0331f75
 +	if err := os.WriteFile(fragmentPath, oldFragment, 0600); err != nil {
 +		t.Fatal(err)
 +	}
-+	old := common.ProjectPlugins{Enabled: map[string]githubapp.Config{githubAppID: oldCfg}, States: map[string]common.PluginState{githubAppID: {FragmentDigest: digest(oldFragment), BuildFingerprint: "old", BuildPending: false}}}
++	old := common.ProjectPlugins{Enabled: map[string]githubapp.Config{githubAppID: oldCfg}, States: map[string]common.PluginState{githubAppID: {FragmentDigest: digest(oldFragment), BuildPending: false}}}
 +	if err := common.SaveConfig(common.Config{Version: 1, Projects: []string{}, ProjectPlugins: map[string]common.ProjectPlugins{normalized: old}}); err != nil {
 +		t.Fatal(err)
 +	}
@@ -5684,7 +5672,7 @@ index 0000000..0331f75
 +		t.Fatal(err)
 +	}
 +	got := loaded.ProjectPlugins[normalized]
-+	if got.Enabled[githubAppID].AppID != oldCfg.AppID || got.States[githubAppID].BuildFingerprint != "old" || got.States[githubAppID].BuildPending {
++	if got.Enabled[githubAppID].AppID != oldCfg.AppID || got.States[githubAppID].BuildPending {
 +		t.Fatalf("failed enable changed existing project config: %+v", got)
 +	}
 +	fragment, err := os.ReadFile(fragmentPath)
@@ -5746,7 +5734,12 @@ index 0000000..0331f75
 +	if _, ok := first.ProjectPlugins[normalized].Enabled[githubAppID]; !ok {
 +		t.Fatalf("first enable did not persist enabled state: %+v", first.ProjectPlugins)
 +	}
-+	firstFingerprint := first.ProjectPlugins[normalized].States[githubAppID].BuildFingerprint
++	if !first.ProjectPlugins[normalized].States[githubAppID].BuildPending {
++		t.Fatal("first enable did not mark Build pending")
++	}
++	if err := manager.MarkBuilt(projectPath); err != nil {
++		t.Fatalf("mark first configuration built: %v", err)
++	}
 +	cfg.AppID = 42
 +	if err := manager.Enable(context.Background(), projectPath, cfg); err != nil {
 +		t.Fatal(err)
@@ -5767,8 +5760,8 @@ index 0000000..0331f75
 +	if got := loaded.ProjectPlugins[normalized].Enabled[githubAppID].AppID; got != 42 {
 +		t.Fatalf("AppID = %d, want 42", got)
 +	}
-+	if got := loaded.ProjectPlugins[normalized].States[githubAppID].BuildFingerprint; got == firstFingerprint {
-+		t.Fatal("configuration change did not update Build fingerprint")
++	if !loaded.ProjectPlugins[normalized].States[githubAppID].BuildPending {
++		t.Fatal("configuration change did not mark Build pending")
 +	}
 +}
 +
