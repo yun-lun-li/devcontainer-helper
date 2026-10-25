@@ -52,10 +52,8 @@ func (m *Manager) Enable(ctx context.Context, projectPath string, cfg githubapp.
 		return err
 	}
 	old, hadOld := config.ProjectPlugins[path]
-	for id := range old.Enabled {
-		if id != githubAppID {
-			return fmt.Errorf("unknown enabled plugin %q", id)
-		}
+	if err := validateEnabledPlugins(old); err != nil {
+		return err
 	}
 	_, wasEnabled := old.Enabled[githubAppID]
 	wasActive, _ := m.serviceActive(ctx, path)
@@ -63,22 +61,8 @@ func (m *Manager) Enable(ctx context.Context, projectPath string, cfg githubapp.
 	if err != nil {
 		return err
 	}
-	fragmentPath := managedFragment(path)
-	oldBytes, oldFileExists, err := readOwnedFile(fragmentPath, old.States[githubAppID].FragmentDigest)
+	fragmentPath, oldBytes, oldFileExists, err := replaceManagedFragment(path, fragment, old.States[githubAppID].FragmentDigest)
 	if err != nil {
-		return err
-	}
-	if !oldFileExists {
-		if _, err := os.Lstat(fragmentPath); err == nil {
-			return fmt.Errorf("plugin fragment already exists and is not managed by dch")
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-	}
-	if err := os.MkdirAll(filepath.Dir(fragmentPath), 0700); err != nil {
-		return err
-	}
-	if err := writePrivateFile(fragmentPath, fragment); err != nil {
 		return err
 	}
 	if err := githubapp.WriteAdapterScripts(runtimeDir); err != nil {
@@ -89,93 +73,30 @@ func (m *Manager) Enable(ctx context.Context, projectPath string, cfg githubapp.
 		return errors.Join(err, restoreFile(fragmentPath, oldBytes, oldFileExists))
 	}
 
-	newDigest := digest(fragment)
-	if config.ProjectPlugins == nil {
-		config.ProjectPlugins = map[string]common.ProjectPlugins{}
-	}
-	state := old.States[githubAppID]
-	state.FragmentDigest = newDigest
-	state.UnitDigest = unit.digest
-	state.UnitPath = unit.path
-	state.BuildFingerprint = buildFingerprint(cfg, newDigest)
-	state.BuildPending = true
-	project := cloneProjectPlugins(old)
-	if project.Enabled == nil {
-		project.Enabled = map[string]githubapp.Config{}
-	}
-	if project.States == nil {
-		project.States = map[string]common.PluginState{}
-	}
-	project.Enabled[githubAppID] = cfg
-	project.States[githubAppID] = state
-	config.ProjectPlugins[path] = project
-	if err := common.SaveConfig(config); err != nil {
+	if err := saveEnabledPlugin(config, path, old, cfg, fragment, unit); err != nil {
 		cleanupErr := restoreFile(fragmentPath, oldBytes, oldFileExists)
 		cleanupErr = errors.Join(cleanupErr, unit.restore())
 		return errors.Join(err, cleanupErr)
 	}
 
-	serviceTouched := false
-	rollback := func(cause error) error {
-		var cleanup []error
-		if serviceTouched {
-			for _, action := range [][]string{{"stop", unitName(path)}, {"disable", unitName(path)}, {"daemon-reload"}} {
-				if err := runSystemctl(context.Background(), action...); err != nil {
-					cleanup = append(cleanup, err)
-				}
-			}
-		}
-		if len(cleanup) == 0 {
-			if err := unit.restore(); err != nil {
-				cleanup = append(cleanup, err)
-			}
-		}
-		if err := os.Remove(filepath.Join(runtimeDir, "credential.sock")); err != nil && !errors.Is(err, os.ErrNotExist) {
-			cleanup = append(cleanup, err)
-		}
-		if len(cleanup) > 0 {
-			return fmt.Errorf("%w; cleanup failed, settings remain enabled for retry: %w", cause, errors.Join(cleanup...))
-		}
-		if err := restoreFile(fragmentPath, oldBytes, oldFileExists); err != nil {
-			cleanup = append(cleanup, err)
-		}
-		current, loadErr := common.LoadConfig()
-		if loadErr != nil {
-			cleanup = append(cleanup, loadErr)
-		} else {
-			if hadOld {
-				current.ProjectPlugins[path] = old
-			} else {
-				delete(current.ProjectPlugins, path)
-			}
-			if err := common.SaveConfig(current); err != nil {
-				cleanup = append(cleanup, err)
-			}
-		}
-		if wasActive && wasEnabled {
-			if err := m.startAndCheck(context.Background(), path); err != nil {
-				cleanup = append(cleanup, err)
-			}
-		}
-		if len(cleanup) > 0 {
-			return fmt.Errorf("%w; rollback incomplete: %w", cause, errors.Join(cleanup...))
-		}
-		return cause
-	}
+	rollback := enableRollback{manager: m, path: path, old: old, hadOld: hadOld, wasEnabled: wasEnabled, wasActive: wasActive, fragmentPath: fragmentPath, oldBytes: oldBytes, oldFileExists: oldFileExists, runtimeDir: runtimeDir, unit: unit}
 
+	return m.activateEnabledPlugin(ctx, path, runtimeDir, wasActive && wasEnabled, rollback)
+}
+
+func (m *Manager) activateEnabledPlugin(ctx context.Context, path, runtimeDir string, restart bool, rollback enableRollback) error {
 	if err := runSystemctl(ctx, "daemon-reload"); err != nil {
-		return rollback(err)
+		return rollback.run(err, false)
 	}
-	serviceTouched = true
-	if wasActive && wasEnabled {
+	if restart {
 		if err := runSystemctl(ctx, "restart", unitName(path)); err != nil {
-			return rollback(err)
+			return rollback.run(err, true)
 		}
 	} else if err := runSystemctl(ctx, "enable", "--now", unitName(path)); err != nil {
-		return rollback(err)
+		return rollback.run(err, true)
 	}
 	if err := m.checkReady(ctx, runtimeDir); err != nil {
-		return rollback(err)
+		return rollback.run(err, true)
 	}
 	return nil
 }
@@ -198,28 +119,17 @@ func (m *Manager) Ensure(ctx context.Context, projectPath string) error {
 	if !ok {
 		return nil
 	}
-	for id := range project.Enabled {
-		if id != githubAppID {
-			return fmt.Errorf("unknown enabled plugin %q", id)
-		}
+	if err := validateEnabledPlugins(project); err != nil {
+		return err
 	}
 	_, enabled := project.Enabled[githubAppID]
 	if !enabled {
 		return nil
 	}
-	if _, exists, err := readOwnedFile(managedFragment(path), project.States[githubAppID].FragmentDigest); err != nil {
-		return err
-	} else if !exists {
-		return fmt.Errorf("managed plugin fragment is missing")
-	}
-	_, runtimeDir, err := renderFragment(path)
-	if err != nil {
+	if err := validateManagedFragment(path, project.States[githubAppID].FragmentDigest); err != nil {
 		return err
 	}
-	if err := githubapp.WriteAdapterScripts(runtimeDir); err != nil {
-		return err
-	}
-	unit, err := m.prepareServiceUnit(path, project.States[githubAppID])
+	runtimeDir, unit, err := m.prepareEnsureService(path, project)
 	if err != nil {
 		return err
 	}
@@ -236,32 +146,48 @@ func (m *Manager) Ensure(ctx context.Context, projectPath string) error {
 		}
 	}
 	active, _ := m.serviceActive(ctx, path)
-	restoreUnit := func(cause error) error {
-		if !metadataChanged {
-			return cause
-		}
-		var restoreErr error
-		restoreErr = errors.Join(restoreErr, unit.restore())
-		project.States[githubAppID] = oldState
-		config.ProjectPlugins[path] = project
-		restoreErr = errors.Join(restoreErr, common.SaveConfig(config))
-		restoreErr = errors.Join(restoreErr, runSystemctl(context.Background(), "daemon-reload"))
-		if restoreErr != nil {
-			return fmt.Errorf("%w; previous unit restore failed: %w", cause, restoreErr)
-		}
-		return cause
+	rollback := ensureRollback{unit: unit, metadataChanged: metadataChanged, project: project, config: config, path: path, oldState: oldState}
+	if err := activateEnsuredPlugin(ctx, path, active, unit, rollback); err != nil {
+		return err
 	}
+	return m.checkReady(ctx, runtimeDir)
+}
+
+func activateEnsuredPlugin(ctx context.Context, path string, active bool, unit serviceUnitChange, rollback ensureRollback) error {
 	if err := runSystemctl(ctx, "daemon-reload"); err != nil {
-		return restoreUnit(err)
+		return rollback.run(err)
 	}
 	if active && unit.changed {
 		if err := runSystemctl(ctx, "restart", unitName(path)); err != nil {
-			return restoreUnit(err)
+			return rollback.run(err)
 		}
 	} else if err := runSystemctl(ctx, "enable", "--now", unitName(path)); err != nil {
-		return restoreUnit(err)
+		return rollback.run(err)
 	}
-	return m.checkReady(ctx, runtimeDir)
+	return nil
+}
+
+func validateManagedFragment(path, expectedDigest string) error {
+	_, exists, err := readOwnedFile(managedFragment(path), expectedDigest)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("managed plugin fragment is missing")
+	}
+	return nil
+}
+
+func (m *Manager) prepareEnsureService(path string, project common.ProjectPlugins) (string, serviceUnitChange, error) {
+	_, runtimeDir, err := renderFragment(path)
+	if err != nil {
+		return "", serviceUnitChange{}, err
+	}
+	if err := githubapp.WriteAdapterScripts(runtimeDir); err != nil {
+		return "", serviceUnitChange{}, err
+	}
+	unit, err := m.prepareServiceUnit(path, project.States[githubAppID])
+	return runtimeDir, unit, err
 }
 
 func (m *Manager) Status(ctx context.Context, projectPath string) (Status, error) {
@@ -282,10 +208,8 @@ func (m *Manager) Status(ctx context.Context, projectPath string) (Status, error
 	if !ok {
 		return Status{}, nil
 	}
-	for id := range project.Enabled {
-		if id != githubAppID {
-			return Status{}, fmt.Errorf("unknown enabled plugin %q", id)
-		}
+	if err := validateEnabledPlugins(project); err != nil {
+		return Status{}, err
 	}
 	_, enabled := project.Enabled[githubAppID]
 	active, activeErr := m.serviceActive(ctx, path)
@@ -314,10 +238,8 @@ func (m *Manager) MarkBuilt(projectPath string) error {
 	if !ok {
 		return nil
 	}
-	for id := range project.Enabled {
-		if id != githubAppID {
-			return fmt.Errorf("unknown enabled plugin %q", id)
-		}
+	if err := validateEnabledPlugins(project); err != nil {
+		return err
 	}
 	state := project.States[githubAppID]
 	state.BuildPending = false
@@ -344,65 +266,20 @@ func (m *Manager) Disable(ctx context.Context, projectPath string) error {
 	if !ok {
 		return nil
 	}
-	for id := range project.Enabled {
-		if id != githubAppID {
-			return fmt.Errorf("unknown enabled plugin %q", id)
-		}
+	if err := validateEnabledPlugins(project); err != nil {
+		return err
 	}
 	if _, enabled := project.Enabled[githubAppID]; !enabled {
 		return nil
 	}
-	unitFile := project.States[githubAppID].UnitPath
-	if unitFile == "" {
-		unitFile, err = unitPath(path)
-		if err != nil {
-			return err
-		}
-	} else if err := validateUnitPath(unitFile, path); err != nil {
-		return err
-	}
-	if info, err := os.Lstat(unitFile); err == nil {
-		if !info.Mode().IsRegular() || !ownedByCurrentUser(info) {
-			return fmt.Errorf("systemd unit is unsafe")
-		}
-		data, err := os.ReadFile(unitFile)
-		if err != nil {
-			return err
-		}
-		if project.States[githubAppID].UnitDigest == "" || digest(data) != project.States[githubAppID].UnitDigest {
-			return fmt.Errorf("systemd unit was modified; refusing to remove it")
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	unitFile, err := ownedUnitPath(path, project.States[githubAppID])
+	if err != nil {
 		return err
 	}
 	if _, _, err := readOwnedFile(managedFragment(path), project.States[githubAppID].FragmentDigest); err != nil {
 		return err
 	}
-	if err := runSystemctl(ctx, "stop", unitName(path)); err != nil {
-		return err
-	}
-	if err := runSystemctl(ctx, "disable", unitName(path)); err != nil {
-		return err
-	}
-	if err := os.Remove(unitFile); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := runSystemctl(ctx, "daemon-reload"); err != nil {
-		return err
-	}
-	fragmentPath := managedFragment(path)
-	if _, exists, err := readOwnedFile(fragmentPath, project.States[githubAppID].FragmentDigest); err != nil {
-		return err
-	} else if exists {
-		if err := os.Remove(fragmentPath); err != nil {
-			return err
-		}
-	}
-	runtimeDir, err := githubapp.RuntimeDir(path)
-	if err != nil {
-		return err
-	}
-	if err := os.RemoveAll(runtimeDir); err != nil {
+	if err := removePluginFiles(ctx, path, unitFile, project.States[githubAppID].FragmentDigest); err != nil {
 		return err
 	}
 	delete(project.Enabled, githubAppID)
@@ -415,6 +292,63 @@ func (m *Manager) Disable(ctx context.Context, projectPath string) error {
 	project.States[githubAppID] = state
 	config.ProjectPlugins[path] = project
 	return common.SaveConfig(config)
+}
+
+func ownedUnitPath(path string, state common.PluginState) (string, error) {
+	unitFile := state.UnitPath
+	if unitFile == "" {
+		var err error
+		unitFile, err = unitPath(path)
+		if err != nil {
+			return "", err
+		}
+	} else if err := validateUnitPath(unitFile, path); err != nil {
+		return "", err
+	}
+	if err := verifyOwnedUnit(unitFile, state.UnitDigest); err != nil {
+		return "", err
+	}
+	return unitFile, nil
+}
+
+func removePluginFiles(ctx context.Context, path, unitFile, fragmentDigest string) error {
+	if err := runSystemctl(ctx, "stop", unitName(path)); err != nil {
+		return err
+	}
+	if err := runSystemctl(ctx, "disable", unitName(path)); err != nil {
+		return err
+	}
+	if err := removeIfPresent(unitFile); err != nil {
+		return err
+	}
+	if err := runSystemctl(ctx, "daemon-reload"); err != nil {
+		return err
+	}
+	if err := removeManagedFragment(path, fragmentDigest); err != nil {
+		return err
+	}
+	runtimeDir, err := githubapp.RuntimeDir(path)
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(runtimeDir)
+}
+
+func removeIfPresent(path string) error {
+	err := os.Remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func removeManagedFragment(path, expectedDigest string) error {
+	fragmentPath := managedFragment(path)
+	_, exists, err := readOwnedFile(fragmentPath, expectedDigest)
+	if err != nil || !exists {
+		return err
+	}
+	return os.Remove(fragmentPath)
 }
 
 func (m *Manager) ServeProject(ctx context.Context, projectPath string) error {
@@ -430,10 +364,8 @@ func (m *Manager) ServeProject(ctx context.Context, projectPath string) error {
 	if !ok {
 		return fmt.Errorf("github-app is not enabled for this project")
 	}
-	for id := range project.Enabled {
-		if id != githubAppID {
-			return fmt.Errorf("unknown enabled plugin %q", id)
-		}
+	if err := validateEnabledPlugins(project); err != nil {
+		return err
 	}
 	cfg, ok := project.Enabled[githubAppID]
 	if !ok {
@@ -537,35 +469,49 @@ func (m *Manager) prepareServiceUnit(projectPath string, previous common.PluginS
 		return change, err
 	}
 	change = serviceUnitChange{path: unit, digest: digest(content)}
-	if info, err := os.Lstat(unit); err == nil {
-		if !info.Mode().IsRegular() || !ownedByCurrentUser(info) {
-			return change, fmt.Errorf("systemd unit is unsafe")
-		}
-		existing, err := os.ReadFile(unit)
-		if err != nil {
-			return change, err
-		}
-		if previous.UnitDigest == "" || digest(existing) != previous.UnitDigest {
-			return change, fmt.Errorf("systemd unit was modified; refusing to replace it")
-		}
-		change.before = existing
-		change.existed = true
-		change.changed = !bytes.Equal(existing, content)
-		if change.changed {
-			if err := writePrivateFile(unit, content); err != nil {
-				return change, err
-			}
-		}
-	} else if errors.Is(err, os.ErrNotExist) {
-		if err := os.MkdirAll(filepath.Dir(unit), 0700); err != nil {
-			return change, err
-		}
-		if err := writePrivateFile(unit, content); err != nil {
-			return change, err
-		}
-		change.changed = true
-	} else {
+	return prepareUnitFile(change, previous.UnitDigest, content)
+}
+
+func prepareUnitFile(change serviceUnitChange, previousDigest string, content []byte) (serviceUnitChange, error) {
+	info, err := os.Lstat(change.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return createUnitFile(change, content)
+	}
+	if err != nil {
 		return change, err
+	}
+	return replaceUnitFile(change, previousDigest, content, info)
+}
+
+func createUnitFile(change serviceUnitChange, content []byte) (serviceUnitChange, error) {
+	if err := os.MkdirAll(filepath.Dir(change.path), 0700); err != nil {
+		return change, err
+	}
+	if err := writePrivateFile(change.path, content); err != nil {
+		return change, err
+	}
+	change.changed = true
+	return change, nil
+}
+
+func replaceUnitFile(change serviceUnitChange, previousDigest string, content []byte, info os.FileInfo) (serviceUnitChange, error) {
+	if !info.Mode().IsRegular() || !ownedByCurrentUser(info) {
+		return change, fmt.Errorf("systemd unit is unsafe")
+	}
+	existing, err := os.ReadFile(change.path)
+	if err != nil {
+		return change, err
+	}
+	if previousDigest == "" || digest(existing) != previousDigest {
+		return change, fmt.Errorf("systemd unit was modified; refusing to replace it")
+	}
+	change.before = existing
+	change.existed = true
+	change.changed = !bytes.Equal(existing, content)
+	if change.changed {
+		if err := writePrivateFile(change.path, content); err != nil {
+			return change, err
+		}
 	}
 	return change, nil
 }

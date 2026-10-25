@@ -220,6 +220,28 @@ func TestEnsureUpdatesOwnedUnitAfterProcessEnvironmentChanges(t *testing.T) {
 	}
 }
 
+func TestEnsureDoesNothingForDisabledPluginWithPersistedState(t *testing.T) {
+	env := setupManagerTest(t, "ok")
+	projectPath := filepath.Join(env.root, "project")
+	normalized, err := common.NormalizePath(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := common.Config{
+		Version:  1,
+		Projects: []string{},
+		ProjectPlugins: map[string]common.ProjectPlugins{
+			normalized: {States: map[string]common.PluginState{githubAppID: {BuildPending: true}}},
+		},
+	}
+	if err := common.SaveConfig(config); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewManager().Ensure(context.Background(), projectPath); err != nil {
+		t.Fatalf("Ensure for disabled plugin: %v", err)
+	}
+}
+
 func TestEnsureRetriesRestartAfterSystemctlRestartFailure(t *testing.T) {
 	env := setupManagerTest(t, "ok")
 	projectPath := filepath.Join(env.root, "project")
