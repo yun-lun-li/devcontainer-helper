@@ -71,11 +71,18 @@ func (s *SecretStore) RestoreRaw(ctx context.Context, data []byte) error {
 }
 
 func (s *SecretStore) Delete(ctx context.Context) error {
+	if _, err := s.Snapshot(ctx); errors.Is(err, ErrSecretMissing) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("credential unavailable")
+	}
 	if _, err := s.run(ctx, nil, "rm", "--force", s.Entry); err != nil {
+		if _, snapshotErr := s.Snapshot(ctx); errors.Is(snapshotErr, ErrSecretMissing) {
+			return nil
+		}
 		return fmt.Errorf("could not remove credential")
 	}
-	_, err := s.Snapshot(ctx)
-	if !errors.Is(err, ErrSecretMissing) {
+	if _, err := s.Snapshot(ctx); !errors.Is(err, ErrSecretMissing) {
 		return fmt.Errorf("credential removal verification failed")
 	}
 	return nil
