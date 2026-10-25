@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"dch/internal/common"
-	"dch/internal/plugins/githubapp"
 )
 
 func TestProjectExecUsesStableContainerLabelsAndLiveMergedConfig(t *testing.T) {
@@ -55,7 +54,7 @@ func TestConnectRefusesExistingContainerWithPendingPluginBuild(t *testing.T) {
 	}
 	t.Setenv("DCH_CONFIG", filepath.Join(root, "dch-config"))
 	config := common.Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]common.ProjectPlugins{
-		project: {Enabled: map[string]json.RawMessage{"github-app": rawPluginConfig(t, githubapp.Config{AppID: 1})}, States: map[string]common.PluginState{"github-app": {BuildPending: true}}},
+		project: {Enabled: map[string]json.RawMessage{"github-app": json.RawMessage(`{"app_id":1}`)}, States: map[string]common.PluginState{"github-app": {BuildPending: true}}},
 	}}
 	if err := common.SaveConfig(config); err != nil {
 		t.Fatal(err)
@@ -88,7 +87,7 @@ func TestStartRefusesExistingContainerWithPendingPluginBuild(t *testing.T) {
 	project := filepath.Join(root, "project")
 	_ = os.MkdirAll(filepath.Join(project, ".devcontainer"), 0700)
 	t.Setenv("DCH_CONFIG", filepath.Join(root, "dch-config"))
-	config := common.Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]common.ProjectPlugins{project: {Enabled: map[string]json.RawMessage{"github-app": rawPluginConfig(t, githubapp.Config{AppID: 1})}, States: map[string]common.PluginState{"github-app": {BuildPending: true}}}}}
+	config := common.Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]common.ProjectPlugins{project: {Enabled: map[string]json.RawMessage{"github-app": json.RawMessage(`{"app_id":1}`)}, States: map[string]common.PluginState{"github-app": {BuildPending: true}}}}}
 	if err := common.SaveConfig(config); err != nil {
 		t.Fatal(err)
 	}

@@ -43,7 +43,7 @@ func TestValidatePluginConfigRequiresExactSocketMountAndAdapterPath(t *testing.T
 		t.Fatal(err)
 	}
 	t.Setenv("DCH_CONFIG", filepath.Join(root, "dch-config"))
-	if err := common.SaveConfig(common.Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]common.ProjectPlugins{project: {Enabled: map[string]json.RawMessage{"github-app": rawPluginConfig(t, githubapp.Config{AppID: 1})}}}}); err != nil {
+	if err := common.SaveConfig(common.Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]common.ProjectPlugins{project: {Enabled: map[string]json.RawMessage{"github-app": json.RawMessage(`{"app_id":1}`)}}}}); err != nil {
 		t.Fatal(err)
 	}
 	bin := filepath.Join(root, "bin")
@@ -285,7 +285,7 @@ func TestRemoveProjectPreservesRegistrationWhenDisableFails(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", runtime)
 	t.Setenv("XDG_CONFIG_HOME", configHome)
 	t.Setenv("DCH_CONFIG", filepath.Join(root, "dch-config"))
-	config := common.Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]common.ProjectPlugins{project: {Enabled: map[string]json.RawMessage{"github-app": rawPluginConfig(t, githubapp.Config{AppID: 1})}, States: map[string]common.PluginState{"github-app": {BuildPending: true}}}}}
+	config := common.Config{Version: 1, Projects: []string{project}, ProjectPlugins: map[string]common.ProjectPlugins{project: {Enabled: map[string]json.RawMessage{"github-app": json.RawMessage(`{"app_id":1}`)}, States: map[string]common.PluginState{"github-app": {BuildPending: true}}}}}
 	if err := common.SaveConfig(config); err != nil {
 		t.Fatal(err)
 	}
