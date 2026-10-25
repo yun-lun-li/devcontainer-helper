@@ -6,17 +6,8 @@ import (
 )
 
 func buildProject(p Project) error {
-	if hasExistingContainer(p) {
-		choice, err := choose("Rebuild container? Writable-layer data may be discarded", []string{
-			"Remove the existing container and rebuild",
-			"Cancel",
-		})
-		if err != nil {
-			return err
-		}
-		if choice != 0 {
-			return errCancelled
-		}
+	if err := confirmRebuild(p); err != nil {
+		return err
 	}
 	if err := requireExecutable("devcontainer"); err != nil {
 		return err
@@ -51,4 +42,21 @@ func buildProject(p Project) error {
 		}
 	}
 	return manager.MarkBuilt(p.Path)
+}
+
+func confirmRebuild(p Project) error {
+	if !hasExistingContainer(p) {
+		return nil
+	}
+	choice, err := choose("Rebuild container? Writable-layer data may be discarded", []string{
+		"Remove the existing container and rebuild",
+		"Cancel",
+	})
+	if err != nil {
+		return err
+	}
+	if choice != 0 {
+		return errCancelled
+	}
+	return nil
 }

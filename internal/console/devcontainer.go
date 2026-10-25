@@ -78,22 +78,9 @@ func invokeProjectDevcontainerQuiet(p Project, args ...string) error {
 }
 
 func invokeProjectDevcontainerMode(p Project, quiet bool, args ...string) error {
-	config, err := common.MergedDevcontainerConfig(p.Path)
+	config, err := prepareMergedProjectConfig(p)
 	if err != nil {
 		return err
-	}
-	status, err := plugins.NewManager().Status(context.Background(), p.Path)
-	if err != nil {
-		return err
-	}
-	if status.Enabled {
-		runtimeDir, err := githubapp.RuntimeDir(p.Path)
-		if err != nil {
-			return err
-		}
-		if err := validateGitHubAppConfig(config, runtimeDir); err != nil {
-			return err
-		}
 	}
 	if len(args) > 0 && args[0] == "up" {
 		config, err = withStableContainerName(config, p)
@@ -116,25 +103,9 @@ func invokeProjectDevcontainerMode(p Project, quiet bool, args ...string) error 
 		return fmt.Errorf("write temporary merged devcontainer config: %w", err)
 	}
 
-	extraArgs := []string{"--config", mergedPath}
-	if args[0] == "up" || args[0] == "exec" {
-		basePath, err := filepath.Abs(filepath.Join(configDir, "devcontainer.json"))
-		if err != nil {
-			return fmt.Errorf("resolve devcontainer config path: %w", err)
-		}
-		workspacePath, err := filepath.Abs(p.Path)
-		if err != nil {
-			return fmt.Errorf("resolve workspace path: %w", err)
-		}
-		extraArgs = append(extraArgs,
-			"--id-label", "devcontainer.local_folder="+workspacePath,
-			"--id-label", "devcontainer.config_file="+basePath,
-		)
-	}
-	if args[0] == "exec" && len(args) >= 4 && args[1] == "--workspace-folder" {
-		args = append(args[:3], append(extraArgs, args[3:]...)...)
-	} else {
-		args = append(args, extraArgs...)
+	args, err = appendDevcontainerConfigArgs(args, p, configDir, mergedPath)
+	if err != nil {
+		return err
 	}
 	cleanup := func() { _ = os.RemoveAll(tempDir) }
 	if quiet {
@@ -143,6 +114,51 @@ func invokeProjectDevcontainerMode(p Project, quiet bool, args ...string) error 
 		return err
 	}
 	return invokeDevcontainerWithCleanup(cleanup, args...)
+}
+
+func prepareMergedProjectConfig(p Project) ([]byte, error) {
+	config, err := common.MergedDevcontainerConfig(p.Path)
+	if err != nil {
+		return nil, err
+	}
+	status, err := plugins.NewManager().Status(context.Background(), p.Path)
+	if err != nil {
+		return nil, err
+	}
+	if !status.Enabled {
+		return config, nil
+	}
+	runtimeDir, err := githubapp.RuntimeDir(p.Path)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateGitHubAppConfig(config, runtimeDir); err != nil {
+		return nil, err
+	}
+	return config, nil
+}
+
+func appendDevcontainerConfigArgs(args []string, p Project, configDir, mergedPath string) ([]string, error) {
+	extraArgs := []string{"--config", mergedPath}
+	if len(args) == 0 {
+		return append(args, extraArgs...), nil
+	}
+	if args[0] != "up" && args[0] != "exec" {
+		return append(args, extraArgs...), nil
+	}
+	basePath, err := filepath.Abs(filepath.Join(configDir, "devcontainer.json"))
+	if err != nil {
+		return nil, fmt.Errorf("resolve devcontainer config path: %w", err)
+	}
+	workspacePath, err := filepath.Abs(p.Path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve workspace path: %w", err)
+	}
+	extraArgs = append(extraArgs, "--id-label", "devcontainer.local_folder="+workspacePath, "--id-label", "devcontainer.config_file="+basePath)
+	if args[0] == "exec" && len(args) >= 4 && args[1] == "--workspace-folder" {
+		return append(args[:3], append(extraArgs, args[3:]...)...), nil
+	}
+	return append(args, extraArgs...), nil
 }
 
 func invokeDevcontainerQuiet(args ...string) error {

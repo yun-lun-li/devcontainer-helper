@@ -108,12 +108,12 @@ func TestPluginsStatusIsReachableWithFakeDockerAndSystemctl(t *testing.T) {
 	menuErr := projectsMenu()
 	w.Close()
 	os.Stdout = previousStdout
-	if menuErr != nil {
-		t.Fatal(menuErr)
-	}
 	output, err := io.ReadAll(r)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if menuErr != nil {
+		t.Fatalf("projects menu: %v\n%s", menuErr, output)
 	}
 	got := string(output)
 	if !strings.Contains(got, "Build required") || !strings.Contains(got, "Plugins") || !strings.Contains(got, "GitHub App: enabled · service active · Build required") {

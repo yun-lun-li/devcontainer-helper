@@ -43,76 +43,100 @@ func showConfigPages(content string) error {
 	if width < 30 {
 		width = 30
 	}
-	pageSize := rows - 6
-	lines := wrappedLogLines(content, width)
-	maxOffset := len(lines) - pageSize
-	if maxOffset < 0 {
-		maxOffset = 0
+	pager := configPager{width: width, pageSize: rows - 6, lines: wrappedLogLines(content, width)}
+	pager.maxOffset = len(pager.lines) - pager.pageSize
+	if pager.maxOffset < 0 {
+		pager.maxOffset = 0
 	}
-	offset := 0
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
 	defer signal.Stop(interrupt)
-
-	render := func() {
-		clearScreen()
-		printDCHHeaderWidth("Show config", width)
-		fmt.Printf("  ╭%s╮\n", strings.Repeat("─", width-4))
-		end := offset + pageSize
-		if end > len(lines) {
-			end = len(lines)
-		}
-		innerWidth := width - 6
-		for i := 0; i < pageSize; i++ {
-			line := ""
-			if offset+i < end {
-				line = lines[offset+i]
-			}
-			fmt.Printf("  │ %-*s │\n", innerWidth, line)
-		}
-		fmt.Printf("  ╰%s╯\n", strings.Repeat("─", width-4))
-		fmt.Printf("  Lines %d-%d of %d  ·  ↑/↓ or j/k scroll  ·  q/Esc back\n", offset+1, end, len(lines))
-		fmt.Println("  Keep .devcontainer/devcontainer.local.d/ out of version control.")
-	}
-	render()
+	pager.render()
 	for {
 		key, err := readTTYByte(os.Stdin, 0, interrupt)
 		if err != nil {
 			return err
 		}
-		switch key {
-		case 'q', 'Q', 3:
-			return nil
-		case 'j', ' ':
-			if offset < maxOffset {
-				offset++
-			}
-		case 'k':
-			if offset > 0 {
-				offset--
-			}
-		case '\r', '\n':
-			offset += pageSize
-			if offset > maxOffset {
-				offset = maxOffset
-			}
-		case 27:
-			next, err := readTTYByte(os.Stdin, 200*time.Millisecond, interrupt)
-			if err != nil || (next != '[' && next != 'O') {
-				return nil
-			}
-			direction, err := readTTYByte(os.Stdin, 200*time.Millisecond, interrupt)
-			if err != nil {
-				return nil
-			}
-			if direction == 'A' && offset > 0 {
-				offset--
-			} else if direction == 'B' && offset < maxOffset {
-				offset++
-			}
-		default:
-			continue
+		done, changed, err := pager.handleKey(key, interrupt)
+		if err != nil {
+			return err
 		}
-		render()
+		if done {
+			return nil
+		}
+		if changed {
+			pager.render()
+		}
 	}
+}
+
+type configPager struct {
+	width, pageSize, maxOffset, offset int
+	lines                              []string
+}
+
+func (pager *configPager) render() {
+	clearScreen()
+	printDCHHeaderWidth("Show config", pager.width)
+	fmt.Printf("  ╭%s╮\n", strings.Repeat("─", pager.width-4))
+	end := pager.offset + pager.pageSize
+	if end > len(pager.lines) {
+		end = len(pager.lines)
+	}
+	for i := 0; i < pager.pageSize; i++ {
+		line := ""
+		if pager.offset+i < end {
+			line = pager.lines[pager.offset+i]
+		}
+		fmt.Printf("  │ %-*s │\n", pager.width-6, line)
+	}
+	fmt.Printf("  ╰%s╯\n", strings.Repeat("─", pager.width-4))
+	fmt.Printf("  Lines %d-%d of %d  ·  ↑/↓ or j/k scroll  ·  q/Esc back\n", pager.offset+1, end, len(pager.lines))
+	fmt.Println("  Keep .devcontainer/devcontainer.local.d/ out of version control.")
+}
+
+func (pager *configPager) handleKey(key byte, interrupt chan os.Signal) (bool, bool, error) {
+	switch key {
+	case 'q', 'Q', 3:
+		return true, false, nil
+	case 'j', ' ':
+		if pager.offset < pager.maxOffset {
+			pager.offset++
+			return false, true, nil
+		}
+	case 'k':
+		if pager.offset > 0 {
+			pager.offset--
+			return false, true, nil
+		}
+	case '\r', '\n':
+		pager.offset += pager.pageSize
+		if pager.offset > pager.maxOffset {
+			pager.offset = pager.maxOffset
+		}
+		return false, true, nil
+	case 27:
+		return pager.handleEscape(interrupt)
+	}
+	return false, false, nil
+}
+
+func (pager *configPager) handleEscape(interrupt chan os.Signal) (bool, bool, error) {
+	next, err := readTTYByte(os.Stdin, 200*time.Millisecond, interrupt)
+	if err != nil || (next != '[' && next != 'O') {
+		return true, false, nil
+	}
+	direction, err := readTTYByte(os.Stdin, 200*time.Millisecond, interrupt)
+	if err != nil {
+		return true, false, nil
+	}
+	if direction == 'A' && pager.offset > 0 {
+		pager.offset--
+		return false, true, nil
+	}
+	if direction == 'B' && pager.offset < pager.maxOffset {
+		pager.offset++
+		return false, true, nil
+	}
+	return false, false, nil
 }

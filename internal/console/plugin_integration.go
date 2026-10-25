@@ -66,17 +66,15 @@ func requireLocalDocker() error {
 	return nil
 }
 
+type adapterSettings struct {
+	Mounts    []string          `json:"mounts"`
+	RemoteEnv map[string]string `json:"remoteEnv"`
+}
+
 func validateGitHubAppConfig(data []byte, socketDir string) error {
-	expected, err := githubapp.AdapterFragment(socketDir)
+	required, err := requiredAdapterSettings(socketDir)
 	if err != nil {
 		return err
-	}
-	var required struct {
-		Mounts    []string          `json:"mounts"`
-		RemoteEnv map[string]string `json:"remoteEnv"`
-	}
-	if err := json.Unmarshal(expected, &required); err != nil {
-		return fmt.Errorf("cannot validate GitHub App adapter settings")
 	}
 	var config map[string]json.RawMessage
 	if err := json.Unmarshal(data, &config); err != nil {
@@ -85,47 +83,80 @@ func validateGitHubAppConfig(data []byte, socketDir string) error {
 	if _, exists := config["dockerComposeFile"]; exists {
 		return fmt.Errorf("GitHub App plugin does not support Docker Compose")
 	}
+	if err := validateAdapterMounts(config["mounts"], required.Mounts[0]); err != nil {
+		return err
+	}
+	if !hasAdapterPath(config["remoteEnv"], required.RemoteEnv["PATH"]) {
+		return fmt.Errorf("GitHub App adapter PATH was removed or overridden")
+	}
+	return nil
+}
+
+func requiredAdapterSettings(socketDir string) (adapterSettings, error) {
+	var required adapterSettings
+	expected, err := githubapp.AdapterFragment(socketDir)
+	if err != nil {
+		return required, err
+	}
+	if err := json.Unmarshal(expected, &required); err != nil {
+		return required, fmt.Errorf("cannot validate GitHub App adapter settings")
+	}
+	return required, nil
+}
+
+func validateAdapterMounts(raw json.RawMessage, expectedMount string) error {
 	var mounts []json.RawMessage
-	if raw, exists := config["mounts"]; !exists || json.Unmarshal(raw, &mounts) != nil {
+	if len(raw) == 0 || json.Unmarshal(raw, &mounts) != nil {
 		return fmt.Errorf("GitHub App socket mount was removed or overridden")
 	}
-	expectedMount := required.Mounts[0]
 	foundMount := false
 	for _, raw := range mounts {
-		var mountString string
-		if json.Unmarshal(raw, &mountString) == nil {
-			fields := strings.Split(mountString, ",")
-			targetConflict, exact := false, mountString == expectedMount
-			for _, field := range fields {
-				for _, key := range []string{"target", "dst", "destination"} {
-					if strings.HasPrefix(field, key+"=") && overlapsAdapterMount(strings.TrimPrefix(field, key+"=")) {
-						targetConflict = true
-					}
-				}
-			}
-			if targetConflict && !exact {
-				return fmt.Errorf("GitHub App socket mount was overridden")
-			}
-			foundMount = foundMount || exact
-			continue
+		valid, exact := inspectAdapterMount(raw, expectedMount)
+		if !valid {
+			return fmt.Errorf("GitHub App socket mount was overridden")
 		}
-		var mountObject map[string]any
-		if json.Unmarshal(raw, &mountObject) == nil {
-			for _, key := range []string{"target", "dst", "destination"} {
-				if target, ok := mountObject[key].(string); ok && overlapsAdapterMount(target) {
-					return fmt.Errorf("GitHub App socket mount was overridden")
-				}
-			}
-		}
+		foundMount = foundMount || exact
 	}
 	if !foundMount {
 		return fmt.Errorf("GitHub App socket mount was removed or overridden")
 	}
-	var remoteEnv map[string]any
-	if raw, exists := config["remoteEnv"]; !exists || json.Unmarshal(raw, &remoteEnv) != nil || remoteEnv["PATH"] != required.RemoteEnv["PATH"] {
-		return fmt.Errorf("GitHub App adapter PATH was removed or overridden")
-	}
 	return nil
+}
+
+func inspectAdapterMount(raw json.RawMessage, expected string) (bool, bool) {
+	var mountString string
+	if json.Unmarshal(raw, &mountString) == nil {
+		return validAdapterMountString(mountString, expected)
+	}
+	var mountObject map[string]any
+	if json.Unmarshal(raw, &mountObject) != nil {
+		return true, false
+	}
+	for _, key := range []string{"target", "dst", "destination"} {
+		if target, ok := mountObject[key].(string); ok && overlapsAdapterMount(target) {
+			return false, false
+		}
+	}
+	return true, false
+}
+
+func validAdapterMountString(mount, expected string) (bool, bool) {
+	if mount == expected {
+		return true, true
+	}
+	for _, field := range strings.Split(mount, ",") {
+		for _, key := range []string{"target", "dst", "destination"} {
+			if strings.HasPrefix(field, key+"=") && overlapsAdapterMount(strings.TrimPrefix(field, key+"=")) {
+				return false, false
+			}
+		}
+	}
+	return true, false
+}
+
+func hasAdapterPath(raw json.RawMessage, expected string) bool {
+	var remoteEnv map[string]any
+	return len(raw) > 0 && json.Unmarshal(raw, &remoteEnv) == nil && remoteEnv["PATH"] == expected
 }
 
 func overlapsAdapterMount(target string) bool {

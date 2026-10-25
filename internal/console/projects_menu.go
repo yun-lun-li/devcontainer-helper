@@ -30,31 +30,15 @@ func projectsMenu() error {
 			return err
 		}
 		if len(projects) == 0 {
-			_, err := choose("Projects\nNo registered projects. Run dch register --path PROJECT_PATH first.", []string{"Quit console"})
-			if errors.Is(err, errCancelled) {
-				return nil
-			}
-			return err
+			return chooseEmptyProjects()
 		}
 		statusErr := common.UpdateStatuses(projects)
-		options := make([]string, 0, len(projects)+1)
-		for _, p := range projects {
-			status, statusErr := plugins.NewManager().Status(context.Background(), p.Path)
-			if statusErr != nil {
-				return statusErr
-			}
-			state := p.State
-			if status.PendingBuild {
-				state += " · Build required"
-			}
-			options = append(options, fmt.Sprintf("%s  [%s]  %s", p.Name, state, p.Path))
+		options, err := projectOptions(projects)
+		if err != nil {
+			return err
 		}
 		options = append(options, "Quit console")
-		title := "Projects"
-		if statusErr != nil {
-			title += "  /  Docker unavailable"
-		}
-		choice, err := choose(title, options)
+		choice, err := chooseProjectList(options, statusErr)
 		if errors.Is(err, errCancelled) || choice == len(projects) {
 			return nil
 		}
@@ -67,29 +51,30 @@ func projectsMenu() error {
 	}
 }
 
+func chooseEmptyProjects() error {
+	_, err := choose("Projects\nNo registered projects. Run dch register --path PROJECT_PATH first.", []string{"Quit console"})
+	if errors.Is(err, errCancelled) {
+		return nil
+	}
+	return err
+}
+
+func chooseProjectList(options []string, statusErr error) (int, error) {
+	title := "Projects"
+	if statusErr != nil {
+		title += "  /  Docker unavailable"
+	}
+	return choose(title, options)
+}
+
 func projectMenu(path string) error {
 	for {
-		projects, err := common.LoadProjects()
+		p, found, statusErr, pluginStatus, err := loadProjectMenuState(path)
 		if err != nil {
 			return err
-		}
-		var p Project
-		found := false
-		for _, candidate := range projects {
-			if candidate.Path == path {
-				p, found = candidate, true
-				break
-			}
 		}
 		if !found {
 			return nil
-		}
-		current := []Project{p}
-		statusErr := common.UpdateStatuses(current)
-		p = current[0]
-		pluginStatus, err := plugins.NewManager().Status(context.Background(), p.Path)
-		if err != nil {
-			return err
 		}
 		actions := availableProjectActions(p, statusErr == nil, pluginStatus.PendingBuild)
 		choice, err := chooseProject(p, actions, pluginStatus.PendingBuild)
@@ -99,43 +84,107 @@ func projectMenu(path string) error {
 		if err != nil {
 			return err
 		}
-		switch actions[choice] {
-		case actionConnect:
-			err = connectProject(p)
-		case actionStart:
-			err = startProject(p)
-		case actionStop:
-			err = stopProject(p)
-		case actionBuild:
-			err = buildProject(p)
-		case actionPlugins:
-			err = pluginsMenu(p)
-		case actionConfig:
-			err = showProjectConfig(p)
-		case actionRemove:
-			removeChoice, chooseErr := choose("Remove project?", []string{
-				"Remove project registration  Keep files and containers",
-				"Cancel",
-			})
-			if chooseErr != nil {
-				err = chooseErr
-			} else if removeChoice == 0 {
-				err = removeProject(p)
-				if err == nil {
-					return nil
-				}
-			}
-		case actionBack:
+		done, actionErr := performProjectMenuAction(actions[choice], p)
+		if done {
 			return nil
 		}
-		if err != nil && !errors.Is(err, errCancelled) {
-			if screenActive {
-				screenError(err)
-			} else {
-				return err
-			}
+		err = actionErr
+		if errors.Is(err, errCancelled) {
+			continue
+		}
+		if err := reportProjectActionError(err); err != nil {
+			return err
 		}
 	}
+}
+
+func performProjectMenuAction(action projectAction, p Project) (bool, error) {
+	if action == actionBack {
+		return true, nil
+	}
+	if action == actionRemove {
+		return confirmProjectRemoval(p)
+	}
+	return false, runProjectAction(action, p)
+}
+
+func loadProjectMenuState(path string) (Project, bool, error, plugins.Status, error) {
+	projects, err := common.LoadProjects()
+	if err != nil {
+		return Project{}, false, nil, plugins.Status{}, err
+	}
+	p, found := findProject(projects, path)
+	if !found {
+		return Project{}, false, nil, plugins.Status{}, nil
+	}
+	current := []Project{p}
+	statusErr := common.UpdateStatuses(current)
+	p = current[0]
+	pluginStatus, err := plugins.NewManager().Status(context.Background(), p.Path)
+	return p, true, statusErr, pluginStatus, err
+}
+
+func reportProjectActionError(err error) error {
+	if err == nil || errors.Is(err, errCancelled) {
+		return nil
+	}
+	if screenActive {
+		screenError(err)
+		return nil
+	}
+	return err
+}
+
+func projectOptions(projects []Project) ([]string, error) {
+	options := make([]string, 0, len(projects)+1)
+	for _, project := range projects {
+		status, err := plugins.NewManager().Status(context.Background(), project.Path)
+		if err != nil {
+			return nil, err
+		}
+		state := project.State
+		if status.PendingBuild {
+			state += " · Build required"
+		}
+		options = append(options, fmt.Sprintf("%s  [%s]  %s", project.Name, state, project.Path))
+	}
+	return options, nil
+}
+
+func findProject(projects []Project, path string) (Project, bool) {
+	for _, project := range projects {
+		if project.Path == path {
+			return project, true
+		}
+	}
+	return Project{}, false
+}
+
+func runProjectAction(action projectAction, p Project) error {
+	switch action {
+	case actionConnect:
+		return connectProject(p)
+	case actionStart:
+		return startProject(p)
+	case actionStop:
+		return stopProject(p)
+	case actionBuild:
+		return buildProject(p)
+	case actionPlugins:
+		return pluginsMenu(p)
+	case actionConfig:
+		return showProjectConfig(p)
+	}
+	return nil
+}
+
+func confirmProjectRemoval(p Project) (bool, error) {
+	choice, err := choose("Remove project?", []string{"Remove project registration  Keep files and containers", "Cancel"})
+	if err != nil || choice != 0 {
+		return false, err
+	}
+	err = removeProject(p)
+	return err == nil, err
 }
 
 func removeProject(p Project) error {

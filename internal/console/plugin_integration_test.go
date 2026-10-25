@@ -61,6 +61,17 @@ func TestValidatePluginConfigRequiresExactSocketMountAndAdapterPath(t *testing.T
 	if err := os.Remove(marker); err != nil {
 		t.Fatal(err)
 	}
+	assertInvalidPluginConfigsRejected(t, devcontainerDir, project, marker)
+	if err := os.WriteFile(filepath.Join(devcontainerDir, "devcontainer.json"), []byte(`{"dockerComposeFile":"compose.yaml"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := invokeProjectDevcontainer(Project{Name: "demo", Path: project}, "exec", "--workspace-folder", project, "true"); err == nil {
+		t.Fatal("Compose configuration was accepted")
+	}
+}
+
+func assertInvalidPluginConfigsRejected(t *testing.T, devcontainerDir, project, marker string) {
+	t.Helper()
 	conflicts := []string{
 		`{"mounts":["type=bind,source=/evil,destination=/run/dch-github"]}`,
 		`{"mounts":["type=bind,source=/evil,dst=/run/dch-github/"]}`,
@@ -82,12 +93,6 @@ func TestValidatePluginConfigRequiresExactSocketMountAndAdapterPath(t *testing.T
 		if err := os.Remove(filepath.Join(devcontainerDir, "devcontainer.local.d", "99-conflict.json")); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if err := os.WriteFile(filepath.Join(devcontainerDir, "devcontainer.json"), []byte(`{"dockerComposeFile":"compose.yaml"}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := invokeProjectDevcontainer(Project{Name: "demo", Path: project}, "exec", "--workspace-folder", project, "true"); err == nil {
-		t.Fatal("Compose configuration was accepted")
 	}
 }
 
@@ -122,6 +127,21 @@ func TestPluginRejectsRemoteDockerHostAndContext(t *testing.T) {
 }
 
 func TestStartRunsAdapterInstallAfterUpAndMarksBuildApplied(t *testing.T) {
+	fixture := setupStartPluginFixture(t)
+	if err := startProject(Project{Name: "demo", Path: fixture.project, State: "NOT CREATED"}); err != nil {
+		t.Fatal(err)
+	}
+	assertSuccessfulPluginStart(t, fixture)
+	assertFailedAdapterInstall(t, fixture)
+}
+
+type startPluginFixture struct {
+	project, configDir, argsLog, configLog, labelsLog string
+	cfg                                               githubapp.Config
+}
+
+func setupStartPluginFixture(t *testing.T) startPluginFixture {
+	t.Helper()
 	root := t.TempDir()
 	project := filepath.Join(root, "project")
 	configDir := filepath.Join(project, ".devcontainer")
@@ -176,7 +196,7 @@ func TestStartRunsAdapterInstallAfterUpAndMarksBuildApplied(t *testing.T) {
 		_, _ = w.Write([]byte("opaque-token"))
 	})}
 	go credentialServer.Serve(listener)
-	defer credentialServer.Close()
+	t.Cleanup(func() { _ = credentialServer.Close() })
 	cfg := githubapp.Config{AppID: 1, InstallationID: 2, PrivateKeyPassEntry: "test/key", Repository: "octo/repo", Permissions: map[string]string{"contents": "read"}}
 	if err := plugins.NewManager().Enable(context.Background(), project, cfg); err != nil {
 		t.Fatal(err)
@@ -187,21 +207,23 @@ func TestStartRunsAdapterInstallAfterUpAndMarksBuildApplied(t *testing.T) {
 	}
 	oldStdout := os.Stdout
 	os.Stdout = devNull
-	defer func() { os.Stdout = oldStdout; devNull.Close() }()
-	if err := startProject(Project{Name: "demo", Path: project, State: "NOT CREATED"}); err != nil {
-		t.Fatal(err)
-	}
-	status, err := plugins.NewManager().Status(context.Background(), project)
+	t.Cleanup(func() { os.Stdout = oldStdout; _ = devNull.Close() })
+	return startPluginFixture{project: project, configDir: configDir, argsLog: argsLog, configLog: configLog, labelsLog: labelsLog, cfg: cfg}
+}
+
+func assertSuccessfulPluginStart(t *testing.T, fixture startPluginFixture) {
+	t.Helper()
+	status, err := plugins.NewManager().Status(context.Background(), fixture.project)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if status.PendingBuild {
 		t.Fatal("pending Build remained after successful create and adapter install")
 	}
-	if err := connectProject(Project{Name: "demo", Path: project, State: "RUNNING", ID: "container-id"}); err != nil {
+	if err := connectProject(Project{Name: "demo", Path: fixture.project, State: "RUNNING", ID: "container-id"}); err != nil {
 		t.Fatal(err)
 	}
-	args, err := os.ReadFile(argsLog)
+	args, err := os.ReadFile(fixture.argsLog)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,31 +231,35 @@ func TestStartRunsAdapterInstallAfterUpAndMarksBuildApplied(t *testing.T) {
 	if got != "up\nexec\nexec\nexec\n" {
 		t.Fatalf("devcontainer actions=%q", got)
 	}
-	labels, err := os.ReadFile(labelsLog)
+	labels, err := os.ReadFile(fixture.labelsLog)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, label := range []string{"devcontainer.local_folder=" + project, "devcontainer.config_file=" + filepath.Join(configDir, "devcontainer.json")} {
+	for _, label := range []string{"devcontainer.local_folder=" + fixture.project, "devcontainer.config_file=" + filepath.Join(fixture.configDir, "devcontainer.json")} {
 		if strings.Count(string(labels), label) != 4 {
 			t.Errorf("stable label %q count=%d labels=%s", label, strings.Count(string(labels), label), labels)
 		}
 	}
-	merged, err := os.ReadFile(configLog)
+	merged, err := os.ReadFile(fixture.configLog)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Count(string(merged), "postCreateCommand") != 4 || !strings.Contains(string(merged), "/run/dch-github") {
 		t.Fatalf("container config did not preserve hooks and plugin mount: %s", merged)
 	}
-	if err := plugins.NewManager().Enable(context.Background(), project, cfg); err != nil {
+}
+
+func assertFailedAdapterInstall(t *testing.T, fixture startPluginFixture) {
+	t.Helper()
+	if err := plugins.NewManager().Enable(context.Background(), fixture.project, fixture.cfg); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("DCH_TEST_FAIL_INSTALL", "yes")
-	err = startProject(Project{Name: "demo", Path: project, State: "NOT CREATED"})
+	err := startProject(Project{Name: "demo", Path: fixture.project, State: "NOT CREATED"})
 	if err == nil || !strings.Contains(err.Error(), "required command missing: gh") {
 		t.Fatalf("start error = %v, want actionable adapter install diagnostic", err)
 	}
-	status, err = plugins.NewManager().Status(context.Background(), project)
+	status, err := plugins.NewManager().Status(context.Background(), fixture.project)
 	if err != nil {
 		t.Fatal(err)
 	}

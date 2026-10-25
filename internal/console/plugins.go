@@ -20,64 +20,82 @@ func pluginsMenu(project Project) error {
 		if err != nil {
 			return err
 		}
-		label := "GitHub App: disabled"
-		if status.Enabled {
-			label = "GitHub App: enabled"
-		}
-		if status.ServiceActive {
-			label += " · service active"
-		} else if status.Enabled {
-			label += " · service inactive"
-		}
-		if status.PendingBuild {
-			label += " · Build required"
-		}
-		options := []string{label, "Configure and enable GitHub App", "Disable GitHub App", "Back"}
-		choice, err := choose("Project plugins", options)
+		choice, label, err := choosePluginAction(status)
 		if errors.Is(err, errCancelled) || choice == 3 {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		switch choice {
-		case 0:
-			message := label
-			if status.Message != "" {
-				message += "\n" + status.Message
+		if err := handlePluginAction(choice, label, status, project, manager); err != nil {
+			if menuErr := reportPluginMenuError(err); menuErr != nil {
+				return menuErr
 			}
-			screenNotice("Project plugins", message)
-		case 1:
-			screenHeading("Configure GitHub App")
-			cfg, err := promptGitHubAppConfig()
-			if errors.Is(err, errCancelled) {
-				continue
-			}
-			if err == nil {
-				err = manager.Enable(context.Background(), project.Path, cfg)
-			}
-			if err != nil {
-				if screenActive {
-					screenError(err)
-					continue
-				}
-				return err
-			}
-			screenNotice("GitHub App", "Enabled and verified. Build the project to apply its container settings.")
-		case 2:
-			if !status.Enabled {
-				continue
-			}
-			if err := manager.Disable(context.Background(), project.Path); err != nil {
-				if screenActive {
-					screenError(err)
-					continue
-				}
-				return err
-			}
-			screenNotice("GitHub App", "Disabled. Build the project to remove its container settings.")
 		}
 	}
+}
+
+func reportPluginMenuError(err error) error {
+	if errors.Is(err, errCancelled) {
+		return nil
+	}
+	if screenActive {
+		screenError(err)
+		return nil
+	}
+	return err
+}
+
+func choosePluginAction(status plugins.Status) (int, string, error) {
+	label := "GitHub App: disabled"
+	if status.Enabled {
+		label = "GitHub App: enabled"
+	}
+	if status.ServiceActive {
+		label += " · service active"
+	} else if status.Enabled {
+		label += " · service inactive"
+	}
+	if status.PendingBuild {
+		label += " · Build required"
+	}
+	choice, err := choose("Project plugins", []string{label, "Configure and enable GitHub App", "Disable GitHub App", "Back"})
+	return choice, label, err
+}
+
+func handlePluginAction(choice int, label string, status plugins.Status, project Project, manager *plugins.Manager) error {
+	switch choice {
+	case 0:
+		message := label
+		if status.Message != "" {
+			message += "\n" + status.Message
+		}
+		screenNotice("Project plugins", message)
+	case 1:
+		return enableProjectPlugin(project, manager)
+	case 2:
+		if !status.Enabled {
+			return nil
+		}
+		if err := manager.Disable(context.Background(), project.Path); err != nil {
+			return err
+		}
+		screenNotice("GitHub App", "Disabled. Build the project to remove its container settings.")
+	}
+	return nil
+}
+
+func enableProjectPlugin(project Project, manager *plugins.Manager) error {
+	screenHeading("Configure GitHub App")
+	cfg, err := promptGitHubAppConfig()
+	if err != nil {
+		return err
+	}
+	if err := manager.Enable(context.Background(), project.Path, cfg); err != nil {
+		return err
+	}
+	screenNotice("GitHub App", "Enabled and verified. Build the project to apply its container settings.")
+	return nil
 }
 
 func promptGitHubAppConfig() (githubapp.Config, error) {
