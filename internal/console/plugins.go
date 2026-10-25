@@ -298,11 +298,12 @@ func getPluginField(config map[string]any, field plugins.Field) string {
 func promptPluginText(field plugins.Field, current string) (any, error) {
 	label := field.Label
 	if current != "" {
-		label += " [" + current + "] (Enter to keep"
+		label += " [" + current + "] (Enter to keep, q to cancel): "
 	} else if !field.Required {
-		label += " (optional"
+		label += " (optional, q to cancel): "
+	} else {
+		label += " (q to cancel): "
 	}
-	label += ", q to cancel): "
 	fmt.Print(label)
 	value, err := input.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
