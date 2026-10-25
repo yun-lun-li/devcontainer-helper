@@ -17,14 +17,15 @@ func New() *Plugin { return &Plugin{} }
 
 func (p *Plugin) Definition() plugins.Definition {
 	return plugins.Definition{
-		ID: pluginID, Name: "GitHub App", Description: "Provide scoped GitHub credentials to this project.",
+		ID: pluginID, Name: "GitHub App", Description: "Provide GitHub credentials to this project.",
 		ServiceAliases: []string{"_github-app-serve"},
-		Notices:        []string{"Create and install a GitHub App, then store its RSA private key with pass."},
+		Notices: []string{
+			"Store the RSA private key with pass as dch/github-app/<AppID>/private-key.",
+			"Without a legacy repository setting, tokens can access every repository in the GitHub App installation, limited by the selected permissions.",
+		},
 		Fields: []plugins.Field{
 			{Name: "app_id", Label: "App ID", Required: true, Kind: plugins.FieldText},
 			{Name: "installation_id", Label: "Installation ID", Required: true, Kind: plugins.FieldText},
-			{Name: "private_key_pass_entry", Label: "Private key pass entry", Required: true, Kind: plugins.FieldText},
-			{Name: "repository", Label: "Owner/repository", Required: true, Confirm: true, Kind: plugins.FieldText},
 			{Name: "contents", Label: "Contents permission", Confirm: true, Kind: plugins.FieldChoice, Options: permissionChoices(), Path: []string{"permissions", "contents"}},
 			{Name: "pull_requests", Label: "Pull requests permission", Confirm: true, Kind: plugins.FieldChoice, Options: permissionChoices(), Path: []string{"permissions", "pull_requests"}},
 		},

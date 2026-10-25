@@ -64,6 +64,69 @@ func TestProviderMintsScopedTokenAndCachesIt(t *testing.T) {
 	}
 }
 
+func TestProviderDefaultsPassEntryForDirectConfig(t *testing.T) {
+	pass := filepath.Join(t.TempDir(), "pass")
+	if err := os.WriteFile(pass, []byte("#!/bin/sh\nprintf '%s' \"$2\" > \"$PASS_ARG_FILE\"\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	argFile := filepath.Join(t.TempDir(), "arg")
+	t.Setenv("PASS_ARG_FILE", argFile)
+	p, err := NewProvider(Config{AppID: 12, InstallationID: 34, Permissions: map[string]string{"contents": "read"}}, ProviderOptions{PassPath: pass})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Token(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "dch/github-app/12/private-key") || strings.Contains(err.Error(), "exit") {
+		t.Fatalf("Token() error = %v", err)
+	}
+	entry, readErr := os.ReadFile(argFile)
+	if readErr != nil || string(entry) != "dch/github-app/12/private-key" {
+		t.Fatalf("pass entry = %q, %v", entry, readErr)
+	}
+}
+
+func TestProviderRequestsInstallationWideTokenWithoutRepositoryLookup(t *testing.T) {
+	key := testPrivateKey(t)
+	var lookupCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/installation") {
+			lookupCalls.Add(1)
+			t.Errorf("unexpected repository installation lookup: %s", r.URL.Path)
+			return
+		}
+		if r.URL.Path != "/app/installations/34/access_tokens" {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if _, hasRepos := body["repositories"]; hasRepos {
+			t.Errorf("installation-wide body restricted repositories: %#v", body)
+		}
+		if body["permissions"].(map[string]any)["contents"] != "read" {
+			t.Errorf("unexpected permissions: %#v", body)
+		}
+		writeScopedTokenResponse(w)
+	}))
+	defer srv.Close()
+	pass := filepath.Join(t.TempDir(), "pass")
+	if err := os.WriteFile(pass, []byte("#!/bin/sh\ncat <<'KEY'\n"+key+"\nKEY\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewProvider(Config{AppID: 1, InstallationID: 34, Permissions: map[string]string{"contents": "read"}}, ProviderOptions{PassPath: pass, APIBaseURL: srv.URL, HTTPClient: srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Token(context.Background()); err != nil {
+		t.Fatalf("Token() error = %v", err)
+	}
+	if lookupCalls.Load() != 0 {
+		t.Fatalf("repository lookups = %d", lookupCalls.Load())
+	}
+}
+
 func scopedTokenHandler(t *testing.T, privateKey *rsa.PrivateKey, now time.Time, tokenCalls, repoCalls *int) http.HandlerFunc {
 	t.Helper()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

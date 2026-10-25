@@ -17,27 +17,65 @@ import (
 
 func TestDefinitionProvidesGitHubFieldsAndLegacyAlias(t *testing.T) {
 	definition := New().Definition()
+	assertDefinitionIdentity(t, definition)
+	assertSetupNotices(t, definition)
+	fields := fieldsByName(definition.Fields)
+	assertSetupFields(t, fields)
+	assertPermissionField(t, fields["contents"])
+	assertFieldConfirmations(t, fields)
+}
+
+func assertDefinitionIdentity(t *testing.T, definition plugins.Definition) {
+	t.Helper()
 	if definition.ID != "github-app" || !reflect.DeepEqual(definition.ServiceAliases, []string{"_github-app-serve"}) {
 		t.Fatalf("unexpected plugin definition: %+v", definition)
 	}
+}
+
+func assertSetupNotices(t *testing.T, definition plugins.Definition) {
+	t.Helper()
+	if len(definition.Notices) < 2 || !strings.Contains(definition.Notices[0], "dch/github-app/<AppID>/private-key") || !strings.Contains(definition.Notices[1], "every repository") {
+		t.Fatalf("setup notices do not explain defaults and repository access: %v", definition.Notices)
+	}
+}
+
+func fieldsByName(definitionFields []plugins.Field) map[string]plugins.Field {
 	fields := map[string]plugins.Field{}
-	for _, field := range definition.Fields {
+	for _, field := range definitionFields {
 		fields[field.Name] = field
 	}
-	for _, name := range []string{"app_id", "installation_id", "private_key_pass_entry", "repository", "contents", "pull_requests"} {
+	return fields
+}
+
+func assertSetupFields(t *testing.T, fields map[string]plugins.Field) {
+	t.Helper()
+	for _, name := range []string{"app_id", "installation_id", "contents", "pull_requests"} {
 		if _, exists := fields[name]; !exists {
 			t.Errorf("missing field %q", name)
 		}
 	}
-	if fields["contents"].Path[1] != "contents" {
-		t.Fatalf("contents permission path = %v", fields["contents"].Path)
+	for _, name := range []string{"private_key_pass_entry", "repository"} {
+		if _, exists := fields[name]; exists {
+			t.Errorf("unexpected setup field %q", name)
+		}
 	}
-	for _, name := range []string{"repository", "contents", "pull_requests"} {
+}
+
+func assertPermissionField(t *testing.T, field plugins.Field) {
+	t.Helper()
+	if len(field.Path) < 2 || field.Path[1] != "contents" {
+		t.Fatalf("contents permission path = %v", field.Path)
+	}
+}
+
+func assertFieldConfirmations(t *testing.T, fields map[string]plugins.Field) {
+	t.Helper()
+	for _, name := range []string{"contents", "pull_requests"} {
 		if !fields[name].Confirm {
 			t.Errorf("field %q is missing from the enable confirmation", name)
 		}
 	}
-	for _, name := range []string{"app_id", "installation_id", "private_key_pass_entry"} {
+	for _, name := range []string{"app_id", "installation_id"} {
 		if fields[name].Confirm {
 			t.Errorf("sensitive field %q is included in the enable confirmation", name)
 		}
@@ -56,6 +94,13 @@ func TestValidateConfigAcceptsTextIDsAndOmitsEmptyPermissionChoices(t *testing.T
 	}
 	if _, exists := cfg.Permissions["pull_requests"]; exists {
 		t.Fatal("empty optional permission was retained")
+	}
+}
+
+func TestValidateConfigAcceptsDefaultPassEntryAndInstallationWideAccess(t *testing.T) {
+	raw := json.RawMessage(`{"app_id":"12","installation_id":"34","permissions":{"contents":"read"}}`)
+	if err := New().ValidateConfig(raw); err != nil {
+		t.Fatalf("ValidateConfig() error = %v", err)
 	}
 }
 

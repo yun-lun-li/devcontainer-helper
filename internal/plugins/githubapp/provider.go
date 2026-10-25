@@ -49,6 +49,7 @@ type refreshCall struct {
 }
 
 func NewProvider(cfg Config, options ...ProviderOptions) (*Provider, error) {
+	cfg = cfg.normalized()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -144,11 +145,13 @@ func (p *Provider) mint(ctx context.Context) (string, time.Time, error) {
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	owner, repo, _ := strings.Cut(p.cfg.Repository, "/")
-	if err := p.verifyRepositoryInstallation(ctx, jwt, owner, repo); err != nil {
-		return "", time.Time{}, err
+	if p.cfg.Repository != "" {
+		owner, repo, _ := strings.Cut(p.cfg.Repository, "/")
+		if err := p.verifyRepositoryInstallation(ctx, jwt, owner, repo); err != nil {
+			return "", time.Time{}, err
+		}
 	}
-	return p.requestInstallationToken(ctx, jwt, repo)
+	return p.requestInstallationToken(ctx, jwt)
 }
 
 func (p *Provider) loadPrivateKey(ctx context.Context) (*rsa.PrivateKey, error) {
@@ -162,9 +165,13 @@ func (p *Provider) loadPrivateKey(ctx context.Context) (*rsa.PrivateKey, error) 
 	var keyOutput boundedBuffer
 	cmd.Stdout = &keyOutput
 	if err := cmd.Run(); err != nil || keyOutput.overflow {
-		return nil, fmt.Errorf("pass failed")
+		return nil, fmt.Errorf("pass failed for entry %s", p.cfg.PrivateKeyPassEntry)
 	}
-	return parsePrivateKey(keyOutput.Bytes())
+	key, err := parsePrivateKey(keyOutput.Bytes())
+	if err != nil {
+		return nil, fmt.Errorf("invalid private key in pass entry %s", p.cfg.PrivateKeyPassEntry)
+	}
+	return key, nil
 }
 
 func (p *Provider) createAppJWT(key *rsa.PrivateKey) (string, error) {
@@ -202,13 +209,18 @@ func (p *Provider) verifyRepositoryInstallation(ctx context.Context, jwt, owner,
 	return nil
 }
 
-func (p *Provider) requestInstallationToken(ctx context.Context, jwt, repo string) (string, time.Time, error) {
+func (p *Provider) requestInstallationToken(ctx context.Context, jwt string) (string, time.Time, error) {
 	var body bytes.Buffer
 	permissions := make(map[string]string, len(p.cfg.Permissions))
 	for k, v := range p.cfg.Permissions {
 		permissions[k] = v
 	}
-	if err := json.NewEncoder(&body).Encode(map[string]any{"repositories": []string{repo}, "permissions": permissions}); err != nil {
+	requestBody := map[string]any{"permissions": permissions}
+	if p.cfg.Repository != "" {
+		_, repo, _ := strings.Cut(p.cfg.Repository, "/")
+		requestBody["repositories"] = []string{repo}
+	}
+	if err := json.NewEncoder(&body).Encode(requestBody); err != nil {
 		return "", time.Time{}, err
 	}
 	u := strings.TrimRight(p.opts.APIBaseURL, "/") + fmt.Sprintf("/app/installations/%d/access_tokens", p.cfg.InstallationID)

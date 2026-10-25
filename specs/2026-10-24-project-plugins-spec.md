@@ -240,7 +240,8 @@ Host HTTP Server -> curl Unix Socket: 短期 Token
 ```
 
 Host server 由 githubapp 實作，使用同一份 dch binary。
-每個 server 固定服務一個 Project 與一個 owner/repository。
+每個 server 固定服務一個 Project 與指定 Installation。
+新設定沿用 Installation 授權的 Repository 範圍；既有明確 repo 限制繼續有效。
 容器不能指定 pass entry、App、repository 或權限。
 HTTP 只監聽 Unix Socket，不開 TCP port。
 
@@ -266,19 +267,23 @@ Socket 位於有效且由目前使用者擁有的 XDG_RUNTIME_DIR。
 能連接 Socket 的容器程序可取得該 Project Token。
 此設計不提供不可信任容器的完整隔離。
 Docker 管理員仍能存取掛載。
-授權限於所需 repo；Branch Protection 與 CI 權限另設。
+Installation 應只授權所需 repo；Branch Protection 與 CI 權限另設。
 不掛載 pass、GPG Key 或 App Private Key。
 
 ## F GitHub Token、Git 與 gh
 
-GitHub 表單收集 App ID、Installation ID 與 pass entry。
-同時收集 owner/repository 與所需權限。
-Contents 與 pull_requests 各可選 read／write。
-驗證 repo 屬於指定 owner，Token 限制在該 repo 與權限。
+GitHub 表單只收集 App ID、Installation ID 與所需權限。
+Private key pass entry 與 Owner/repository 不再顯示輸入欄位。
+新設定從 Host pass 的 `dch/github-app/<App ID>/private-key` 讀取私鑰。
+新設定省略 Token request 的 repositories，沿用 Installation 已授權的 Repository 範圍。
+既有明確 pass entry 與單一 repo 保留；重新設定不默默擴大原本範圍。
+Contents 與 pull_requests 各可選 read／write，或不要求該權限。
+至少必須要求一種權限；兩者都不要求時拒絕啟用。
+既有 repo 限制仍驗證其 Installation 並限制 Token；新設定只限制所選權限。
 建立 App、安裝 App 與匯入私鑰由使用者先完成。
 
 使用參數陣列呼叫 pass，不拼接 shell 指令。
-拒絕空白或選項形式的 pass entry。
+缺少 pass entry 時使用上述預設；拒絕不安全或選項形式的明確 pass entry。
 支援 GitHub 提供的 RSA PEM 私鑰。
 JWT 使用 RS256，iss 使用 App ID。
 iat 回溯 60 秒，exp 不超過未來 10 分鐘。

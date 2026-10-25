@@ -79,7 +79,7 @@ The first implementation is in `internal/plugins/githubapp/`. Adding another bui
 
 ### GitHub App plugin
 
-The built-in GitHub App plugin is Linux-only and gives one project access to one selected GitHub repository. It requires local Docker, a systemd user service, `pass`, and a GPG agent on the host. Create and install the GitHub App, then store its RSA private key in the host's `pass` store. The key entry must be readable by the host user running the dch systemd user service.
+The built-in GitHub App plugin is Linux-only and, by default, gives one project access to every repository available to its GitHub App installation, limited by the selected permissions. It requires local Docker, a systemd user service, `pass`, and a GPG agent on the host. Create and install the GitHub App, then store its RSA private key in the host's `pass` store as `dch/github-app/<AppID>/private-key` (for example, `dch/github-app/12345/private-key`). The key entry must be readable by the host user running the dch systemd user service.
 
 Before enabling the plugin, unlock the host GPG agent without printing the key:
 
@@ -89,7 +89,7 @@ pass show <entry> >/dev/null
 
 The GPG agent must be able to decrypt without opening a prompt. dch invokes `pass` non-interactively; if the GPG agent's cached unlock expires, unlock the entry again before the next token refresh. The private key remains on the host and is never mounted into the container.
 
-Open **Project → Plugins** to configure and enable the plugin. Enter the App ID, installation ID, pass entry, repository (`owner/repository`), and choose `read`, `write`, or disabled for `contents` and `pull_requests`. dch verifies the service and credential before enabling. The resulting installation token is limited to that repository and selected permissions.
+Open **Project → Plugins** to configure and enable the plugin. Enter the App ID and installation ID, then choose `read`, `write`, or disabled for `contents` and `pull_requests`. dch verifies the service and credential before enabling. The resulting installation token can access every repository available to that installation, limited by the selected permissions. Existing configurations with an explicit `repository` setting keep their single-repository scope.
 
 The container needs Git 2.30 or newer, GitHub CLI (`gh`), curl, and POSIX `sh`. The plugin adds a read-only mount at `/run/dch-github`, a Git credential helper for HTTPS `github.com`, and a `gh` wrapper available from Connect shells. The wrapper requests a token for each invocation and sets `GH_TOKEN` only for that `gh` process. Other Git hosts keep their existing credential helpers; SSH URLs are unchanged. Existing lifecycle hooks are preserved. The socket directory is mode `0700` and the socket is mode `0600`; the container user must be able to connect to it, so a mismatched UID will fail.
 

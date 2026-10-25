@@ -65,23 +65,59 @@ func decodeID(raw json.RawMessage) (int64, error) {
 
 func (c Config) appIDString() string { return strconv.FormatInt(c.AppID, 10) }
 
+func (c Config) normalized() Config {
+	if c.PrivateKeyPassEntry == "" && c.AppID > 0 {
+		c.PrivateKeyPassEntry = "dch/github-app/" + c.appIDString() + "/private-key"
+	}
+	return c
+}
+
 var passEntryPattern = regexp.MustCompile(`^[A-Za-z0-9_./-]+$`)
 
 func (c Config) Validate() error {
+	c = c.normalized()
+	if err := validateIDs(c); err != nil {
+		return err
+	}
+	if err := validatePassEntry(c.PrivateKeyPassEntry); err != nil {
+		return err
+	}
+	if err := validateOptionalRepository(c.Repository); err != nil {
+		return err
+	}
+	return validatePermissions(c.Permissions)
+}
+
+func validateIDs(c Config) error {
 	if c.AppID <= 0 || c.InstallationID <= 0 {
 		return fmt.Errorf("app and installation IDs must be positive")
 	}
-	if c.PrivateKeyPassEntry == "" || strings.HasPrefix(c.PrivateKeyPassEntry, "-") || !passEntryPattern.MatchString(c.PrivateKeyPassEntry) || strings.Contains(c.PrivateKeyPassEntry, "..") {
+	return nil
+}
+
+func validatePassEntry(entry string) error {
+	if entry == "" || strings.HasPrefix(entry, "-") || !passEntryPattern.MatchString(entry) || strings.Contains(entry, "..") {
 		return fmt.Errorf("invalid pass entry")
 	}
-	parts := strings.Split(c.Repository, "/")
+	return nil
+}
+
+func validateOptionalRepository(repository string) error {
+	if repository == "" {
+		return nil
+	}
+	parts := strings.Split(repository, "/")
 	if len(parts) != 2 || !validOwner(parts[0]) || !validRepository(parts[1]) {
 		return fmt.Errorf("repository must be owner/repository")
 	}
-	if len(c.Permissions) == 0 {
+	return nil
+}
+
+func validatePermissions(permissions map[string]string) error {
+	if len(permissions) == 0 {
 		return fmt.Errorf("at least one permission is required")
 	}
-	for name, level := range c.Permissions {
+	for name, level := range permissions {
 		if name != "contents" && name != "pull_requests" {
 			return fmt.Errorf("unsupported permission")
 		}
