@@ -17,12 +17,16 @@ import (
 	"dch/internal/common"
 )
 
+// Status aggregates the registered plugins' enabled and pending-build state.
 type Status struct {
-	Plugins      []PluginStatus
-	Enabled      int
+	Plugins []PluginStatus
+	// Enabled is the count of enabled plugins in this project.
+	Enabled int
+	// PendingBuild is true when any plugin needs a container rebuild.
 	PendingBuild bool
 }
 
+// Manager registers plugins and coordinates their project-scoped lifecycle.
 type Manager struct {
 	plugins map[string]Plugin
 	aliases map[string]string
@@ -35,10 +39,12 @@ type operationToken struct {
 	path    string
 }
 
+// NewManager returns an empty plugin manager.
 func NewManager() *Manager {
 	return &Manager{plugins: map[string]Plugin{}, aliases: map[string]string{}}
 }
 
+// Register adds a plugin and rejects duplicate IDs or service aliases.
 func (m *Manager) Register(plugin Plugin) error {
 	if plugin == nil {
 		return errors.New("plugin cannot be nil")
@@ -83,6 +89,7 @@ func (m *Manager) validateAliases(id string, plugin Plugin, aliases []string) er
 	return nil
 }
 
+// Definitions returns registered plugin metadata sorted by stable ID.
 func (m *Manager) Definitions() []Definition {
 	ids := m.pluginIDs()
 	definitions := make([]Definition, 0, len(ids))
@@ -92,11 +99,15 @@ func (m *Manager) Definitions() []Definition {
 	return definitions
 }
 
+// ServiceAlias maps a registered internal command alias to its plugin ID.
 func (m *Manager) ServiceAlias(command string) (string, bool) {
 	id, ok := m.aliases[command]
 	return id, ok
 }
 
+// WithProjectOperation serializes a project operation across processes. Manager
+// methods called with the callback context reuse the lock; the context is canceled
+// on return so it cannot bypass a later lock acquisition.
 func (m *Manager) WithProjectOperation(ctx context.Context, projectPath string, operation func(context.Context) error) error {
 	if operation == nil {
 		return errors.New("project operation cannot be nil")
@@ -118,6 +129,8 @@ func (m *Manager) WithProjectOperation(ctx context.Context, projectPath string, 
 	return operation(operationCtx)
 }
 
+// Enable validates configuration, runs the plugin's host hook, then commits its
+// enabled record and lifecycle result. The hook owns rollback of early scoped saves.
 func (m *Manager) Enable(ctx context.Context, projectPath, id string, raw json.RawMessage) error {
 	path, unlock, err := m.lockProject(ctx, projectPath)
 	if err != nil {
@@ -185,6 +198,8 @@ func (m *Manager) commitEnable(path, id string, raw, previousConfig json.RawMess
 	})
 }
 
+// Disable runs cleanup before removing the enabled record, preserving it when
+// cleanup fails so the plugin can retry.
 func (m *Manager) Disable(ctx context.Context, projectPath, id string) error {
 	path, unlock, err := m.lockProject(ctx, projectPath)
 	if err != nil {
@@ -230,6 +245,7 @@ func (m *Manager) commitDisable(path, id string, result Result) error {
 	})
 }
 
+// Prepare dispatches a Start, Build, or Connect host hook before container work.
 func (m *Manager) Prepare(ctx context.Context, projectPath string, event Event) error {
 	if !hostLifecycleEvent(event) {
 		return fmt.Errorf("unsupported host event %q", event)
@@ -261,6 +277,8 @@ func (m *Manager) Prepare(ctx context.Context, projectPath string, event Event) 
 	return nil
 }
 
+// HandleContainer dispatches enabled plugins' container hooks with the supplied
+// executor. Call it after up succeeds or before opening a container shell.
 func (m *Manager) HandleContainer(ctx context.Context, projectPath string, event Event, executor Executor) error {
 	if !hostLifecycleEvent(event) {
 		return fmt.Errorf("unsupported container event %q", event)
@@ -292,6 +310,8 @@ func (m *Manager) HandleContainer(ctx context.Context, projectPath string, event
 	return nil
 }
 
+// ValidateMergedConfig asks each enabled plugin to validate the final merged
+// container configuration before the container operation.
 func (m *Manager) ValidateMergedConfig(ctx context.Context, projectPath string, merged map[string]json.RawMessage) error {
 	path, unlock, err := m.lockProject(ctx, projectPath)
 	if err != nil {
@@ -312,6 +332,7 @@ func (m *Manager) ValidateMergedConfig(ctx context.Context, projectPath string, 
 	return nil
 }
 
+// Statuses returns one display-safe status per registered plugin, sorted by ID.
 func (m *Manager) Statuses(ctx context.Context, projectPath string) ([]PluginStatus, error) {
 	path, unlock, err := m.lockProject(ctx, projectPath)
 	if err != nil {
@@ -338,6 +359,7 @@ func (m *Manager) Statuses(ctx context.Context, projectPath string) ([]PluginSta
 	return statuses, nil
 }
 
+// Status aggregates enabled count and pending-build state across the project.
 func (m *Manager) Status(ctx context.Context, projectPath string) (Status, error) {
 	statuses, err := m.Statuses(ctx, projectPath)
 	if err != nil {
@@ -353,6 +375,7 @@ func (m *Manager) Status(ctx context.Context, projectPath string) (Status, error
 	return result, nil
 }
 
+// Config returns the enabled plugin's config, or nil when that plugin is disabled.
 func (m *Manager) Config(ctx context.Context, projectPath, id string) (json.RawMessage, error) {
 	path, unlock, err := m.lockProject(ctx, projectPath)
 	if err != nil {
@@ -369,6 +392,8 @@ func (m *Manager) Config(ctx context.Context, projectPath, id string) (json.RawM
 	return cloneRaw(project.Enabled[id]), nil
 }
 
+// MarkBuilt clears pending-build state after up and all required container hooks
+// have succeeded.
 func (m *Manager) MarkBuilt(ctx context.Context, projectPath string) error {
 	path, unlock, err := m.lockProject(ctx, projectPath)
 	if err != nil {
@@ -394,6 +419,8 @@ func (m *Manager) MarkBuilt(ctx context.Context, projectPath string) error {
 	})
 }
 
+// RemoveProject cleans enabled or residual plugin state before unregistering the
+// project. A failed cleanup leaves the registration and retry data in place.
 func (m *Manager) RemoveProject(ctx context.Context, projectPath string) error {
 	path, unlock, err := m.lockProject(ctx, projectPath)
 	if err != nil {
@@ -445,6 +472,8 @@ func projectRegistered(path string) (bool, error) {
 	return false, nil
 }
 
+// Serve runs an enabled plugin's optional host service. It holds only the short
+// global config lock while loading plugin data, never the project operation lock.
 func (m *Manager) Serve(ctx context.Context, projectPath, id string) error {
 	path, err := common.NormalizePath(projectPath)
 	if err != nil {
