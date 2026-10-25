@@ -69,6 +69,14 @@ dch help                  # Show command help
 }
 ```
 
+### Project plugins
+
+Each project has its own plugin configuration and state. **Project → Plugins** lists registered plugins and renders their configuration fields. The manager dispatches Host and Container lifecycle hooks, records state, and reports whether a container needs to be recreated. Plugins that change only host resources can leave container recreation unnecessary.
+
+Built-in plugins implement `internal/plugins.Plugin` in their own subdirectory and are registered in `main.go`. `Definition` provides the configuration fields; validation, lifecycle work, and status belong to the implementation. Container hooks run through the provided executor using `devcontainer exec`. Plugins can also implement the optional `HostService` interface when they need a persistent host process. The generic manager and console do not require GitHub, systemd, or a Unix Socket.
+
+The first implementation is in `internal/plugins/githubapp/`. Adding another built-in plugin requires its implementation and registration, without editing the manager or adding plugin-specific console branches. External plugin downloads and dynamic loading are not supported.
+
 ### GitHub App plugin
 
 The built-in GitHub App plugin is Linux-only and gives one project access to one selected GitHub repository. It requires local Docker, a systemd user service, `pass`, and a GPG agent on the host. Create and install the GitHub App, then store its RSA private key in the host's `pass` store. The key entry must be readable by the host user running the dch systemd user service.
@@ -87,7 +95,7 @@ The container needs Git 2.30 or newer, GitHub CLI (`gh`), curl, and POSIX `sh`. 
 
 Any container process that can access the socket can request that project's short-lived token, and Docker administrators can access the mount. Use the plugin only with containers you trust.
 
-After enabling, Build the project to apply the mount and initialize the Git helper. Configuration changes and disabling the plugin also mark an existing container as needing Build. dch does not rebuild automatically. Start and Connect are blocked for an existing container until Build succeeds. Disabling stops the host service and removes its runtime files immediately; removing a project also disables its plugin before unregistering it.
+After enabling, Build the project to recreate the container, apply the mount, and initialize the Git helper. This does not force an image rebuild; image building follows the devcontainer configuration and cache. Configuration changes and disabling the plugin also mark an existing container as needing Build. dch does not rebuild automatically. Start and Connect are blocked for an existing container until Build succeeds. Disabling stops the host service and removes its runtime files immediately; removing a project also disables its plugin before unregistering it.
 
 The systemd user service stays active when dch closes or the container stops. Tokens are kept in host memory only. The service reuses a token while it has more than five minutes left and refreshes it on the next credential request when five minutes or less remain. It does not write token files or run a refresh timer.
 
