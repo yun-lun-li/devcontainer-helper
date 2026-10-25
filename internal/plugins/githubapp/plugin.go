@@ -179,9 +179,6 @@ func (p *Plugin) commitCandidate(ctx context.Context, host plugins.HostContext, 
 		} else if snapshotErr != nil {
 			return snapshotErr
 		}
-		if old, decodeErr := decodeConfig(host.PreviousConfig); decodeErr == nil && old.ClientID == cfg.ClientID && missing {
-			return fmt.Errorf("existing project credential could not be read; authorization was not changed")
-		}
 		return store.Write(ctx, tokens)
 	})
 	if err != nil {
