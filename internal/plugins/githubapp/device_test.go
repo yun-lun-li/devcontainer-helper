@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -61,6 +62,30 @@ func TestConfigureDiscoveryUsesTwoDeviceFlowsAndRequiresSameUser(t *testing.T) {
 	}
 }
 
+func TestConfigureStopsDiscoveryWhenUserDeclinesAccountBeforeRepositoryListing(t *testing.T) {
+	project := gitProject(t, false)
+	fixture := newOAuthFixture(t, []int64{9001})
+	marker := filepath.Join(t.TempDir(), "pass-writes")
+	pass := filepath.Join(t.TempDir(), "pass")
+	if err := os.WriteFile(pass, []byte("#!/bin/sh\nprintf called > "+marker+"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ui := &fakeInteraction{selected: "77", denyAt: 2}
+	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com", PassPath: pass}
+	if _, err := plugin.Configure(context.Background(), configureContext(project), ui); err == nil || !strings.Contains(err.Error(), "cancelled") {
+		t.Fatalf("Configure() error = %v", err)
+	}
+	if fixture.repositoryListCalls != 0 {
+		t.Fatalf("repository listing calls = %d", fixture.repositoryListCalls)
+	}
+	if fixture.deviceCodes != 1 || len(fixture.polls) != 1 || fixture.polls[0].Get("repository_id") != "" {
+		t.Fatalf("device codes=%d polls=%#v", fixture.deviceCodes, fixture.polls)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("pass was invoked before account confirmation: %v", err)
+	}
+}
+
 func TestConfigureRejectsAccountChangeAfterDiscovery(t *testing.T) {
 	project := gitProject(t, false)
 	fixture := newOAuthFixture(t, []int64{9001, 9002})
@@ -106,6 +131,7 @@ func assertPreparedUserBinding(t *testing.T, raw json.RawMessage, project string
 type fakeInteraction struct {
 	selected string
 	confirms int
+	denyAt   int
 	opened   int
 }
 
@@ -115,16 +141,17 @@ func (f *fakeInteraction) Select(_ context.Context, _ string, _ []plugins.Choice
 }
 func (f *fakeInteraction) Confirm(context.Context, string, string) (bool, error) {
 	f.confirms++
-	return true, nil
+	return f.confirms != f.denyAt, nil
 }
 func (f *fakeInteraction) OpenBrowser(context.Context, string) error { f.opened++; return nil }
 
 type oauthFixture struct {
-	client         *http.Client
-	deviceCodes    int
-	deviceRequests []url.Values
-	polls          []url.Values
-	userIDs        []int64
+	client              *http.Client
+	deviceCodes         int
+	deviceRequests      []url.Values
+	polls               []url.Values
+	userIDs             []int64
+	repositoryListCalls int
 }
 
 func newOAuthFixture(t *testing.T, userIDs []int64) *oauthFixture {
@@ -156,14 +183,13 @@ func (f *oauthFixture) handle(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"id":77,"full_name":"octo/repo"}`)
 	case r.URL.Path == "/user":
 		id := int64(9001)
-		if len(f.polls) > 1 {
-			id = f.userIDs[1]
-		}
-		if len(f.polls) == 1 && f.deviceCodes == 1 && len(f.userIDs) > 0 {
-			id = f.userIDs[0]
+		pollIndex := len(f.polls) - 1
+		if pollIndex >= 0 && pollIndex < len(f.userIDs) {
+			id = f.userIDs[pollIndex]
 		}
 		_, _ = fmt.Fprintf(w, `{"id":%d,"login":"octo-user"}`, id)
 	case r.URL.Path == "/user/installations":
+		f.repositoryListCalls++
 		_, _ = io.WriteString(w, `{"total_count":1,"installations":[{"id":3}]}`)
 	case r.URL.Path == "/user/installations/3/repositories":
 		_, _ = io.WriteString(w, `{"total_count":1,"repositories":[{"id":77,"full_name":"octo/repo"}]}`)

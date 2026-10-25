@@ -285,6 +285,9 @@ func (p *Plugin) discoverRepository(ctx context.Context, clientID, remoteName st
 	if err != nil {
 		return repositoryResolution{}, err
 	}
+	if err := confirmDiscoveryUser(ctx, ui, discoveryUser); err != nil {
+		return repositoryResolution{}, err
+	}
 	repos, err := ListAccessibleRepositories(ctx, pair.Token, p.repositoryOptions())
 	if err != nil {
 		return repositoryResolution{}, fmt.Errorf("could not completely verify repositories available to this account")
