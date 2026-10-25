@@ -1,59 +1,118 @@
 ---
 title: Project Plugins 最終 Review
-subtitle: github-app · hard dev-flow · 待使用者最終核准
+subtitle: 通用 plugin 架構與 github-app · 待使用者最終核准
 lang: zh-Hant
 template: doc
 theme: shadcn
-source: 34b3414 → 6f092a6
+source: 34b3414 → 9cc1f5f
 ---
 
 ## A 本次交付
 
-- 每個 Project 可在 Console 啟用內建 GitHub App plugin。
-- Git 與 gh 透過 Host Unix Socket 取得短期 Token。
-- 私鑰留在 Host pass；Token 只存 Host 記憶體。
-- local.d 取代舊 local.json。這是不相容變更。
-- 本輪依新增品質要求，將新增及修改函式複雜度控制在 15 以內。
-- 自動檢查通過；真實 Linux 環境驗收仍未執行。
+- main 註冊完整 GitHub App 實作，並注入 Console 與 CLI。
+- 通用核心只理解 Plugin 契約、通用狀態與 opaque JSON。
+- 新增 plugin 只需實作契約並在 main 註冊。
+- Console 依 metadata 產生欄位、選項與逐 plugin 狀態。
+- Host 與 Container hook 都是 Host Go 程式。
+- Container 指令由注入的 executor 經 devcontainer exec 執行。
+- GitHub 認證、服務、回滾與接線全部移入 plugins/githubapp。
+- 正式 plugin 只有 github-app；兩個不同 fake plugin 只存在測試。
+- local.d 取代舊 local.json。此不相容變更維持原決定。
+- 真實 Linux、Docker、systemd 與 GitHub 驗收仍未執行。
 
 ```callout warn 核准範圍
-本頁有 6 個獨立 review 勾選框。
+本頁有 6 個獨立 review 勾選框，初始均未勾選。
 勾選只用於本頁核對，不儲存狀態。
 全部勾選不會 push 或建立 PR。
 仍需在對話中明確給予最終核准。
 ```
 
-完整版本：`34b3414f2451e2e713a0880d3f533bd48e5b4614` → `6f092a63bbf1951934f163d0a19f291f3ec849d3`。
-
+完整功能版本：`34b3414f2451e2e713a0880d3f533bd48e5b4614` → `9cc1f5f3ded6451752ae4b547dc35fcbe358aa83`。
+架構修訂比較基準：`e1b666a`；最終實作快照：`9cc1f5f`。
 完整實作 diff 排除生成的審查頁與 diff 本身。
 
-[完整實作 diff](2026-10-24-project-plugins-changes.diff) · [已核准規格](2026-10-24-project-plugins-spec.html)
+[完整實作 diff](2026-10-24-project-plugins-changes.diff) · [已核准架構規格](2026-10-24-project-plugins-spec.html)
 
 ## B 架構與變更地圖
 
-```flow LR
-+ G1 local.d -> 合併設定: 排序與 deep merge
-+ G2 plugin manager -> G4 Host Socket: systemd user service
-+ G3 provider -> pass 與 GitHub: JWT 與單一 repo Token
-+ G4 Host Socket -> G3 provider: 按需取得與快取
-+ G5 Git 與 gh adapter -> G4 Host Socket: HTTP over Unix Socket
-+ G6 Console -> G2 plugin manager: 設定與生命週期
-+ G6 Console -> 合併設定: Start Build Connect
-~ 合併設定
+```flow TB
++ main.go -> 通用 Manager: 建立並 Register
++ main.go -> githubapp.New: 建立正式實作
++ main.go -> Console 與 Commands: 注入同一 Manager
++ 通用 Manager -> Plugin interface: 依穩定 ID 排序分派
++ Plugin interface --> githubapp.Plugin: 契約實作
++ 通用 Manager -> common config store: 逐 plugin 狀態與 scoped JSON
++ githubapp.Plugin -> Host 服務與認證: Host hook
++ githubapp.Plugin -> 注入 Executor: Container hook 在 Host 呼叫
++ 注入 Executor -> devcontainer exec: 外部程序
+~ main.go
+- 舊核心 GitHub 專屬協調
+- 舊 Console GitHub 專屬表單
 ```
 
-G1–G6 對應下方功能流程與審查決策。
-G7 是測試；G8 是文件。
-「新增／修改」指群組內包含兩類檔案。
+標記以架構修訂前 `e1b666a` 為基準。
+舊 internal/githubapp 與核心 GitHub 協調已移入具體實作子樹。
+下列目錄樹描述實際完成後的檔案，不是提案。
+
+```tree list
+main.go | 唯一組裝入口：建立、註冊與注入 manager
+internal/
+  plugins/
+    plugin.go | Plugin、HostService、Executor 與資料契約
+    manager.go | registry、排序分派、逐 plugin 狀態與 Project 鎖
+    manager_test.go | 兩個不同 fake plugin 的通用管理行為
+    manager_lifecycle_test.go | 事件、pending、鎖與失敗重試
+    githubapp/
+      plugin.go | metadata、驗證、Host 與 Container hook
+      config.go | GitHub 參數與權限
+      manager.go | GitHub 資源、回滾、systemd 與 ServeHost
+      container_config.go | 本機 Docker、mount、PATH 與 Compose 限制
+      adapter.go | 容器 shell 腳本、Git helper 與 gh wrapper
+      provider.go | Host pass、JWT、GitHub API 與記憶體快取
+      server.go | Host Unix Socket HTTP server
+      runtime.go | Project 專屬私有 runtime 路徑
+  common/
+    config_store.go | opaque JSON、相容解碼與跨 Project 更新鎖
+    devcontainer_config.go | local.d 合併
+    remove_project.go | 註冊清理
+  console/
+    console.go | 接收 manager
+    projects_menu.go | 動作分派與 Project 狀態
+    plugins.go | metadata 驅動的通用表單與選單
+    up.go | Start 鎖內生命週期
+    build.go | Build 確認與鎖內生命週期
+    connect.go | Connect 守門、hook 與 shell 啟動
+    devcontainer.go | 合併驗證、容器 executor 與暫存設定
+    config_preview.go | 合併預覽
+  commands/
+    commands.go | 通用 HostService 入口與 metadata alias
+    register.go | 註冊時協調共享設定寫入
+```
+
+| 模組／檔案 | 責任與依賴 |
+| --- | --- |
+| `main.go` | 唯一同時認識通用 manager 與 githubapp 的組裝入口。建立實例後注入 Console／Commands。 |
+| `internal/plugins/plugin.go` | 公開契約與通用表單描述；不引用具體 GitHub 型別。 |
+| `internal/plugins/manager.go` | 註冊、ID 驗證、Host／Container 分派、scoped store 與待 Build 聯集。 |
+| `internal/common/config_store.go` | RawMessage 儲存與舊 metadata 相容；讀寫使用短期共享設定鎖。 |
+| `internal/plugins/githubapp/plugin.go` | 將 GitHub 實作接上通用事件；它自行提供表單與安全訊息。 |
+| `internal/plugins/githubapp/manager.go` | 完整資源生命週期、所有權摘要、回滾、systemd 與常駐服務。 |
+| `internal/plugins/githubapp/container_config.go` | 所有 GitHub 專屬 Docker 與最終設定限制。 |
+| `internal/plugins/githubapp/provider.go`、`server.go`、`runtime.go` | Host 認證與 Socket 邊界。私鑰不進容器。 |
+| `internal/plugins/githubapp/adapter.go` | 容器端 shell 產物；不包含容器內 dch binary。 |
+| `internal/console/` | 顯示通用 metadata、執行 Project 操作與提供容器 executor。 |
+| `internal/commands/commands.go` | 依 manager 查找 HostService 與 alias；不硬編碼 GitHub ID。 |
+
+所有測試仍與受測 package 並置；完整檔案索引見 C。
 
 ## C 功能流程與審查決策
 
 以函式為單位，從使用者入口追到檔案內函式與後續影響。
-實線標示函式呼叫或明示的外部操作；虛線標示資料、狀態或流程。
-圖中群組是檔案；表格補充函式、型別與腳本責任。
+實線表示呼叫或明示的外部程序操作；虛線表示資料、狀態或流程。
+檔案群組與責任表共同列出實際函式、型別與腳本名稱。
 
-名稱與呼叫關係依實作快照 `6f092a6` 核對。
-本節不顯示原始碼或 diff。
+本節不顯示原始碼、diff 或完整檔案展開控制。
+名稱與呼叫關係依最終快照 `9cc1f5f` 核對。
 
 ### G1 修改：local.d 合併與預覽
 
@@ -88,18 +147,18 @@ group internal/common/devcontainer_config.go: MergedDevcontainerConfig, readJSON
 | `internal/common/devcontainer_config.go` · `MergedDevcontainerConfig` | 讀取 base，再按檔名處理 local.d 第一層正常 `.json` 檔。缺少 local.d 時只用 base。 |
 | 同檔 · `readJSONCObject`、`mergeConfigValues`、`mergeConfigArrays` | 解析 JSONC；object 深合併；array 追加去重；其他值由後片段覆蓋。 |
 | `internal/console/config_preview.go` · `showProjectConfig`、`showConfigPages`、`configPager` | 顯示合併結果。螢幕模式支援分頁，非螢幕模式直接輸出。 |
-| `internal/console/devcontainer.go` · `prepareMergedProjectConfig` | 執行容器操作前也呼叫合併函式。啟用 plugin 時另驗證掛載與 PATH。後續流程見 G6。 |
+| `internal/console/devcontainer.go` · `prepareProjectDevcontainer` | 透過 `mergedProjectConfig` 共用合併結果，再分派所有已啟用 plugin 的驗證。後續流程見 G5。 |
 | `.gitignore` | 忽略本 repository 的 local.d 設定。其他 Project 仍須自行設定忽略規則。 |
 
-變更索引（檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 9cc1f5f；檔案與新版本 hunk 起始行）：
 
+- `.gitignore:3`
 - `internal/common/devcontainer_config.go:3,10,19,104`
 - `internal/console/config_preview.go:18,43`
-- `.gitignore:3`
 
-### G2 新增／修改：Project plugin 管理
+### G2 新增／修改：通用契約、管理與狀態
 
-確認每個 Project 獨立設定與服務。摘要比對保護手改檔；失敗保留可重試狀態。
+確認核心不再理解 GitHub 參數。每個 plugin 只取得自身設定與私有資料；失敗不回滾其他 plugin。
 
 需你 review：是。
 
@@ -107,49 +166,53 @@ group internal/common/devcontainer_config.go: MergedDevcontainerConfig, readJSON
 <label><input type="checkbox" id="check-G2"> 我已確認 G2 的決策與風險</label>
 ```
 
-入口：Project → Plugins → Configure and enable GitHub App。
-Console 收集設定後呼叫 `Manager.Enable`。
+入口：main 建立與註冊實作；Console 啟用時傳入 Project、plugin ID 與 RawMessage。
 
 ```flow TB
+(main) -> NewManager: 呼叫
+(main) -> githubapp.New: 呼叫
+(main) -> Manager.Register: 呼叫
+Manager.Register -> Plugin.Definition: 查驗 ID 與 metadata
 (Console 確認啟用) -> Manager.Enable: 呼叫
-Manager.Enable -> renderFragment: 呼叫
-Manager.Enable -> replaceManagedFragment: 呼叫
-Manager.Enable -> saveEnabledPlugin: 呼叫
-Manager.Enable -> activateEnabledPlugin: 呼叫
-saveEnabledPlugin -> SaveConfig: 呼叫
-activateEnabledPlugin -> runSystemctl: 啟用或重啟服務
-activateEnabledPlugin -> checkReady: 驗證 Socket 與 credential
-activateEnabledPlugin -> enableRollback.run: 失敗時呼叫
-SaveConfig --> ProjectPlugins 與 PluginState: 狀態：摘要與 BuildPending
-group internal/plugins/manager.go: Manager.Enable, renderFragment, activateEnabledPlugin, runSystemctl, checkReady
-group internal/plugins/manager_enable.go: replaceManagedFragment, saveEnabledPlugin, enableRollback.run
-group internal/common/config_store.go: SaveConfig, ProjectPlugins 與 PluginState
+Manager.Enable -> Plugin.ValidateConfig: 呼叫
+Manager.Enable -> Plugin.HandleHost: EventEnable
+Manager.Enable -> commitEnable: hook 成功後呼叫
+commitEnable -> common.UpdateConfig: 呼叫
+common.UpdateConfig --> ProjectPlugins 與 PluginState: 狀態：enabled 與 pending
+group internal/plugins/manager.go: NewManager, Manager.Register, Manager.Enable, commitEnable
+group internal/plugins/plugin.go: Plugin.Definition, Plugin.ValidateConfig, Plugin.HandleHost
+group internal/plugins/githubapp/plugin.go: githubapp.New
+group internal/common/config_store.go: common.UpdateConfig, ProjectPlugins 與 PluginState
 ```
 
 | 檔案／函式或型別 | 責任與後續影響 |
 | --- | --- |
-| `internal/plugins/registry.go` · `Plugin`、`Builtins` | 宣告內建 github-app 資訊；此流程由 Console 直接管理 GitHub App。 |
-| `internal/plugins/manager.go` · `Manager.Enable`、`renderFragment` | 驗證設定並鎖定 config；產生片段與 Project 專屬 runtime 路徑。 |
-| 同檔 · `prepareServiceUnit`、`serviceUnitChange` | 準備 systemd user unit。使用內容摘要拒絕覆蓋手改 unit。 |
-| `internal/plugins/manager_enable.go` · `replaceManagedFragment`、`saveEnabledPlugin` | 拒絕覆蓋未管理或手改片段；儲存設定、檔案摘要與待 Build 狀態。 |
-| 同檔 · `enableRollback`、`ensureRollback` | 啟用失敗時還原檔案與設定。清理失敗則回報錯誤，保留可重試設定。 |
-| `internal/common/config_store.go` · `Config`、`ProjectPlugins`、`PluginState`、`LoadConfig`、`SaveConfig` | 用正規化 Project 路徑分開儲存啟用設定與管理狀態；原子替換 config。 |
-| `internal/plugins/manager.go` · `Manager.Ensure`、`Manager.Status`、`Manager.MarkBuilt` | `Ensure` 修復已啟用服務；停用時直接返回。Status 回報狀態；MarkBuilt 清除待 Build。 |
-| 同檔 · `Manager.Disable`、`ownedUnitPath`、`removePluginFiles` | 驗證所有權後停止服務、刪除產物；成功才停用設定並標記待 Build。 |
+| `internal/plugins/plugin.go` · `Plugin` | Definition、ValidateConfig、HandleHost、HandleContainer、ValidateContainerConfig、Status 構成實際 Go interface。 |
+| 同檔 · `Definition`、`Field`、`Choice` | 定義穩定 ID、顯示訊息、文字與選項欄位；表單屬於實作 metadata。 |
+| 同檔 · `HostContext`、`ContainerContext`、`ScopedStore`、`Result` | hook 只接收自身 config/state；Result 明確回報 NeedsBuild。ContainerContext 額外取得 Executor。 |
+| `internal/plugins/manager.go` · `Manager.Register`、`validateAliases` | 拒絕空白／重複 ID、重複 alias，以及未實作 HostService 卻宣告 alias。 |
+| 同檔 · `loadProject`、`validateIDs` | enabled 與殘留 state 的未知 ID 在副作用前報錯。 |
+| 同檔 · `Manager.Prepare`、`Manager.HandleContainer`、`sortedEnabled` | 按 ID 排序，遇錯即停；前項已成功的獨立成果保留。 |
+| 同檔 · `Manager.Enable`、`commitEnable`、`commitDisable`、`commitHookResult` | 合併 hook 結果與通用 pending；不比較設定 fingerprint。當前 plugin 自行回復未完成作業。 |
+| 同檔 · `scopedStore.SaveConfig`、`scopedStore.SaveState` | 能提前儲存自身記錄供 Host 服務讀取；無法透過此能力覆寫其他 plugin。 |
+| 同檔 · `Manager.WithProjectOperation`、`lockProject` | 同 Project 跨程序互斥；巢狀 manager 呼叫沿用 operation context。結束後 context 失效。 |
+| `internal/common/config_store.go` · `ProjectPlugins`、`PluginState` | enabled 使用 RawMessage；通用 BuildPending 與 plugin 私有 Data 分開保存。 |
+| 同檔 · `PluginState.UnmarshalJSON` | 舊 build_pending 保留；片段摘要、unit 摘要與路徑搬入 opaque Data，供 GitHub 自行解碼。 |
+| 同檔 · `ReadConfig`、`UpdateConfig`、`lockConfigFile` | 短期共享鎖避免不同 Project 的 JSON 更新互相覆蓋。 |
+| `internal/plugins/manager.go` · `Manager.Status`、`Manager.MarkBuilt` | Project pending 是各 plugin 聯集；成功重建後清除 pending，必要私有資料仍保留。 |
 
-已移除未使用的 `BuildFingerprint` 欄位與計算。
-待 Build 判定仍使用 `BuildPending`；片段與 unit 摘要保護保持不變。
+ScopedStore 是內建 Go plugin 的責任邊界，不是惡意程式 sandbox。
+停用或移除也清理殘留 Data；清理失敗保留可重試記錄。
+`PluginStatus` 使用通用 Message；ServiceActive 不再是核心必要欄位。
 
-`Enable` 也呼叫 `WriteAdapterScripts` 與 `prepareServiceUnit`。
-`checkReady` 呼叫 `githubapp.CheckCredential`，實際驗證 Token 可取得。
-這些跨模組呼叫分別連到 G4 與 G5。
+變更索引（34b3414 → 9cc1f5f；檔案與新版本 hunk 起始行）：
 
-變更索引（檔案與新版本 hunk 起始行）：
-
-- `internal/plugins/manager_enable.go:1`
-- `internal/plugins/registry.go:1`
+- `internal/commands/register.go:19`
+- `internal/common/config_store.go:7,95,154`
+- `internal/common/remove_project.go:2`
 - `internal/plugins/manager.go:1`
-- `internal/common/config_store.go:7`
+- `internal/plugins/plugin.go:1`
+- `main.go:6`
 
 ### G3 新增：GitHub App provider
 
@@ -175,26 +238,26 @@ Provider.mint -> Provider.createAppJWT: 呼叫
 Provider.mint -> Provider.verifyRepositoryInstallation: 呼叫
 Provider.mint -> Provider.requestInstallationToken: installation 符合才呼叫
 Provider.refreshToken --> Provider 與 refreshCall: 狀態：快取與等待者結果
-group internal/githubapp/provider.go: Provider.Token, awaitRefresh, Provider.refreshToken, Provider.mint, Provider.loadPrivateKey, Provider.createAppJWT, Provider.verifyRepositoryInstallation, Provider.requestInstallationToken, Provider 與 refreshCall
+group internal/plugins/githubapp/provider.go: Provider.Token, awaitRefresh, Provider.refreshToken, Provider.mint, Provider.loadPrivateKey, Provider.createAppJWT, Provider.verifyRepositoryInstallation, Provider.requestInstallationToken, Provider 與 refreshCall
 ```
 
 | 檔案／函式或型別 | 責任與後續影響 |
 | --- | --- |
-| `internal/githubapp/config.go` · `Config`、`Config.Validate` | 限制正整數 ID、單一 owner/repository、contents 與 pull_requests 的 read/write。 |
-| `internal/githubapp/provider.go` · `Provider`、`ProviderOptions`、`NewProvider` | 保存設定、逾時、HTTP client 與時鐘；停用 HTTP redirect。 |
+| `internal/plugins/githubapp/config.go` · `Config`、`Config.Validate` | 限制正整數 ID、單一 owner/repository、contents 與 pull_requests 的 read/write。 |
+| `internal/plugins/githubapp/provider.go` · `Provider`、`ProviderOptions`、`NewProvider` | 保存設定、逾時、HTTP client 與時鐘；停用 HTTP redirect。 |
 | 同檔 · `Provider.Token`、`refreshCall`、`awaitRefresh`、`Provider.refreshToken` | mutex 同時保護快取判定與更新權；並行請求共用結果。更新失敗可由下次請求重試。 |
 | 同檔 · `Provider.loadPrivateKey`、`securePassEnvironment`、`parsePrivateKey` | 非互動執行 pass；限制輸出大小；解析 Host RSA 私鑰。 |
 | 同檔 · `Provider.createAppJWT`、`Provider.verifyRepositoryInstallation` | 簽發 App JWT；查詢該 repo 的 installation，必須符合設定 ID。 |
 | 同檔 · `Provider.requestInstallationToken` | 只申請該 repo 與選定權限；驗證 Token 格式及有效期。結果只留 Host 記憶體。 |
 
-變更索引（檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 9cc1f5f；檔案與新版本 hunk 起始行）：
 
-- `internal/githubapp/config.go:1`
-- `internal/githubapp/provider.go:1`
+- `internal/plugins/githubapp/config.go:1`
+- `internal/plugins/githubapp/provider.go:1`
 
-### G4 新增：Host Unix Socket
+### G4 新增／修改：GitHub Host 服務、Socket 與相容入口
 
-確認信任邊界：可連 Socket 的程序可取 Token。目錄 0700、Socket 0600；不開 TCP。
+確認 systemd 僅由 GitHub 實作管理。舊 unit alias 仍可用；能連 Socket 的程序仍可取得短期 Token。
 
 需你 review：是。
 
@@ -202,45 +265,52 @@ group internal/githubapp/provider.go: Provider.Token, awaitRefresh, Provider.ref
 <label><input type="checkbox" id="check-G4"> 我已確認 G4 的決策與風險</label>
 ```
 
-入口：systemd user unit 啟動 `dch _github-app-serve --project`。
-這是獨立 Host 程序，不依賴 Console 保持開啟。
+入口：GitHub Host hook 產生 systemd user unit。
+unit 啟動同一份 Host dch 的通用 `_plugin-serve` 入口。
 
 ```flow TB
-(systemd user unit) -> runGitHubAppServe: 程序入口經 CLI dispatch
-runGitHubAppServe -> Manager.ServeProject: 呼叫
-Manager.ServeProject -> RuntimeDir: 呼叫
-Manager.ServeProject -> Serve: 呼叫
+(systemd user unit) -> runPluginService: Host CLI dispatch
+runPluginService -> parsePluginServeArgs: 呼叫
+parsePluginServeArgs -> Manager.ServiceAlias: 舊入口查 metadata
+runPluginService -> Manager.Serve: 呼叫
+Manager.Serve -> Plugin.ServeHost: HostService 分派
+Plugin.ServeHost -> RuntimeDir: 呼叫
+Plugin.ServeHost -> Serve: 呼叫
 Serve -> prepareCredentialSocket: 呼叫
-prepareCredentialSocket -> listenCredentialSocket: 驗證與鎖定後呼叫
-listenCredentialSocket -> NewProvider: 呼叫
-Serve -> credentialMux: 註冊 handlers
+Serve -> credentialMux: 註冊 HTTP handlers
 Serve -> serveUntilCancelled: 呼叫
-credentialMux --> healthHandler 與 credentialHandler: HTTP 路由
-group internal/commands/commands.go: runGitHubAppServe
-group internal/plugins/manager.go: Manager.ServeProject
-group internal/githubapp/runtime.go: RuntimeDir
-group internal/githubapp/server.go: Serve, prepareCredentialSocket, listenCredentialSocket, credentialMux, serveUntilCancelled, healthHandler 與 credentialHandler
-group internal/githubapp/provider.go: NewProvider
+group internal/commands/commands.go: runPluginService, parsePluginServeArgs
+group internal/plugins/manager.go: Manager.ServiceAlias, Manager.Serve
+group internal/plugins/githubapp/manager.go: Plugin.ServeHost
+group internal/plugins/githubapp/runtime.go: RuntimeDir
+group internal/plugins/githubapp/server.go: Serve, prepareCredentialSocket, credentialMux, serveUntilCancelled
 ```
 
-| 檔案／函式 | 責任與後續影響 |
+| 檔案／函式或型別 | 責任與後續影響 |
 | --- | --- |
-| `internal/commands/commands.go` · `runCommand`、`runGitHubAppServe` | 分派內部命令；接收 SIGTERM／interrupt 並取消服務 context。 |
-| `internal/plugins/manager.go` · `Manager.ServeProject` | 只讀取該 Project 已啟用設定；呼叫 RuntimeDir 與 Serve。 |
-| `internal/githubapp/runtime.go` · `RuntimeDir`、`ensurePrivateDir`、`ownedByCurrentUser` | 驗證 XDG_RUNTIME_DIR 所有權；由 Project 路徑雜湊分隔 0700 目錄。 |
-| `internal/githubapp/server.go` · `prepareCredentialSocket`、`acquireServerLock`、`listenCredentialSocket` | 驗證父目錄、排除重複 server、清除舊 Socket；建立 0600 Unix Socket。 |
-| 同檔 · `credentialMux`、`healthHandler`、`credentialHandler` | `/health` 只回狀態；`/credential` 呼叫 Provider.Token，回應帶 no-store。只接受 GET。 |
-| 同檔 · `serveUntilCancelled` | 執行 HTTP server；context 取消時關閉 server 並移除 Socket。 |
-| 同檔 · `CheckCredential`、`unixHTTPClient` | Manager 的啟用驗證走 Unix Socket，檢查 credential 回應且不輸出 Token。 |
+| `internal/plugins/githubapp/plugin.go` · `Plugin.Definition` | 宣告 `_github-app-serve` alias。通用 CLI 不保存此 GitHub 常數。 |
+| `internal/commands/commands.go` · `parsePluginServeArgs`、`runPluginService` | 支援 `_plugin-serve --plugin ID --project PATH`；alias 由 registry 查找。接收訊號並取消服務。 |
+| `internal/plugins/manager.go` · `Manager.Serve` | 確認註冊、可選服務能力及已啟用記錄；讀設定後不持有 Project 操作鎖。 |
+| `internal/plugins/githubapp/manager.go` · `Plugin.enable`、`prepareEnableResources` | 準備片段、adapter、unit；先經 ScopedStore 保存自身設定，再啟動服務。 |
+| 同檔 · `ownershipState`、`decodeState`、`encodeState` | 自行解碼片段摘要、unit 摘要與路徑。核心不解析這些 GitHub 私有欄位。 |
+| 同檔 · `serviceUnitContent`、`prepareServiceUnit`、`checkReady` | 新 unit 使用通用入口；保留原 unit 路徑與摘要保護。啟動後實際請求 credential。 |
+| 同檔 · `Plugin.rollbackEnable`、`Plugin.rollbackEnsure`、`restoreScoped` | 回復自身檔案與 scoped 設定；失敗保留重試資料，不宣告清理完成。 |
+| 同檔 · `Plugin.disable`、`removePluginFiles` | 先停服務，再依摘要清理 unit、片段與 runtime。成功才讓 manager 移除 enabled。 |
+| `internal/plugins/githubapp/runtime.go` · `RuntimeDir`、`ensurePrivateDir` | 每 Project 專屬私有目錄 0700；拒絕 symlink 與錯誤所有權。 |
+| `internal/plugins/githubapp/server.go` · `prepareCredentialSocket`、`listenCredentialSocket`、`acquireServerLock` | 排除重複 server、處理舊 Socket、建立 0600 Unix Socket；不開 TCP。 |
+| 同檔 · `healthHandler`、`credentialHandler`、`CheckCredential` | health 不取 Token；credential 呼叫 Provider.Token 並帶 no-store；啟用驗證不輸出 Token。 |
 
-變更索引（檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 9cc1f5f；檔案與新版本 hunk 起始行）：
 
-- `internal/githubapp/runtime.go:1`
-- `internal/githubapp/server.go:1`
+- `internal/commands/commands.go:1,134`
+- `internal/plugins/githubapp/manager.go:1`
+- `internal/plugins/githubapp/plugin.go:1`
+- `internal/plugins/githubapp/runtime.go:1`
+- `internal/plugins/githubapp/server.go:1`
 
-### G5 新增：Git／gh 容器接線
+### G5 新增／修改：Container hook、合併驗證與 executor
 
-確認唯讀掛載整個 runtime 目錄。HTTPS github.com 使用 helper；gh 子程序取得 GH_TOKEN。
+確認 Container hook 的 Go 方法仍在 Host。它只能透過注入 executor 執行容器指令；GitHub 限制由實作驗證。
 
 需你 review：是。
 
@@ -248,45 +318,49 @@ group internal/githubapp/provider.go: NewProvider
 <label><input type="checkbox" id="check-G5"> 我已確認 G5 的決策與風險</label>
 ```
 
-入口有兩段：Manager 產生接線檔案；Start、Build、Connect 安裝容器端設定。
-腳本名稱是 shell 產物，不是 Go 函式。
+入口：Start／Build 的 up 成功後，或 Connect 開啟 shell 前。
+Manager 分派 Container hook；GitHub hook 請 executor 執行安裝腳本。
 
 ```flow TB
-(Manager 準備接線) -> AdapterFragment: renderFragment 呼叫
-(Manager 準備接線) -> WriteAdapterScripts: Enable 或 Ensure 流程呼叫
-AdapterFragment --> local.d 片段: 資料：唯讀 mount 與 PATH
-WriteAdapterScripts -> adapterScripts: 呼叫
-adapterScripts --> Git helper 與 gh wrapper: 資料：腳本內容
-(Start Build Connect) -> runAdapterInstall: 呼叫
-runAdapterInstall -> AdapterInstallCommand: 呼叫
-runAdapterInstall -> invokeProjectDevcontainerQuiet: 容器 exec
-AdapterInstallCommand --> 容器安裝腳本: 資料：shell 命令
-容器安裝腳本 --> Git 與 gh 使用 Socket: 設定 Git include 與 PATH
-group internal/githubapp/adapter.go: AdapterFragment, WriteAdapterScripts, adapterScripts, AdapterInstallCommand
-group internal/console/connect.go: runAdapterInstall
-group internal/console/devcontainer.go: invokeProjectDevcontainerQuiet
+(Host Console 生命週期) -> Manager.HandleContainer: 呼叫
+Manager.HandleContainer -> Plugin.HandleContainer: Host Go 方法
+Plugin.HandleContainer -> projectExecutor.Exec: 注入 Executor 呼叫
+projectExecutor.Exec -> prepareProjectDevcontainer: Host 呼叫
+prepareProjectDevcontainer -> mergedProjectConfig: 呼叫
+prepareProjectDevcontainer -> validateMergedProjectConfig: 呼叫
+validateMergedProjectConfig -> Manager.ValidateMergedConfig: 呼叫
+Manager.ValidateMergedConfig -> Plugin.ValidateContainerConfig: 逐 plugin 呼叫
+projectExecutor.Exec -> devcontainer exec: Host 啟動外部程序
+devcontainer exec --> 容器 shell 安裝 Git helper 與 gh: 目標是 Container
+group internal/plugins/manager.go: Manager.HandleContainer, Manager.ValidateMergedConfig
+group internal/plugins/githubapp/plugin.go: Plugin.HandleContainer, Plugin.ValidateContainerConfig
+group internal/console/devcontainer.go: projectExecutor.Exec, prepareProjectDevcontainer, mergedProjectConfig, validateMergedProjectConfig
 ```
 
-| 檔案／函式或產物 | 責任與後續影響 |
+| 檔案／函式或型別 | 責任與後續影響 |
 | --- | --- |
-| `internal/githubapp/adapter.go` · `AdapterFragment` | 輸出整個 runtime 目錄的唯讀 mount，並將 bin 放入 remoteEnv PATH。 |
-| 同檔 · `WriteAdapterScripts`、`adapterScripts`、`writePrivateFile` | 驗證 runtime 所有權與權限；原子寫入非機密腳本及 gitconfig。 |
-| 同檔 · `AdapterInstallCommand`、`adapterInstallScript` | 回傳 shell 安裝命令；檢查工具與 Socket health；加入 Git include，不改既有 lifecycle hooks。 |
-| 同檔 · `gitCredentialScript` | 只對 get、HTTPS、github.com 取 `/credential`；其他操作或 Host 不輸出憑證。 |
-| 同檔 · `adapterGitConfig` | 讓 HTTPS github.com 使用專屬 helper；保留其他 Host 原有 helper。 |
-| 同檔 · `ghWrapperScript` | 每次呼叫都向 Socket 取憑證；只對真正 gh 子程序設定 GH_TOKEN；保留參數與退出狀態。 |
-| `internal/console/connect.go` · `runAdapterInstall` | 以 devcontainer exec 執行安裝命令；服務或 UID 驗證失敗時阻止後續操作。 |
+| `internal/plugins/plugin.go` · `Executor.Exec`、`ContainerContext` | 接收 context 與參數陣列，回傳 stdout／錯誤；契約不要求容器安裝 dch。 |
+| `internal/console/devcontainer.go` · `projectExecutor.Exec` | Host 以 devcontainer exec 執行原始參數；沿用合併設定、remoteUser、remoteEnv。stdout 與診斷分開擷取並限制大小。 |
+| 同檔 · `prepareProjectDevcontainer`、`mergedProjectConfig`、`validateMergedProjectConfig` | 共用合併、逐 plugin 驗證、路徑重定位、暫存 config 與 id-label；呼叫端負責清理。 |
+| `internal/plugins/githubapp/plugin.go` · `Plugin.ValidateContainerConfig` | 自行拒絕 Compose，取得 runtime 路徑後驗證自身必要設定。 |
+| `internal/plugins/githubapp/container_config.go` · `validateContainerConfig`、`validateAdapterMounts`、`hasAdapterPath` | 確認精確 mount、PATH，拒絕缺失或重疊掛載。這些限制不在通用核心。 |
+| 同檔 · `requireLocalDocker` | GitHub Host 的 `enable`／`ensure` 確認本機 Unix Docker endpoint；其他 plugin 不必採用此限制。 |
+| `internal/plugins/githubapp/plugin.go` · `Plugin.HandleContainer` | Start／Build／Connect 呼叫注入 Executor，參數由 AdapterInstallCommand 提供。 |
+| `internal/plugins/githubapp/adapter.go` · `AdapterFragment`、`WriteAdapterScripts`、`AdapterInstallCommand` | 產生唯讀 runtime mount、PATH、私有腳本與可重複安裝的 shell 命令。 |
+| 同檔 · `gitCredentialScript`、`adapterGitConfig`、`ghWrapperScript` | 容器內 shell 產物。Git 只回應 HTTPS github.com；gh 每次取 Token，只設定子程序 GH_TOKEN。 |
 
-後續：容器內 Git／gh 透過 Unix Socket 呼叫 G4，再由 G3 提供短期 Token。
-掛載目錄保留相同位置，服務重啟後可看到替換的 Socket。
+容器只需要 Git、gh、curl 與 POSIX shell，不複製 dch binary。
+接線保留既有 lifecycle hooks；腳本從固定 Socket 取得短期 Token。
 
-變更索引（檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 9cc1f5f；檔案與新版本 hunk 起始行）：
 
-- `internal/githubapp/adapter.go:1`
+- `internal/console/devcontainer.go:1,11,59,95`
+- `internal/plugins/githubapp/adapter.go:1`
+- `internal/plugins/githubapp/container_config.go:1`
 
-### G6 新增／修改：Console 與執行生命週期
+### G6 新增／修改：動態 Console、生命週期與移除
 
-確認既有容器待 Build 時阻擋 Start／Connect。Build 保留移除確認；移除前清理服務。
+確認 Project 操作跨程序互斥。既有容器待 Build 時阻擋 Start／Connect；成功 up 與必要 hook 完成才清除 pending。
 
 需你 review：是。
 
@@ -294,150 +368,193 @@ group internal/console/devcontainer.go: invokeProjectDevcontainerQuiet
 <label><input type="checkbox" id="check-G6"> 我已確認 G6 的決策與風險</label>
 ```
 
-入口：Project 選單選 Plugins、Start、Build、Connect 或 Remove Project。
-`runProjectAction` 分派前四項；移除由 `performProjectMenuAction` 處理。
+入口：Project → Plugins。Console 只理解 Definition 與通用狀態。
 
 ```flow TB
-(Project 選 Plugins) -> runProjectAction: 使用者操作
-runProjectAction -> pluginsMenu: 呼叫
-pluginsMenu -> choosePluginAction: 顯示 Status
-pluginsMenu -> handlePluginAction: 呼叫
-handlePluginAction -> enableProjectPlugin: 選啟用
-enableProjectPlugin -> promptGitHubAppConfig: 呼叫
+(Project 選 Plugins) -> pluginsMenu: 選單分派
+pluginsMenu -> Manager.Definitions: 取得欄位描述
+pluginsMenu -> Manager.Statuses: 取得逐 plugin 狀態
+pluginsMenu -> configurePlugin: 呼叫
+configurePlugin -> enableProjectPlugin: 選設定與啟用
+enableProjectPlugin -> promptPluginConfig: 通用 renderer
+enableProjectPlugin -> confirmPluginEnable: 確認授權範圍
+confirmPluginEnable -> pluginConfirmationSummary: 依 Field.Confirm 產生摘要
 enableProjectPlugin -> Manager.Enable: 確認後呼叫
-handlePluginAction -> Manager.Disable: 選停用
-group internal/console/projects_menu.go: runProjectAction
-group internal/console/plugins.go: pluginsMenu, choosePluginAction, handlePluginAction, enableProjectPlugin, promptGitHubAppConfig
-group internal/plugins/manager.go: Manager.Enable, Manager.Disable
+configurePlugin -> disableProjectPlugin: 選停用
+disableProjectPlugin -> Manager.Disable: 呼叫
+group internal/console/plugins.go: pluginsMenu, configurePlugin, enableProjectPlugin, promptPluginConfig, confirmPluginEnable, pluginConfirmationSummary, disableProjectPlugin
+group internal/plugins/manager.go: Manager.Definitions, Manager.Statuses, Manager.Enable, Manager.Disable
 ```
 
-容器執行流程分為守門、設定準備及成功後收尾。
-圖中虛線表示流程或狀態，不代表直接呼叫。
+Start／Build 在同 Project 操作鎖內完成 Host hook、容器 up 與 Container hook。
+任何錯誤都停止後續步驟，保持必要 pending。
 
 ```flow TB
-(Start Build Connect) --> startProject buildProject connectProject: 選單分派
-startProject buildProject connectProject --> 狀態守門與確認: Status 與 BuildPending
-startProject buildProject connectProject -> prepareProjectPlugin: 啟用 plugin 時呼叫
-prepareProjectPlugin -> requireLocalDocker: 呼叫
-prepareProjectPlugin -> Manager.Ensure: 呼叫
-startProject buildProject connectProject -> invokeProjectDevcontainer: 呼叫
-invokeProjectDevcontainer -> invokeProjectDevcontainerMode: 呼叫
-invokeProjectDevcontainerMode -> prepareMergedProjectConfig: 呼叫
-prepareMergedProjectConfig -> MergedDevcontainerConfig: 呼叫
-prepareMergedProjectConfig -> validateGitHubAppConfig: 啟用 plugin 時呼叫
-invokeProjectDevcontainerMode --> devcontainer up 或 exec: 轉換設定後執行
-group internal/console/up.go build.go connect.go: startProject buildProject connectProject
-group internal/console/plugin_integration.go: prepareProjectPlugin, requireLocalDocker, validateGitHubAppConfig
-group internal/console/devcontainer.go: invokeProjectDevcontainer, invokeProjectDevcontainerMode, prepareMergedProjectConfig
-group internal/common/devcontainer_config.go: MergedDevcontainerConfig
-group internal/plugins/manager.go: Manager.Ensure
+(Start 或 Build) -> Manager.WithProjectOperation: 入口取得 Project 鎖
+Manager.WithProjectOperation --> startProjectOperation 或 buildProjectOperation: callback 分派
+startProjectOperation 或 buildProjectOperation -> Manager.Prepare: Host hook
+startProjectOperation 或 buildProjectOperation -> invokeProjectDevcontainer: up
+startProjectOperation 或 buildProjectOperation -> Manager.HandleContainer: up 成功後
+startProjectOperation 或 buildProjectOperation -> Manager.MarkBuilt: 符合解除條件才呼叫
+group internal/console/up.go build.go: startProjectOperation 或 buildProjectOperation
+group internal/plugins/manager.go: Manager.WithProjectOperation, Manager.Prepare, Manager.HandleContainer, Manager.MarkBuilt
+group internal/console/devcontainer.go: invokeProjectDevcontainer
 ```
-
-`startProject buildProject connectProject` 是圖中三個入口的合併標籤。
-實際函式名稱與各自責任如下。
 
 | 檔案／函式或型別 | 責任與後續影響 |
 | --- | --- |
-| `internal/console/projects_menu.go` · `projectAction`、`projectMenu`、`availableProjectActions` | 顯示 plugin 狀態；既有容器待 Build 時隱藏 Start／Connect。 |
-| `internal/console/plugins.go` · `pluginsMenu`、`promptGitHubAppConfig` | 顯示服務狀態；收集 App ID、installation ID、pass entry、repo、權限並確認。 |
-| `internal/console/up.go` · `startProject`、`hasExistingContainer` | 再次檢查待 Build；成功 up 後安裝 adapter。新建容器成功才 MarkBuilt。 |
-| `internal/console/build.go` · `buildProject`、`confirmRebuild` | 既有容器先確認丟棄 writable-layer 資料；選快取、重建、安裝 adapter；成功才 MarkBuilt。 |
-| `internal/console/connect.go` · `connectProject`、`runAdapterInstall` | 再查待 Build 與 RUNNING；確認服務及安裝 adapter 後，以 devcontainer exec 開啟 shell。 |
-| `internal/console/plugin_integration.go` · `prepareProjectPlugin`、`requireLocalDocker` | 確認 Docker 使用本機 Unix endpoint，再呼叫 `Ensure` 確認 Host 服務。 |
-| 同檔 · `adapterSettings`、`validateGitHubAppConfig`、`requiredAdapterSettings`、`validateAdapterMounts`、`hasAdapterPath` | 禁止 Compose、缺失或重疊掛載、覆蓋 PATH；防止 local.d 破壞必要接線。 |
-| `internal/console/devcontainer.go` · `invokeProjectDevcontainerMode` | 合併後補穩定容器名、轉換相對路徑、寫暫存 config、加入 CLI 參數；完成後清理。 |
-| 同檔 · `prepareMergedProjectConfig`、`withStableContainerName`、`rebaseConfigPaths`、`appendDevcontainerConfigArgs` | 合併驗證、容器名稱、路徑重定位與 config/id-label 參數各由專責函式處理。 |
-
-移除流程在清理成功後才取消註冊。
+| `internal/console/plugins.go` · `pluginsMenu`、`pluginOptions`、`statusFor` | 按 registry 顯示各 plugin 的啟用、待 Build 與安全訊息。 |
+| 同檔 · `promptPluginConfig`、`promptPluginField`、`getPluginField`、`setPluginField` | 渲染文字與選項欄位，處理巢狀 JSON Path；保留既有未建模值。 |
+| 同檔 · `confirmPluginEnable`、`pluginConfirmationSummary`、`pluginChoiceLabel` | 只顯示 Field.Confirm 指定的非秘密欄位；依通用 metadata 顯示 repo 與權限授權摘要。 |
+| `internal/plugins/githubapp/plugin.go` · `Plugin.Definition`、`Plugin.ValidateConfig` | GitHub 欄位、權限與驗證全部由具體實作提供。 |
+| `internal/console/up.go` · `startProject`、`startProjectOperation` | 操作前後查 pending；只有新建容器的 Start 在 up 與所有 hook 成功後 MarkBuilt。 |
+| `internal/console/build.go` · `confirmRebuild`、`buildProject`、`buildProjectOperation` | 保留資料移除確認與快取選項；重建與所有 hook 成功後 MarkBuilt。 |
+| `internal/console/connect.go` · `connectProject`、`prepareProjectConnect` | 鎖內完成 hook、最終設定與 pending 守門後啟動 CLI；解鎖後等待互動 shell。 |
+| `internal/console/projects_menu.go` · `availableProjectActions`、`projectOptions` | 依通用 pending 顯示 Build required；既有容器隱藏 Start／Connect，函式入口仍再次守門。 |
+| `internal/plugins/manager.go` · `Manager.RemoveProject` | 先驗證全部 ID，按 ID 清理 enabled 或殘留 Data；成功後才取消註冊。 |
 
 ```flow TB
-(Project 選 Remove Project) -> performProjectMenuAction: 選單操作
-performProjectMenuAction -> confirmProjectRemoval: 呼叫
-confirmProjectRemoval -> removeProject: 使用者確認後呼叫
-removeProject -> Manager.Disable: 啟用時先清理
-removeProject -> RemoveProjectRegistration: 清理成功才呼叫
-RemoveProjectRegistration -> SaveConfig: 移除註冊與 plugin metadata
-group internal/console/projects_menu.go: performProjectMenuAction, confirmProjectRemoval, removeProject
-group internal/plugins/manager.go: Manager.Disable
-group internal/common/remove_project.go: RemoveProjectRegistration
-group internal/common/config_store.go: SaveConfig
+(Project 選 Remove Project) -> confirmProjectRemoval: 先沿用確認
+confirmProjectRemoval -> removeProject: 確認後呼叫
+removeProject -> Manager.RemoveProject: 取得 Project 鎖並清理
+Manager.RemoveProject -> Plugin.HandleHost: EventDisable，按 ID 排序
+Manager.RemoveProject -> common.RemoveProjectRegistration: 全部清理成功後
+group internal/console/projects_menu.go: confirmProjectRemoval, removeProject
+group internal/plugins/manager.go: Manager.RemoveProject
+group internal/plugins/plugin.go: Plugin.HandleHost
+group internal/common/remove_project.go: common.RemoveProjectRegistration
 ```
 
-變更索引（檔案與新版本 hunk 起始行）：
+Connect 在同一把操作鎖內完成最後守門與 CLI 啟動。
+CLI 成功 Start 後解鎖，再於鎖外等待互動 shell 結束。
+因此 Disable 不會被整段互動 session 阻擋。
 
-- `internal/console/plugins.go:1`
-- `internal/console/plugin_integration.go:1`
-- `internal/console/projects_menu.go:1,17,30,51,225,241`
-- `internal/console/devcontainer.go:1,11,70,103`
-- `internal/console/up.go:1`
-- `internal/console/build.go:1,33`
+```flow TB
+connectProject -> Manager.WithProjectOperation: 取得 Project 鎖
+Manager.WithProjectOperation --> 鎖內匿名 callback: 執行 callback
+鎖內匿名 callback -> prepareProjectConnect: hooks 與驗證
+鎖內匿名 callback -> prepareProjectDevcontainer: 準備最終設定與參數
+鎖內匿名 callback -> rejectPendingConnect: 啟動前最後守門
+鎖內匿名 callback -> startDevcontainerWithCleanup: 呼叫
+startDevcontainerWithCleanup -> cmd.Start: 啟動 Host devcontainer 程序
+Manager.WithProjectOperation --> waitForShell: callback 返回並解鎖後，由 connectProject 呼叫
+waitForShell -> cmd.Wait: 鎖外等待與清理
+ group internal/console/connect.go: connectProject, 鎖內匿名 callback, prepareProjectConnect, rejectPendingConnect, waitForShell
+ group internal/console/devcontainer.go: prepareProjectDevcontainer, startDevcontainerWithCleanup
+ group internal/plugins/manager.go: Manager.WithProjectOperation
+```
+
+`waitForShell` 是函式區域變數，內容由 startDevcontainerWithCleanup 回傳。
+此 closure 執行 cmd.Wait、暫存設定清理與命令錯誤回報。
+Shell 程序不綁定結束後即取消的 operation context。
+
+取消註冊保留工作區與容器；清理失敗保留註冊與重試資料。
+
+變更索引（34b3414 → 9cc1f5f；檔案與新版本 hunk 起始行）：
+
+- `internal/console/build.go:1,16`
 - `internal/console/connect.go:1`
-- `internal/common/remove_project.go:2,24`
-- `internal/commands/commands.go:1,114`
+- `internal/console/console.go:1`
+- `internal/console/plugins.go:1`
+- `internal/console/projects_menu.go:1,17,203,219`
+- `internal/console/up.go:1`
 
-### G7 新增／修改：行為測試
+### G7 新增／修改：通用行為與 GitHub 回歸測試
 
-測試是上述行為的證據。涵蓋假指令、真實暫存 Socket 與 Git plumbing。
+測試驗證契約行為與外部可觀察結果，不建立正式空殼 plugin。
 
 需你 review：否。
 
-測試入口：`go test ./... -count=1`。
-執行範圍包含合併、狀態、回滾、憑證快取、Socket 與容器接線。
+`internal/plugins/manager_test.go` 與 `manager_lifecycle_test.go` 使用兩個不同 fake plugin。
+它們使用不同欄位與私有狀態，驗證排序、隔離、hook、pending 與失敗重試。
 
-回歸函式 `TestEnsureDoesNothingForDisabledPluginWithPersistedState` 位於 `internal/plugins/manager_test.go`。
-它確認停用且保留待 Build 狀態時，`Ensure` 不啟動服務。
-此案例經 red → green；完整驗證結果見 F。
+`internal/console/plugin_executor_test.go` 驗證容器參數、stdout、錯誤與合併設定。
+生命週期測試驗證操作鎖、二次 pending 守門與成功後清除條件。
+GitHub 舊測試已移入 `internal/plugins/githubapp/`，保留認證與 Socket 回歸範圍。
+最終指令、複雜度與 reviewer 結論見 F。
 
-本輪更新 `TestEnableRestartsActiveServiceWhenConfigurationChanges`。
-首次啟用後先 MarkBuilt，再確認修改設定會重新標記待 Build。
-
-變更索引（檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 9cc1f5f；檔案與新版本 hunk 起始行）：
 
 - `internal/commands/plugin_serve_test.go:1`
+- `internal/commands/register_test.go:28,44`
+- `internal/commands/run_test.go:7,17`
 - `internal/common/common_test.go:65`
 - `internal/common/config_store_test.go:1`
 - `internal/common/remove_project_test.go:1`
 - `internal/console/build_plugin_test.go:1`
 - `internal/console/config_preview_test.go:1`
+- `internal/console/connect_lock_test.go:1`
 - `internal/console/devcontainer_plugin_test.go:1`
+- `internal/console/menu_test.go:30`
+- `internal/console/plugin_executor_test.go:1`
 - `internal/console/plugin_integration_test.go:1`
+- `internal/console/plugin_lifecycle_test.go:1`
+- `internal/console/plugin_test_helpers_test.go:1`
 - `internal/console/plugins_test.go:1`
 - `internal/console/projects_menu_test.go:10`
-- `internal/githubapp/adapter_test.go:1`
-- `internal/githubapp/config_test.go:1`
-- `internal/githubapp/provider_test.go:1`
-- `internal/githubapp/server_test.go:1`
+- `internal/plugins/githubapp/adapter_test.go:1`
+- `internal/plugins/githubapp/config_test.go:1`
+- `internal/plugins/githubapp/plugin_contract_test.go:1`
+- `internal/plugins/githubapp/provider_test.go:1`
+- `internal/plugins/githubapp/server_test.go:1`
+- `internal/plugins/manager_lifecycle_test.go:1`
 - `internal/plugins/manager_test.go:1`
 
-### G8 新增／修改：文件與核准規格
+### G8 新增／修改：架構規格、README 與 Git 屬性
 
-README 說明操作、限制與人工驗收。規格 HTML 為已核准規格的呈現產物。
+文件描述已核准架構與實際操作，不替文件虛構函式。
 
 需你 review：否。
 
-這組只有文件與 Git 屬性，沒有函式呼叫流程。
-README 說明 local.d 遷移、Project plugin 操作與 Linux 人工驗收。
-規格 Markdown 與 HTML 保留已核准需求；`.gitattributes` 標記 HTML 產物。
+README 說明 Console 路徑、GitHub 前置條件、local.d 遷移與人工 Linux 驗收。
+規格 Markdown／HTML 包含獨立目錄樹、module／file 職責與 Host／Container 邊界。
+`.gitattributes` 保留審查產物中的字面空白。
 
-變更索引（檔案與新版本 hunk 起始行）：
+變更索引（34b3414 → 9cc1f5f；檔案與新版本 hunk 起始行）：
 
 - `.gitattributes:1`
 - `README.md:5,21,57,68`
-- `specs/2026-10-24-project-plugins-spec.md:1`
 - `specs/2026-10-24-project-plugins-spec.html:1`
+- `specs/2026-10-24-project-plugins-spec.md:1`
+
+### 架構修訂移除舊路徑
+
+下表另以 `e1b666a` → `9cc1f5f` 比較架構修訂。
+行號屬被刪除檔案的原版 hunk 起始行。
+這些舊路徑在原始功能基準 `34b3414` 尚不存在。
+因此它們不會出現在整體功能 diff 的刪除清單。
+
+| 已移除舊路徑／原版行號 | 最終實作位置或替代責任 |
+| --- | --- |
+| `internal/console/plugin_integration.go:1` | `internal/plugins/githubapp/container_config.go` |
+| `internal/githubapp/adapter.go:1` | `internal/plugins/githubapp/adapter.go` |
+| `internal/githubapp/adapter_test.go:1` | `internal/plugins/githubapp/adapter_test.go` |
+| `internal/githubapp/config.go:1` | `internal/plugins/githubapp/config.go` |
+| `internal/githubapp/config_test.go:1` | `internal/plugins/githubapp/config_test.go` |
+| `internal/githubapp/provider.go:1` | `internal/plugins/githubapp/provider.go` |
+| `internal/githubapp/provider_test.go:1` | `internal/plugins/githubapp/provider_test.go` |
+| `internal/githubapp/runtime.go:1` | `internal/plugins/githubapp/runtime.go` |
+| `internal/githubapp/server.go:1` | `internal/plugins/githubapp/server.go` |
+| `internal/githubapp/server_test.go:1` | `internal/plugins/githubapp/server_test.go` |
+| `internal/plugins/manager_enable.go:1` | `internal/plugins/githubapp/manager.go` |
+| `internal/plugins/registry.go:1` | `internal/plugins/plugin.go 與 manager.go` |
 
 ## D 使用行為與相容性
 
-| 面向 | 原行為 | 最終行為 |
+| 面向 | 原有／先前行為 | 最終行為 |
 | --- | --- | --- |
-| 個人容器設定 | 讀取 devcontainer.local.json | 只讀 local.d 第一層正常 .json 檔 |
-| 合併 | 單一 local 檔 | 檔名排序；JSONC；object 深合併；array 追加去重 |
-| 認證 | 使用者自備 | Console 驗證服務與 credential 後啟用 |
-| 設定變更 | 無 plugin 狀態 | 既有容器標記 Build required；阻擋 Start／Connect |
-| 停用 | 無 plugin 服務 | 停止服務並清理；容器設定需 Build 才恢復 |
-| 移除 Project | 取消註冊 | 先清理 plugin；失敗保留設定供重試 |
-| Git | 使用既有 helper | 僅 HTTPS github.com 走 plugin；其他 Host 保留原 helper |
-| gh | 原有命令 | wrapper 每次取憑證；只對該子程序設定 GH_TOKEN |
+| plugin 架構 | manager 與 Console 綁定 GitHub | 通用 Plugin interface；main 註冊與注入 |
+| 設定表單 | Console 定義 GitHub 欄位 | Plugin.Definition 提供欄位；Console 通用渲染 |
+| Host JSON | GitHub 型別與專屬摘要 | 通用 RawMessage、BuildPending 與私有 Data |
+| 舊 metadata | 摘要及 unit 路徑直接放 state | 相容解碼保留至 Data；不建立服務、不遺失所有權 |
+| 內部 Host 入口 | `_github-app-serve` | 通用 `_plugin-serve`；舊入口由 metadata alias 相容 |
+| 個人容器設定 | 讀取 devcontainer.local.json | 只讀 local.d 第一層正常 .json；排序、JSONC、深合併與 array 去重 |
+| 待 Build | GitHub 專屬旗標 | 各 plugin NeedsBuild 的聯集；不比較 fingerprint |
+| Start／Build | GitHub 專屬準備與安裝 | 操作鎖內依序執行 Host hook、合併驗證、up、Container hook |
+| Connect | 直接開啟 shell | hook 與 pending 守門成功後才啟動 shell；不清除 pending |
+| 失敗 | 單一 plugin 回滾 | 逐 ID fail-fast；已成功 plugin 保留成果；當前 plugin 自行回復 |
+| 移除 Project | 取消註冊 | 先清理所有 enabled／殘留 plugin；失敗保留重試記錄 |
+| Git／gh | 使用者自備認證 | GitHub helper 與 gh wrapper 從 Host Socket 按需取得 Token |
 
 ```callout warn Breaking change：舊 local.json 使用者
 舊檔會被靜默忽略，不提示也不自動搬移。
@@ -446,10 +563,9 @@ README 說明 local.d 遷移、Project plugin 操作與 Linux 人工驗收。
 請自行將個人片段加入版本控制忽略規則。
 ```
 
-新建容器可由 Start 套用設定。
-既有容器需 Build，且保留資料移除確認。
+Build 與容器資料移除仍需原有確認，不自動重建。
 服務在關閉 dch 或 Stop 容器後保留。
-停用不會撤銷已回傳的短期 Token。
+停用立即停止後續憑證供應，但不撤銷已回傳的短期 Token。
 
 ## E 認證與信任邊界
 
@@ -483,29 +599,17 @@ Socket --> Git 或 gh: no-store 回應
 
 ## F 測試與獨立 Review
 
-本輪使用者新增 Cognitive Complexity ≤15 要求。
-先前已抽出具名 helper，保留既有行為。
-本輪依最新要求移除未使用的 BuildFingerprint。
-既有 JSON 的舊欄位會被忽略；下次存檔時省略。
+最終驗證快照：`9cc1f5f3ded6451752ae4b547dc35fcbe358aa83`。
+主代理已在此快照完成測試、編譯與靜態檢查。
 
 | 複雜度檢查 | 結果 |
 | --- | --- |
 | 工具 | gocognit v1.3.0；-json -exact-recursion . |
-| 判定範圍 | 相對 34b3414；本功能新增／修改 266 個具名函式，包含測試 |
+| 判定範圍 | 相對原始 34b3414；AST 辨識 424 個新增／修改具名函式，包含測試與 main |
 | 匿名函式 | 納入所屬函式計分 |
-| 最終值 | 最高 15；0 項違規 |
+| 最終值 | 最高 15；0 項違規；未抑制 findings |
 
-| Manager 函式 | 重構前 | 重構後 |
-| --- | --- | --- |
-| Enable | 67 | 11 |
-| `Ensure` | 26 | 12 |
-| Disable | 34 | 9 |
-| prepareServiceUnit | 25 | 5 |
-
-新增回歸測試確認：停用狀態的 `Ensure` 不啟動服務。
-Token 快取檢查、加入等待與刷新擁有權維持同一個 critical section。
-
-以下八個 legacy 函式完全未修改，超過 15，屬本輪範圍外。
+以下八個 legacy 函式未修改，超過 15，屬本次範圍外。
 此結果不表示整個 repository 已無既存違規。
 
 | 未修改函式 | 複雜度 |
@@ -519,64 +623,67 @@ Token 快取檢查、加入等待與刷新擁有權維持同一個 critical sect
 | `internal/console/devcontainer.go` · `rebaseConfigPaths` | 26 |
 | `internal/console/menu.go` · `chooseView` | 19 |
 
-
 | 指令或範圍 | 結果 | 證據與限制 |
 | --- | --- | --- |
-| go test ./... -count=1 | PASS | 最終版本全套測試；由主代理執行 |
-| go build ./... | PASS | 最終版本編譯；由主代理執行 |
-| go vet ./... | PASS | 最終版本靜態檢查；由主代理執行 |
-| git diff --check | PASS | 最終版本格式檢查；由主代理執行 |
-| go run . help | NOT RUN | 本輪未重跑；先前版本 smoke check 已通過 |
-| 設定與生命週期 | PASS | 排序／JSONC／手改保護／回滾／清理重試／待 Build |
-| Provider 與 Socket | PASS | 假 pass、httptest、可控時間、真實暫存 Unix Socket |
-| 容器接線 | PASS | 假 devcontainer／systemctl／Docker context；非真實整合 |
-| Git／gh | PASS | 真實 Git credential plumbing；假 curl 與 gh |
+| go test ./... -count=1 | PASS | 主代理於 9cc1f5f 執行；全部 6 個 package 通過 |
+| go build ./... | PASS | 主代理於最終快照編譯 |
+| go vet ./... | PASS | 主代理於最終快照靜態檢查 |
+| git diff --check 34b3414..9cc1f5f | PASS | 主代理檢查整體功能差異；產物另執行工作區格式檢查 |
+| 通用契約與狀態 | PASS | 兩個不同 fake plugin；獨立欄位／Data、排序、事件、pending 聯集與失敗保留 |
+| 鎖與 Connect | PASS | 同 Project 序列化；最後 pending 守門與 CLI Start 在鎖內；互動等待在鎖外 |
+| 容器 executor | PASS | 原始參數、stdout、overflow、stderr 與合併設定；假 devcontainer，非真實容器 |
+| GitHub 認證與服務 | PASS | 假 pass／systemctl、httptest、可控時間、真實暫存 Unix Socket 與 Git plumbing |
+| 相容與資源保護 | PASS | 舊 JSON、摘要／unit 路徑保留、手改保護、回滾與清理重試 |
+| 授權確認表單 | PASS | metadata 的非秘密 Confirm 欄位；repo／權限摘要與選項標籤 |
+| 通用表單擷取 | PASS | 最終快照真實測試輸出見 G；未連線 GitHub 或 Docker |
+| go run . help | NOT RUN | 本輪未重跑；不沿用舊 smoke check 當作本輪證據 |
 | go test -race ./... | NOT RUN | CGO 關閉，且無 C compiler |
-| 真實 Linux 驗收 | NOT RUN | 缺 Docker／systemctl／pass；未用真實 GitHub 與 GPG |
+| 真實 Linux 驗收 | NOT RUN | 未驗收 Docker／systemd／pass／GPG／GitHub 整合 |
 | UID／重啟／關閉 dch 後認證 | NOT RUN | 需在真實 Linux 容器執行 README 驗收 |
-| HTML 功能流程 | PASS | G1–G6 對照 6f092a6 函式、型別與呼叫；40 個實作變更檔案均列入索引 |
-| HTML 產生與內容 | PASS | am render --no-open；9 個 flow；0 項 STE 警告；C 無原始碼或 diff；六個未勾選框 |
-| HTML 流程與版面 | PASS | 主代理覆核 6f092a6；9 個 flow 可見；G1–G8 與關鍵函式齊全；1440×900、390×844 無水平溢出 |
-| HTML 互動 | PASS | 六框初始未勾選，可勾選及取消；0 項 CSP 錯誤；無舊左右對照或完整原始碼 |
+| HTML 內容與完整索引 | PASS | 53 個整體功能檔案與 hunk；另列 12 個架構修訂移除舊路徑 |
+| HTML 產生與內容 | PASS | am render --no-open；10 個 flow、1 個 tree、1 個 sequence；0 項 STE 警告；C 無原始碼或 diff；6 個未勾選框 |
+| HTML 瀏覽器流程與版面 | PASS | 主代理以 Chromium 155 覆核 9cc1f5f；10 個 flow 可見；G1–G8 與關鍵函式齊全；1440×900、390×844 無水平溢出 |
+| HTML 瀏覽器互動 | PASS | 六框初始未勾選，可勾選及取消；0 項 CSP 錯誤；無舊左右對照或完整原始碼 |
 
-本輪 6f092a6 流程版已由主代理以獨立 Chromium 覆核。
-檢查涵蓋 DOM、流程圖、勾選互動與視窗寬度。
+已保存 red → green 證據：executor stdout、overflow 與 Connect 最後守門。
+T13／T19 未完整保存最初行為 red 紀錄，部分只有編譯失敗。
+因此不宣稱所有項目均有完整 TDD 歷程證據。
+
+| 獨立 reviewer | 最終範圍 | 結論 |
+| --- | --- | --- |
+| Standards | e1b666a → 9cc1f5f；契約文件、核心、表單與 Connect | 0 項未解決 finding；早期文件 Low 已修正 |
+| Spec | 已核准通用架構；最終 9cc1f5f，含 Connect 與授權摘要 | 0 項未解決規格 finding |
+| Security | 通用核心、opaque state、GH 認證／服務、executor、Connect 與表單；最終 9cc1f5f | 0 項可採取行動的安全 finding |
+
+獨立報告：`generic-standards.md`、`generic-spec.md`、`generic-security.md`。
+報告位於 `.scratch/project-plugins/reviews/`。
+Source review 不取代真實環境驗收。
+
+瀏覽器檢查使用獨立 Chromium，不是應用程式內預覽。
 未驗收中文字型顯示。
 真實 Linux 整合驗收仍未執行。
-
 Root 執行測試時，DAC 拒絕案例會跳過。
-假 health 失敗與 UID 錯誤提示仍有測試。
-這不代表真實 UID 不符驗收已完成。
-
-| 獨立 reviewer | 範圍 | 最終結論 |
-| --- | --- | --- |
-| Code reviewer（歷史） | d1591ef → 0fecc5e；完整功能重構的 Standards、Spec 與複雜度 | 0 項未解決有效 finding |
-| Security reviewer（歷史） | 截至 0fecc5e；憑證邊界、快取互斥、生命週期與設定 | 0 項未解決可採取行動的安全 finding |
-| Standards 與 Spec reviewer（本輪） | 5f7ac13 → 6f092a6；欄位、計算移除與待 Build 回歸測試 | 各 0 項 finding |
-| Security reviewer（本輪） | 5f7ac13 → 6f092a6；狀態移除、所有權摘要與舊 JSON 相容性 | 0 項安全 finding |
-
-本輪獨立報告：`fingerprint-standards.md`、`fingerprint-spec.md`、`fingerprint-security.md`。
-報告位於 `.scratch/project-plugins/reviews/`。
-獨立 source review 不取代真實環境驗收。
+假指令與 Socket 測試不代表真實 UID 或 systemd 驗收已完成。
 
 ## G 真實擷取與核准提示
 
-以下是測試擷取節錄，Project 路徑已去識別化。
-來源：`TestPluginsStatusIsReachableWithFakeDockerAndSystemctl`。
-Docker 與 systemctl 是假指令，並非現場整合畫面。
+以下是通用表單測試的實際輸出，使用測試用 Sample metadata。
+來源：`TestPromptPluginConfigUsesGenericFieldsAndNestedPaths`。
+它驗證通用欄位與巢狀 JSON Path，不是現場 GitHub／Docker 畫面。
 
-```text title="實際測試輸出節錄"
-Project plugins
+```text title="9cc1f5f 實際測試輸出"
+=== RUN   TestPromptPluginConfigUsesGenericFieldsAndNestedPaths
+Display name (q to cancel): 
+Access
 
-  1) GitHub App: enabled · service active · Build required
-  2) Configure and enable GitHub App
-  3) Disable GitHub App
-  4) Back
-Choose number (q to cancel): GitHub App: enabled · service active · Build required
-
+  1) Read
+  2) Write
+Choose number (q to cancel): --- PASS: TestPromptPluginConfigUsesGenericFieldsAndNestedPaths (0.00s)
+PASS
+ok  	dch/internal/console	0.003s
 ```
 
-請先確認 C 的 6 個決策，再給予最終核准。
-本頁顯示功能流程；完整實作 diff 另附參考連結。
+請先確認 C 的 6 個決策，再在對話中給予最終核准。
+本頁顯示函式流程；完整實作 diff 另附參考連結。
 未讀取或嵌入使用者本機憑證與 local 設定。
-本次交付只建立 review 文件，不執行 PR 或 push。
+本次交付只更新 review 文件，不執行 PR 或 push。
