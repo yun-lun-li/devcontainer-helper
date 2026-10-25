@@ -103,11 +103,65 @@ func TestLegacyQuarantineReportsStopFailureWithoutClaimingSuccess(t *testing.T) 
 		t.Fatal(err)
 	}
 	status, err := New().Status(context.Background(), host)
-	if err == nil || !strings.Contains(status.Message, "could not be stopped") {
+	if err == nil || !strings.Contains(status.Message, "could not be quarantined safely") {
 		t.Fatalf("Status() = %#v, %v", status, err)
 	}
 	if err := CheckCredential(context.Background(), socketPath); err != nil {
 		t.Fatalf("test service unexpectedly stopped: %v", err)
+	}
+}
+
+func TestLegacyQuarantineRefusesActiveServiceWithoutOwnershipMetadata(t *testing.T) {
+	for _, state := range []ownershipState{{}, {UnitPath: "/some/unit.service"}, {UnitDigest: "digest"}} {
+		t.Run(state.UnitPath+state.UnitDigest, func(t *testing.T) {
+			env, host, socketPath := legacyServiceFixture(t)
+			host.State = encodeState(state)
+			status, err := New().Status(context.Background(), host)
+			if err == nil || !strings.Contains(status.Message, "could not be quarantined safely") {
+				t.Fatalf("Status() = %#v, %v", status, err)
+			}
+			if got := strings.TrimSpace(readTestFile(t, filepath.Join(env.root, "systemctl.log"))); got != "is-active" {
+				t.Fatalf("systemctl calls = %q", got)
+			}
+			if err := CheckCredential(context.Background(), socketPath); err != nil {
+				t.Fatalf("unverified service was stopped: %v", err)
+			}
+		})
+	}
+}
+
+func TestLegacyQuarantineAllowsKnownInactiveServiceWithoutOwnershipMetadata(t *testing.T) {
+	env, host, _ := legacyServiceFixture(t)
+	host.State = encodeState(ownershipState{})
+	script := "#!/bin/sh\nshift\necho \"$1\" >> \"$DCH_TEST_SYSTEMCTL_LOG\"\n[ \"$1\" = is-active ] && exit 3\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(env.root, "bin", "systemctl"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	status, err := New().Status(context.Background(), host)
+	if err != nil || !strings.Contains(status.Message, "Authorization required") {
+		t.Fatalf("Status() = %#v, %v", status, err)
+	}
+	if got := strings.TrimSpace(readTestFile(t, filepath.Join(env.root, "systemctl.log"))); got != "is-active" {
+		t.Fatalf("systemctl calls = %q", got)
+	}
+}
+
+func TestLegacyQuarantineRejectsUnknownServiceStateWithoutOwnershipMetadata(t *testing.T) {
+	env, host, socketPath := legacyServiceFixture(t)
+	host.State = encodeState(ownershipState{})
+	script := "#!/bin/sh\nshift\necho \"$1\" >> \"$DCH_TEST_SYSTEMCTL_LOG\"\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(env.root, "bin", "systemctl"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	status, err := New().Status(context.Background(), host)
+	if err == nil || !strings.Contains(status.Message, "could not be quarantined safely") {
+		t.Fatalf("Status() = %#v, %v", status, err)
+	}
+	if got := strings.TrimSpace(readTestFile(t, filepath.Join(env.root, "systemctl.log"))); got != "is-active" {
+		t.Fatalf("systemctl calls = %q", got)
+	}
+	if err := CheckCredential(context.Background(), socketPath); err != nil {
+		t.Fatalf("unverified service was stopped: %v", err)
 	}
 }
 

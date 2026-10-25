@@ -82,7 +82,7 @@ func (p *Plugin) Status(ctx context.Context, host plugins.HostContext) (plugins.
 	}
 	if isLegacyConfig(host.Config) {
 		if err := p.quarantineLegacy(ctx, host); err != nil {
-			status.Message = "Legacy credential service could not be stopped; authorization is blocked"
+			status.Message = "Legacy credential service could not be quarantined safely; authorization is blocked"
 			return status, fmt.Errorf("legacy credential service quarantine failed: %w", err)
 		}
 		status.Message = "Authorization required: legacy installation credentials are no longer used"

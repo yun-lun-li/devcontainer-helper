@@ -271,12 +271,37 @@ func (p *Plugin) quarantineLegacy(ctx context.Context, host plugins.HostContext)
 		return err
 	}
 	if state.UnitDigest == "" || state.UnitPath == "" {
+		if err := requireInactiveUnit(ctx, host.ProjectPath); err != nil {
+			return fmt.Errorf("cannot verify legacy service is inactive without ownership metadata: %w", err)
+		}
 		return nil
 	}
 	if _, err := ownedUnitPath(host.ProjectPath, state); err != nil {
 		return fmt.Errorf("refusing to stop a unit without verified ownership: %w", err)
 	}
 	return runSystemctl(ctx, "stop", unitName(host.ProjectPath))
+}
+
+func requireInactiveUnit(ctx context.Context, projectPath string) error {
+	commandCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(commandCtx, "systemctl", "--user", "is-active", "--quiet", unitName(projectPath))
+	var output limitedOutput
+	cmd.Stdout, cmd.Stderr = &output, &output
+	if err := cmd.Run(); err == nil {
+		return fmt.Errorf("unit is active")
+	} else if !isKnownInactiveExit(err) {
+		return fmt.Errorf("systemctl could not verify unit state: %s", strings.TrimSpace(output.String()))
+	}
+	return nil
+}
+
+func isKnownInactiveExit(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	return exitErr.ExitCode() == 3 || exitErr.ExitCode() == 4
 }
 
 func validateEnabledHost(host plugins.HostContext) error {

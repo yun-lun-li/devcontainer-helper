@@ -26,6 +26,7 @@ func TestDefinitionUsesSharedClientIDAndNoProjectCredentialFields(t *testing.T) 
 }
 
 func TestStatusRecognizesLegacyInstallationAsAuthorizationRequired(t *testing.T) {
+	setupHostHookTest(t, false)
 	status, err := New().Status(context.Background(), plugins.HostContext{ProjectPath: t.TempDir(), Config: json.RawMessage(`{"app_id":2,"installation_id":3}`)})
 	if err != nil {
 		t.Fatal(err)
@@ -471,7 +472,7 @@ func setupHostHookTest(t *testing.T, active bool) hostHookTestEnv {
 		}
 	}
 	logPath := filepath.Join(root, "systemctl.log")
-	activeResult := "exit 1"
+	activeResult := "exit 3"
 	if active {
 		activeResult = "exit 0"
 	}
