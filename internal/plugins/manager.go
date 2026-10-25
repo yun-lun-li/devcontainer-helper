@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -287,7 +286,6 @@ func (m *Manager) Disable(ctx context.Context, projectPath string) error {
 	state.FragmentDigest = ""
 	state.UnitDigest = ""
 	state.UnitPath = ""
-	state.BuildFingerprint = ""
 	state.BuildPending = true
 	project.States[githubAppID] = state
 	config.ProjectPlugins[path] = project
@@ -602,14 +600,6 @@ func managedFragment(path string) string {
 	return filepath.Join(path, ".devcontainer", "devcontainer.local.d", "90-dch-github-app.json")
 }
 func digest(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
-
-func buildFingerprint(config githubapp.Config, fragmentDigest string) string {
-	data, _ := json.Marshal(struct {
-		Config         githubapp.Config `json:"config"`
-		FragmentDigest string           `json:"fragment_digest"`
-	}{config, fragmentDigest})
-	return digest(data)
-}
 
 func cloneProjectPlugins(project common.ProjectPlugins) common.ProjectPlugins {
 	clone := common.ProjectPlugins{Enabled: make(map[string]githubapp.Config, len(project.Enabled)), States: make(map[string]common.PluginState, len(project.States))}

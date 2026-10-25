@@ -28,7 +28,6 @@ func saveEnabledPlugin(config common.Config, path string, old common.ProjectPlug
 	state.FragmentDigest = digest(fragment)
 	state.UnitDigest = unit.digest
 	state.UnitPath = unit.path
-	state.BuildFingerprint = buildFingerprint(cfg, state.FragmentDigest)
 	state.BuildPending = true
 	project := cloneProjectPlugins(old)
 	if project.Enabled == nil {

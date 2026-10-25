@@ -61,7 +61,7 @@ func TestEnableFailureRestoresPriorProjectConfigAndFragment(t *testing.T) {
 	if err := os.WriteFile(fragmentPath, oldFragment, 0600); err != nil {
 		t.Fatal(err)
 	}
-	old := common.ProjectPlugins{Enabled: map[string]githubapp.Config{githubAppID: oldCfg}, States: map[string]common.PluginState{githubAppID: {FragmentDigest: digest(oldFragment), BuildFingerprint: "old", BuildPending: false}}}
+	old := common.ProjectPlugins{Enabled: map[string]githubapp.Config{githubAppID: oldCfg}, States: map[string]common.PluginState{githubAppID: {FragmentDigest: digest(oldFragment), BuildPending: false}}}
 	if err := common.SaveConfig(common.Config{Version: 1, Projects: []string{}, ProjectPlugins: map[string]common.ProjectPlugins{normalized: old}}); err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestEnableFailureRestoresPriorProjectConfigAndFragment(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := loaded.ProjectPlugins[normalized]
-	if got.Enabled[githubAppID].AppID != oldCfg.AppID || got.States[githubAppID].BuildFingerprint != "old" || got.States[githubAppID].BuildPending {
+	if got.Enabled[githubAppID].AppID != oldCfg.AppID || got.States[githubAppID].BuildPending {
 		t.Fatalf("failed enable changed existing project config: %+v", got)
 	}
 	fragment, err := os.ReadFile(fragmentPath)
@@ -139,7 +139,12 @@ func TestEnableRestartsActiveServiceWhenConfigurationChanges(t *testing.T) {
 	if _, ok := first.ProjectPlugins[normalized].Enabled[githubAppID]; !ok {
 		t.Fatalf("first enable did not persist enabled state: %+v", first.ProjectPlugins)
 	}
-	firstFingerprint := first.ProjectPlugins[normalized].States[githubAppID].BuildFingerprint
+	if !first.ProjectPlugins[normalized].States[githubAppID].BuildPending {
+		t.Fatal("first enable did not mark Build pending")
+	}
+	if err := manager.MarkBuilt(projectPath); err != nil {
+		t.Fatalf("mark first configuration built: %v", err)
+	}
 	cfg.AppID = 42
 	if err := manager.Enable(context.Background(), projectPath, cfg); err != nil {
 		t.Fatal(err)
@@ -160,8 +165,8 @@ func TestEnableRestartsActiveServiceWhenConfigurationChanges(t *testing.T) {
 	if got := loaded.ProjectPlugins[normalized].Enabled[githubAppID].AppID; got != 42 {
 		t.Fatalf("AppID = %d, want 42", got)
 	}
-	if got := loaded.ProjectPlugins[normalized].States[githubAppID].BuildFingerprint; got == firstFingerprint {
-		t.Fatal("configuration change did not update Build fingerprint")
+	if !loaded.ProjectPlugins[normalized].States[githubAppID].BuildPending {
+		t.Fatal("configuration change did not mark Build pending")
 	}
 }
 
