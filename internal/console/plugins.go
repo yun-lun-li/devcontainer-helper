@@ -129,7 +129,7 @@ func enableProjectPlugin(project Project, manager *plugins.Manager, definition p
 	if err != nil {
 		return err
 	}
-	if err := confirmPluginEnable(definition); err != nil {
+	if err := confirmPluginEnable(definition, raw); err != nil {
 		return err
 	}
 	if err := manager.Enable(context.Background(), project.Path, definition.ID, raw); err != nil {
@@ -143,8 +143,16 @@ func enableProjectPlugin(project Project, manager *plugins.Manager, definition p
 	return nil
 }
 
-func confirmPluginEnable(definition plugins.Definition) error {
-	choice, err := choose("Enable "+definition.Name+"?", []string{"Enable and validate", "Cancel"})
+func confirmPluginEnable(definition plugins.Definition, raw json.RawMessage) error {
+	summary, err := pluginConfirmationSummary(definition, raw)
+	if err != nil {
+		return err
+	}
+	title := "Enable " + definition.Name + "?"
+	if summary != "" {
+		title += "\n\n" + summary
+	}
+	choice, err := choose(title, []string{"Enable and validate", "Cancel"})
 	if err != nil {
 		return err
 	}
@@ -152,6 +160,43 @@ func confirmPluginEnable(definition plugins.Definition) error {
 		return errCancelled
 	}
 	return nil
+}
+
+func pluginConfirmationSummary(definition plugins.Definition, raw json.RawMessage) (string, error) {
+	config := map[string]any{}
+	if len(raw) > 0 {
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		if err := decoder.Decode(&config); err != nil {
+			return "", fmt.Errorf("decode %s configuration: %w", definition.Name, err)
+		}
+	}
+	lines := []string{}
+	for _, field := range definition.Fields {
+		if !field.Confirm {
+			continue
+		}
+		value := getPluginField(config, field)
+		if field.Kind == plugins.FieldChoice {
+			value = pluginChoiceLabel(field.Options, value)
+		}
+		if value != "" {
+			lines = append(lines, field.Label+": "+value)
+		}
+	}
+	if len(lines) == 0 {
+		return "", nil
+	}
+	return "Configuration to authorize:\n" + strings.Join(lines, "\n"), nil
+}
+
+func pluginChoiceLabel(options []plugins.Choice, value string) string {
+	for _, option := range options {
+		if option.Value == value {
+			return option.Label
+		}
+	}
+	return value
 }
 
 func reportPluginMenuError(err error) error {

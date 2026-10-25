@@ -3,6 +3,8 @@ package console
 import (
 	"bufio"
 	"encoding/json"
+	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -109,7 +111,46 @@ func TestPluginEnableConfirmationCanBeCancelled(t *testing.T) {
 	previous := input
 	input = bufio.NewReader(strings.NewReader("2\n"))
 	defer func() { input = previous }()
-	if err := confirmPluginEnable(plugins.Definition{Name: "Sample"}); err != errCancelled {
+	if err := confirmPluginEnable(plugins.Definition{Name: "Sample"}, nil); err != errCancelled {
 		t.Fatalf("confirmation error = %v, want errCancelled", err)
+	}
+}
+
+func TestPluginEnableConfirmationShowsOnlyMarkedValues(t *testing.T) {
+	previousInput, previousOutput := input, os.Stdout
+	input = bufio.NewReader(strings.NewReader("2\n"))
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	defer func() {
+		input = previousInput
+		os.Stdout = previousOutput
+	}()
+
+	definition := plugins.Definition{Name: "Sample", Fields: []plugins.Field{
+		{Name: "repository", Label: "Repository", Confirm: true},
+		{Name: "contents", Label: "Contents permission", Kind: plugins.FieldChoice, Confirm: true,
+			Options: []plugins.Choice{{Value: "read", Label: "Read"}}, Path: []string{"permissions", "contents"}},
+		{Name: "secret", Label: "Secret", Confirm: false},
+	}}
+	err = confirmPluginEnable(definition, json.RawMessage(`{"repository":"octo/project","permissions":{"contents":"read"},"secret":"must-not-display"}`))
+	writer.Close()
+	output, readErr := io.ReadAll(reader)
+	reader.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if err != errCancelled {
+		t.Fatalf("confirmation error = %v, want errCancelled", err)
+	}
+	for _, want := range []string{"Repository: octo/project", "Contents permission: Read"} {
+		if !strings.Contains(string(output), want) {
+			t.Errorf("confirmation output %q does not contain %q", output, want)
+		}
+	}
+	if strings.Contains(string(output), "must-not-display") {
+		t.Fatalf("confirmation output exposed unmarked value: %q", output)
 	}
 }

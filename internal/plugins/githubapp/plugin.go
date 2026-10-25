@@ -24,9 +24,9 @@ func (p *Plugin) Definition() plugins.Definition {
 			{Name: "app_id", Label: "App ID", Required: true, Kind: plugins.FieldText},
 			{Name: "installation_id", Label: "Installation ID", Required: true, Kind: plugins.FieldText},
 			{Name: "private_key_pass_entry", Label: "Private key pass entry", Required: true, Kind: plugins.FieldText},
-			{Name: "repository", Label: "Owner/repository", Required: true, Kind: plugins.FieldText},
-			{Name: "contents", Label: "Contents permission", Kind: plugins.FieldChoice, Options: permissionChoices(), Path: []string{"permissions", "contents"}},
-			{Name: "pull_requests", Label: "Pull requests permission", Kind: plugins.FieldChoice, Options: permissionChoices(), Path: []string{"permissions", "pull_requests"}},
+			{Name: "repository", Label: "Owner/repository", Required: true, Confirm: true, Kind: plugins.FieldText},
+			{Name: "contents", Label: "Contents permission", Confirm: true, Kind: plugins.FieldChoice, Options: permissionChoices(), Path: []string{"permissions", "contents"}},
+			{Name: "pull_requests", Label: "Pull requests permission", Confirm: true, Kind: plugins.FieldChoice, Options: permissionChoices(), Path: []string{"permissions", "pull_requests"}},
 		},
 	}
 }

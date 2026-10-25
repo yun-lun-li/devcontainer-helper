@@ -32,6 +32,16 @@ func TestDefinitionProvidesGitHubFieldsAndLegacyAlias(t *testing.T) {
 	if fields["contents"].Path[1] != "contents" {
 		t.Fatalf("contents permission path = %v", fields["contents"].Path)
 	}
+	for _, name := range []string{"repository", "contents", "pull_requests"} {
+		if !fields[name].Confirm {
+			t.Errorf("field %q is missing from the enable confirmation", name)
+		}
+	}
+	for _, name := range []string{"app_id", "installation_id", "private_key_pass_entry"} {
+		if fields[name].Confirm {
+			t.Errorf("sensitive field %q is included in the enable confirmation", name)
+		}
+	}
 }
 
 func TestValidateConfigAcceptsTextIDsAndOmitsEmptyPermissionChoices(t *testing.T) {

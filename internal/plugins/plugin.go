@@ -45,9 +45,11 @@ type Field struct {
 	Description string
 	Placeholder string
 	Required    bool
-	Kind        FieldKind
-	Options     []Choice
-	Path        []string
+	// Confirm includes this non-secret field in the enable confirmation summary.
+	Confirm bool
+	Kind    FieldKind
+	Options []Choice
+	Path    []string
 }
 
 // Definition contains the stable identity and generic UI metadata for a plugin.
