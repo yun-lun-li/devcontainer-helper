@@ -201,6 +201,13 @@ func (p *Plugin) disable(ctx context.Context, host plugins.HostContext) (plugins
 	if err != nil {
 		return plugins.Result{}, err
 	}
+	if len(host.Config) == 0 && !hasManagedOwnership(state) {
+		return p.disableRecoveryOnly(ctx, host, state)
+	}
+	return p.disableOwned(ctx, host, state)
+}
+
+func (p *Plugin) disableOwned(ctx context.Context, host plugins.HostContext, state ownershipState) (plugins.Result, error) {
 	unitFile, err := ownedUnitPath(host.ProjectPath, state)
 	if err != nil {
 		return plugins.Result{}, err
@@ -230,6 +237,20 @@ func (p *Plugin) disable(ctx context.Context, host plugins.HostContext) (plugins
 	return plugins.Result{NeedsBuild: true}, nil
 }
 
+func (p *Plugin) disableRecoveryOnly(ctx context.Context, host plugins.HostContext, state ownershipState) (plugins.Result, error) {
+	if err := p.removeCredentialEntries(ctx, host, state.CredentialCleanup); err != nil {
+		return plugins.Result{}, fmt.Errorf("credential cleanup failed; disable can be retried: %w", err)
+	}
+	if err := host.Store.SaveState(nil); err != nil {
+		return plugins.Result{}, err
+	}
+	return plugins.Result{}, nil
+}
+
+func hasManagedOwnership(state ownershipState) bool {
+	return state.FragmentDigest != "" || state.UnitDigest != "" || state.UnitPath != ""
+}
+
 func (p *Plugin) removeCredentialEntries(ctx context.Context, host plugins.HostContext, clients []string) error {
 	for _, clientID := range clients {
 		if !clientIDPattern.MatchString(clientID) {
@@ -244,13 +265,17 @@ func (p *Plugin) removeCredentialEntries(ctx context.Context, host plugins.HostC
 	return nil
 }
 
-func (p *Plugin) retryCredentialCleanup(ctx context.Context, host plugins.HostContext, state ownershipState) (ownershipState, error) {
+func (p *Plugin) retryCredentialCleanup(ctx context.Context, host plugins.HostContext, state ownershipState, protectedClientID string) (ownershipState, error) {
 	pending := make([]string, 0, len(state.CredentialCleanup))
 	var failures []error
 	for _, clientID := range state.CredentialCleanup {
 		if !clientIDPattern.MatchString(clientID) {
 			pending = append(pending, clientID)
 			failures = append(failures, fmt.Errorf("credential cleanup metadata is invalid"))
+			continue
+		}
+		if clientID == protectedClientID {
+			pending = append(pending, clientID)
 			continue
 		}
 		cfg := Config{ClientID: clientID, ProjectPath: host.ProjectPath}
@@ -346,10 +371,7 @@ func (p *Plugin) ensure(ctx context.Context, host plugins.HostContext) (plugins.
 	if err := p.rejectLegacy(ctx, host); err != nil {
 		return plugins.Result{}, err
 	}
-	if err := validateEnabledHost(host); err != nil {
-		return plugins.Result{}, err
-	}
-	state, err := p.ensureState(host)
+	cfg, state, err := p.ensureReadyState(host)
 	if err != nil {
 		return plugins.Result{}, err
 	}
@@ -384,11 +406,30 @@ func (p *Plugin) ensure(ctx context.Context, host plugins.HostContext) (plugins.
 	if err := checkReady(ctx, runtimeDir); err != nil {
 		return plugins.Result{}, p.rollbackEnsure(host, oldState, unit, err)
 	}
-	state, _ = p.retryCredentialCleanup(ctx, host, state)
+	state, _ = p.retryCredentialCleanup(ctx, host, state, cfg.ClientID)
 	if err := host.Store.SaveState(encodeState(state)); err != nil {
 		return plugins.Result{}, err
 	}
 	return plugins.Result{State: encodeState(state)}, nil
+}
+
+func (p *Plugin) ensureReadyState(host plugins.HostContext) (Config, ownershipState, error) {
+	if err := validateEnabledHost(host); err != nil {
+		return Config{}, ownershipState{}, err
+	}
+	cfg, err := decodeConfig(host.Config)
+	if err != nil {
+		return Config{}, ownershipState{}, err
+	}
+	state, err := decodeState(host.State)
+	if err != nil {
+		return Config{}, state, err
+	}
+	if containsClientID(state.CredentialCleanup, cfg.ClientID) {
+		return Config{}, state, fmt.Errorf("authorization required: credential recovery is pending; reauthorize this project")
+	}
+	state, err = p.ensureState(host)
+	return cfg, state, err
 }
 
 func (p *Plugin) rollbackEnsure(host plugins.HostContext, oldState ownershipState, unit serviceUnitChange, cause error) error {
@@ -432,6 +473,13 @@ func (p *Plugin) ServeHost(ctx context.Context, host plugins.HostContext) error 
 	}
 	if filepath.Clean(cfg.ProjectPath) != filepath.Clean(host.ProjectPath) {
 		return fmt.Errorf("GitHub authorization project binding does not match")
+	}
+	state, err := decodeState(host.State)
+	if err != nil {
+		return err
+	}
+	if containsClientID(state.CredentialCleanup, cfg.ClientID) {
+		return fmt.Errorf("authorization required: credential recovery is pending; reauthorize this project")
 	}
 	runtimeDir, err := RuntimeDir(host.ProjectPath)
 	if err != nil {

@@ -78,7 +78,7 @@ func (p *Plugin) ValidateContainerConfig(_ context.Context, host plugins.Contain
 func (p *Plugin) Status(ctx context.Context, host plugins.HostContext) (plugins.PluginStatus, error) {
 	status := plugins.PluginStatus{ID: pluginID, Name: "GitHub App", Enabled: len(host.Config) > 0}
 	if !status.Enabled {
-		return status, nil
+		return statusWithoutConfiguration(status, host)
 	}
 	if isLegacyConfig(host.Config) {
 		if err := p.quarantineLegacy(ctx, host); err != nil {
@@ -105,12 +105,16 @@ func (p *Plugin) Status(ctx context.Context, host plugins.HostContext) (plugins.
 	if stateErr != nil {
 		return status, stateErr
 	}
-	if err := runSystemctl(ctx, "is-active", "--quiet", unitName(host.ProjectPath)); err != nil {
-		status.Message = "Authorization or credential service required"
+	if containsClientID(state.CredentialCleanup, cfg.ClientID) {
+		status.Message = "Authorization required: credential recovery is pending; reauthorize this project"
 		return status, nil
 	}
 	if len(state.CredentialCleanup) > 0 {
 		status.Message = "Authorization active; previous project credential cleanup is pending"
+		return status, nil
+	}
+	if err := runSystemctl(ctx, "is-active", "--quiet", unitName(host.ProjectPath)); err != nil {
+		status.Message = "Authorization or credential service required"
 		return status, nil
 	}
 	account := cfg.Login
@@ -118,6 +122,18 @@ func (p *Plugin) Status(ctx context.Context, host plugins.HostContext) (plugins.
 		account = fmt.Sprintf("GitHub user %d", cfg.UserID)
 	}
 	status.Message = fmt.Sprintf("Authorized as %s for %s", account, cfg.Repository)
+	return status, nil
+}
+
+func statusWithoutConfiguration(status plugins.PluginStatus, host plugins.HostContext) (plugins.PluginStatus, error) {
+	state, err := decodeState(host.State)
+	if err != nil {
+		return status, err
+	}
+	if len(state.CredentialCleanup) > 0 {
+		status.Message = "Disabled; previous project credential cleanup is pending"
+		status.CleanupPending = true
+	}
 	return status, nil
 }
 
@@ -173,19 +189,29 @@ func (p *Plugin) prepareConfiguration(project, clientID string, repo Repository,
 }
 
 func (p *Plugin) commitCandidate(ctx context.Context, host plugins.HostContext, cfg Config, tokens TokenSet, raw json.RawMessage) (plugins.Result, error) {
-	store := p.secretStore(cfg)
-	previousSecret, missing, err := saveCandidate(ctx, store, tokens)
+	candidateState, err := clearRecoveryClient(host.State, cfg.ClientID)
 	if err != nil {
 		return plugins.Result{}, err
 	}
+	store := p.secretStore(cfg)
+	previousSecret, missing, err := saveCandidate(ctx, store, tokens)
+	if err != nil {
+		if isCredentialRestoreFailure(err) {
+			err = errors.Join(err, recordCredentialRecovery(host, cfg.ClientID))
+		}
+		return plugins.Result{}, err
+	}
 	host.Config = raw
+	host.State = candidateState
+	tracker := &stateTrackingStore{ScopedStore: host.Store}
+	host.Store = tracker
 	result, enableErr := p.enable(ctx, host)
 	if enableErr == nil {
 		old, decodeErr := decodeConfig(host.PreviousConfig)
-		if decodeErr == nil && old.ClientID != cfg.ClientID {
-			return p.cleanupPreviousClient(ctx, host, result, old.ClientID)
+		if decodeErr != nil {
+			old = Config{}
 		}
-		return result, nil
+		return p.cleanupPreviousClient(ctx, host, result, old.ClientID, cfg.ClientID)
 	}
 	restoreErr := store.WithLock(context.Background(), func() error {
 		if missing {
@@ -194,9 +220,65 @@ func (p *Plugin) commitCandidate(ctx context.Context, host plugins.HostContext, 
 		return store.RestoreRaw(context.Background(), previousSecret)
 	})
 	if restoreErr != nil {
-		return plugins.Result{}, fmt.Errorf("%w; previous credential restore failed and authorization is required: %v", enableErr, restoreErr)
+		recoveryErr := recordCredentialRecovery(host, cfg.ClientID)
+		return plugins.Result{}, errors.Join(fmt.Errorf("%w; previous credential restore failed and authorization is required: %v", enableErr, restoreErr), recoveryErr)
 	}
 	return plugins.Result{}, enableErr
+}
+
+func clearRecoveryClient(raw json.RawMessage, clientID string) (json.RawMessage, error) {
+	state, err := decodeState(raw)
+	if err != nil {
+		return nil, err
+	}
+	state.CredentialCleanup = removeClientID(state.CredentialCleanup, clientID)
+	return encodeState(state), nil
+}
+
+type credentialRestoreFailure struct{ cause error }
+
+func (failure credentialRestoreFailure) Error() string { return failure.cause.Error() }
+func (failure credentialRestoreFailure) Unwrap() error { return failure.cause }
+
+func isCredentialRestoreFailure(err error) bool {
+	var failure credentialRestoreFailure
+	return errors.As(err, &failure)
+}
+
+func recordCredentialRecovery(host plugins.HostContext, clientID string) error {
+	if !clientIDPattern.MatchString(clientID) {
+		return fmt.Errorf("credential recovery metadata cannot be recorded: invalid Client ID")
+	}
+	baseState := host.State
+	if tracker, ok := host.Store.(*stateTrackingStore); ok && tracker.saved {
+		baseState = tracker.latestState
+	}
+	state, err := decodeState(baseState)
+	if err != nil {
+		return fmt.Errorf("credential recovery metadata cannot be recorded: %w", err)
+	}
+	if !containsClientID(state.CredentialCleanup, clientID) {
+		state.CredentialCleanup = append(state.CredentialCleanup, clientID)
+	}
+	if err := host.Store.SaveState(encodeState(state)); err != nil {
+		return fmt.Errorf("credential rollback failed and recovery metadata could not be saved: %w", err)
+	}
+	return nil
+}
+
+type stateTrackingStore struct {
+	plugins.ScopedStore
+	latestState json.RawMessage
+	saved       bool
+}
+
+func (store *stateTrackingStore) SaveState(raw json.RawMessage) error {
+	if err := store.ScopedStore.SaveState(raw); err != nil {
+		return err
+	}
+	store.latestState = append(json.RawMessage(nil), raw...)
+	store.saved = true
+	return nil
 }
 
 func saveCandidate(ctx context.Context, store *SecretStore, tokens TokenSet) ([]byte, bool, error) {
@@ -229,29 +311,40 @@ func saveCandidateLocked(ctx context.Context, store *SecretStore, tokens TokenSe
 			rollbackErr = store.RestoreRaw(rollbackCtx, previous)
 		}
 		if rollbackErr != nil {
-			return previous, missing, fmt.Errorf("%w; previous credential restore failed and authorization is required: %w", writeErr, rollbackErr)
+			return previous, missing, credentialRestoreFailure{cause: fmt.Errorf("%w; previous credential restore failed and authorization is required: %w", writeErr, rollbackErr)}
 		}
 		return previous, missing, writeErr
 	}
 }
 
-func (p *Plugin) cleanupPreviousClient(ctx context.Context, host plugins.HostContext, result plugins.Result, oldClientID string) (plugins.Result, error) {
+func (p *Plugin) cleanupPreviousClient(ctx context.Context, host plugins.HostContext, result plugins.Result, oldClientID, activeClientID string) (plugins.Result, error) {
 	state, err := decodeState(result.State)
 	if err != nil {
 		return plugins.Result{}, err
 	}
-	if !containsClientID(state.CredentialCleanup, oldClientID) {
+	if oldClientID != "" && oldClientID != activeClientID && !containsClientID(state.CredentialCleanup, oldClientID) {
 		state.CredentialCleanup = append(state.CredentialCleanup, oldClientID)
 	}
+	state.CredentialCleanup = removeClientID(state.CredentialCleanup, activeClientID)
 	if err := host.Store.SaveState(encodeState(state)); err != nil {
 		return plugins.Result{}, err
 	}
-	state, _ = p.retryCredentialCleanup(ctx, host, state)
+	state, _ = p.retryCredentialCleanup(ctx, host, state, activeClientID)
 	if err := host.Store.SaveState(encodeState(state)); err != nil {
 		return plugins.Result{}, err
 	}
 	result.State = encodeState(state)
 	return result, nil
+}
+
+func removeClientID(values []string, clientID string) []string {
+	remaining := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != clientID {
+			remaining = append(remaining, value)
+		}
+	}
+	return remaining
 }
 func containsClientID(values []string, clientID string) bool {
 	for _, value := range values {
