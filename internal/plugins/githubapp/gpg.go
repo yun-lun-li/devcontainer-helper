@@ -35,9 +35,15 @@ func consumeKeyRecord(keys []secretKey, state keyParseState, parts []string) ([]
 		if completeKey(state) {
 			keys = append(keys, state.key)
 		}
-		state = keyParseState{active: usableKeyValidity(parts[1]), canEncrypt: len(parts) > 11 && strings.Contains(strings.ToLower(parts[11]), "e")}
+		capabilities := colonField(parts, 11)
+		active := usableKeyValidity(colonField(parts, 1)) && !strings.Contains(capabilities, "D")
+		state = keyParseState{
+			active:     active,
+			canEncrypt: active && encryptionCapability(capabilities) && colonField(parts, 14) != "#",
+		}
 	case "ssb":
-		state.canEncrypt = state.canEncrypt || (state.active && len(parts) > 11 && usableKeyValidity(parts[1]) && strings.Contains(strings.ToLower(parts[11]), "e"))
+		capabilities := colonField(parts, 11)
+		state.canEncrypt = state.canEncrypt || (state.active && usableKeyValidity(colonField(parts, 1)) && encryptionCapability(capabilities) && colonField(parts, 14) != "#")
 	case "fpr":
 		if state.active && !state.haveFingerprint && len(parts[9]) == 40 {
 			state.key.fingerprint, state.haveFingerprint = parts[9], true
@@ -48,6 +54,17 @@ func consumeKeyRecord(keys []secretKey, state keyParseState, parts []string) ([]
 		}
 	}
 	return keys, state
+}
+
+func colonField(fields []string, index int) string {
+	if index >= len(fields) {
+		return ""
+	}
+	return fields[index]
+}
+
+func encryptionCapability(capabilities string) bool {
+	return strings.Contains(capabilities, "e") && !strings.Contains(capabilities, "D")
 }
 
 func completeKey(state keyParseState) bool {

@@ -274,6 +274,81 @@ func TestConfigureDoesNotOverwriteRecipientInitializedDuringKeySelection(t *test
 	}
 }
 
+func TestConfigureDoesNotOfferDisabledPrimaryGPGKey(t *testing.T) {
+	assertDisabledGPGKeyNotOffered(t, "scESCD", "e")
+}
+
+func TestConfigureDoesNotOfferDisabledSubkeyBehindAggregateCapability(t *testing.T) {
+	assertDisabledGPGKeyNotOffered(t, "scESC", "eD")
+}
+
+func assertDisabledGPGKeyNotOffered(t *testing.T, primaryCapabilities, subkeyCapabilities string) {
+	t.Helper()
+	project := gitProject(t, true)
+	root := os.Getenv("PASSWORD_STORE_DIR")
+	if err := os.Remove(filepath.Join(root, ".gpg-id")); err != nil {
+		t.Fatal(err)
+	}
+	bin := strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))[0]
+	listing := fmt.Sprintf("sec:u:2048:1:ABCDEF:0:0:::::%s:\nfpr:::::::::0123456789012345678901234567890123456789:\nuid:u::::0::AABBCCDDEEFF::Disabled Key <disabled@example.com>::::::::::0:\nssb:u:2048:1:SUBKEY:0:0:::::%s:\nfpr:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:\n", primaryCapabilities, subkeyCapabilities)
+	writeGPGListing(t, bin, listing)
+	fixture := newOAuthFixture(t, []int64{9001})
+	ui := &fakeInteraction{selected: "77", denyAt: 1}
+	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
+	_, err := plugin.Configure(context.Background(), configureContext(project), ui)
+	if err == nil || !strings.Contains(err.Error(), "create a GPG key manually") {
+		t.Fatalf("Configure() error = %v, want no usable key guidance", err)
+	}
+	if fixture.deviceCodes != 0 || len(ui.hostCommands) != 0 {
+		t.Fatalf("device codes=%d host commands=%#v", fixture.deviceCodes, ui.hostCommands)
+	}
+	for _, selection := range ui.selections {
+		if selection.title == "Choose a GPG key for pass" {
+			t.Fatalf("disabled key was offered: %#v", selection.choices)
+		}
+	}
+}
+
+func TestConfigureCanUseEncryptionSubkeyWhenPrimaryIsOfflineStub(t *testing.T) {
+	project := gitProject(t, true)
+	if err := os.Remove(filepath.Join(os.Getenv("PASSWORD_STORE_DIR"), ".gpg-id")); err != nil {
+		t.Fatal(err)
+	}
+	bin := strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))[0]
+	listing := strings.Join([]string{
+		colonRecord("sec", "u", "scESC", "#"),
+		"fpr:::::::::0123456789012345678901234567890123456789:",
+		"uid:u::::0::AABBCCDDEEFF::Offline Primary <offline@example.com>::::::::::0:",
+		colonRecord("ssb", "u", "e", ""),
+		"fpr:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:",
+	}, "\n")
+	writeGPGListing(t, bin, listing)
+	fixture := newOAuthFixture(t, []int64{9001})
+	ui := &fakeInteraction{selected: "77"}
+	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
+	if _, err := plugin.Configure(context.Background(), configureContext(project), ui); err != nil {
+		t.Fatal(err)
+	}
+	if len(ui.hostCommands) != 1 || ui.hostCommands[0] != "pass init 0123456789012345678901234567890123456789" {
+		t.Fatalf("host commands = %#v", ui.hostCommands)
+	}
+}
+
+func colonRecord(kind, validity, capabilities, tokenMarker string) string {
+	fields := make([]string, 15)
+	fields[0], fields[1], fields[2], fields[3], fields[4] = kind, validity, "2048", "1", "ABCDEF"
+	fields[5], fields[6], fields[11], fields[14] = "0", "0", capabilities, tokenMarker
+	return strings.Join(fields, ":") + ":"
+}
+
+func writeGPGListing(t *testing.T, bin, listing string) {
+	t.Helper()
+	command := "#!/bin/sh\nprintf '%s' '" + strings.ReplaceAll(listing, "'", "'\\''") + "'\n"
+	if err := os.WriteFile(filepath.Join(bin, "gpg"), []byte(command), 0700); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestConfigureStopsWhenNoGPGKeyCreationIsDeclined(t *testing.T) {
 	project := gitProject(t, true)
 	if err := os.Remove(filepath.Join(os.Getenv("PASSWORD_STORE_DIR"), ".gpg-id")); err != nil {
