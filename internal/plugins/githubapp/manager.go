@@ -719,7 +719,7 @@ func serviceUnitContent(projectPath string) ([]byte, error) {
 		return nil, err
 	}
 	content := "[Unit]\nDescription=dch GitHub App credential service\n\n[Service]\nType=simple\nExecStart=" + systemdExecArg(bin) + " _plugin-serve --plugin github-app --project " + systemdExecArg(projectPath) + "\nRestart=on-failure\n"
-	for _, key := range []string{"DCH_CONFIG", "XDG_RUNTIME_DIR", "PATH", "GNUPGHOME", "PASSWORD_STORE_DIR"} {
+	for _, key := range []string{"DCH_CONFIG", "XDG_RUNTIME_DIR", "PATH", "GNUPGHOME", "PASSWORD_STORE_DIR", "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS"} {
 		value := os.Getenv(key)
 		if key == "DCH_CONFIG" {
 			value = configPath

@@ -13,13 +13,13 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"sync"
 	"time"
 
 	oauth "github.com/cli/oauth"
 )
 
 const maxResponseBytes = 1 << 20
+const credentialRequestTimeout = 120 * time.Second
 
 type TokenSet struct {
 	Schema                int       `json:"schema"`
@@ -49,7 +49,7 @@ type ProviderOptions struct {
 type Provider struct {
 	cfg    Config
 	opts   ProviderOptions
-	mu     sync.Mutex
+	gate   chan struct{}
 	cached TokenSet
 }
 
@@ -68,7 +68,7 @@ func NewProvider(cfg Config, options ...ProviderOptions) (*Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Provider{cfg: cfg, opts: normalized}, nil
+	return &Provider{cfg: cfg, opts: normalized, gate: make(chan struct{}, 1)}, nil
 }
 
 func normalizeProviderOptions(cfg Config, opts ProviderOptions) (ProviderOptions, error) {
@@ -76,7 +76,7 @@ func normalizeProviderOptions(cfg Config, opts ProviderOptions) (ProviderOptions
 		opts.PassPath = "pass"
 	}
 	if opts.PassTimeout <= 0 {
-		opts.PassTimeout = 10 * time.Second
+		opts.PassTimeout = credentialRequestTimeout
 	}
 	if opts.RequestTimeout <= 0 {
 		opts.RequestTimeout = 15 * time.Second
@@ -131,15 +131,21 @@ func defaultScopeVerifier(opts ProviderOptions) func(context.Context, string, Co
 }
 
 func (p *Provider) Token(ctx context.Context) (string, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	requestCtx, cancel := context.WithTimeout(ctx, credentialRequestTimeout)
+	defer cancel()
+	select {
+	case p.gate <- struct{}{}:
+		defer func() { <-p.gate }()
+	case <-requestCtx.Done():
+		return "", requestCtx.Err()
+	}
 	if p.cached.AccessToken != "" && p.cached.AccessTokenExpiresAt.After(p.opts.Now().Add(5*time.Minute)) {
 		return p.cached.AccessToken, nil
 	}
 	var token string
-	err := p.opts.Secret.WithLock(ctx, func() error {
+	err := p.opts.Secret.WithLock(requestCtx, func() error {
 		var err error
-		token, err = p.tokenLocked(ctx)
+		token, err = p.tokenLocked(requestCtx)
 		return err
 	})
 	return token, err
@@ -294,7 +300,7 @@ func securePassEnvironment(env []string) []string {
 		}
 		filtered = append(filtered, value)
 	}
-	return append(filtered, "GPG_TTY=", "PASSWORD_STORE_GPG_OPTS=--batch --pinentry-mode error", "LC_ALL=C")
+	return append(filtered, "PASSWORD_STORE_GPG_OPTS=--pinentry-mode ask", "LC_ALL=C")
 }
 func cleanPassOutput(data []byte) string        { return strings.TrimSpace(string(data)) }
 func tokenSetJSON(set TokenSet) ([]byte, error) { return json.Marshal(set) }

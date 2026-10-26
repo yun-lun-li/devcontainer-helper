@@ -98,7 +98,9 @@ func credentialHandler(provider *Provider) http.HandlerFunc {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		token, err := provider.Token(r.Context())
+		ctx, cancel := context.WithTimeout(r.Context(), credentialRequestTimeout)
+		defer cancel()
+		token, err := provider.Token(ctx)
 		if err != nil {
 			http.Error(w, "credential unavailable", http.StatusServiceUnavailable)
 			return
@@ -170,7 +172,7 @@ func CheckCredential(ctx context.Context, socketPath string) error {
 }
 
 func unixHTTPClient(path string) *http.Client {
-	return &http.Client{Timeout: 20 * time.Second, Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+	return &http.Client{Timeout: credentialRequestTimeout + 5*time.Second, Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", path)
 	}}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }

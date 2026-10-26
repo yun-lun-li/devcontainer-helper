@@ -414,6 +414,12 @@ func TestGHWrapperFetchesEachTimeAndPreservesArgumentsAndExitStatus(t *testing.T
 	ghLog := filepath.Join(root, "gh.log")
 	writeExecutable(t, filepath.Join(bin, "gh"), fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$GH_TOKEN\" >> %q\nprintf '<%%s>\\n' \"$@\" >> %q\nexit 23\n", ghLog, ghLog))
 	wrapper := filepath.Join(runtimeDir, "bin", "gh")
+	runGHWrapperTwice(t, wrapper, bin)
+	assertGHWrapperLogs(t, ghLog, curlLog)
+}
+
+func runGHWrapperTwice(t *testing.T, wrapper, bin string) {
+	t.Helper()
 	for range 2 {
 		cmd := exec.Command(wrapper, "pr", "create", "--title", "a title")
 		cmd.Env = append(os.Environ(), "PATH=/run/dch-github/bin:"+bin+":/run/dch-github/bin:"+os.Getenv("PATH"), "GH_TOKEN=ambient-token")
@@ -423,6 +429,10 @@ func TestGHWrapperFetchesEachTimeAndPreservesArgumentsAndExitStatus(t *testing.T
 			t.Fatalf("gh exit = %v, want 23", err)
 		}
 	}
+}
+
+func assertGHWrapperLogs(t *testing.T, ghLog, curlLog string) {
+	t.Helper()
 	contents, err := os.ReadFile(ghLog)
 	if err != nil {
 		t.Fatal(err)
@@ -438,10 +448,13 @@ func TestGHWrapperFetchesEachTimeAndPreservesArgumentsAndExitStatus(t *testing.T
 	if !strings.HasPrefix(string(curlArgs), "--disable --noproxy * --unix-socket /run/dch-github/credential.sock") {
 		t.Fatalf("curl does not begin with fixed config and proxy options: %q", curlArgs)
 	}
-	for _, required := range []string{"--disable", "--noproxy *", "--unix-socket /run/dch-github/credential.sock", "--max-time 20", "http://localhost/credential"} {
+	for _, required := range []string{"--disable", "--noproxy *", "--unix-socket /run/dch-github/credential.sock", "--max-time 125", "http://localhost/credential"} {
 		if !strings.Contains(string(curlArgs), required) {
 			t.Errorf("curl arguments %q missing %q", curlArgs, required)
 		}
+	}
+	if !strings.Contains(ghWrapperScript, "unlock the host GPG agent in a terminal and retry") {
+		t.Fatal("adapter does not explain how to retry on a headless host")
 	}
 }
 

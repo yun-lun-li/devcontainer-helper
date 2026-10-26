@@ -170,11 +170,12 @@ func (s *SecretStore) runCaptured(ctx context.Context, input []byte, args ...str
 	}
 	timeout := s.Timeout
 	if timeout <= 0 {
-		timeout = 10 * time.Second
+		timeout = credentialRequestTimeout
 	}
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(callCtx, path, args...)
+	cmd.WaitDelay = 250 * time.Millisecond
 	cmd.Env = securePassEnvironment(os.Environ())
 	cmd.Stdin = bytes.NewReader(input)
 	var stdout, stderr boundedBuffer

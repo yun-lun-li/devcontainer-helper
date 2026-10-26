@@ -25,6 +25,27 @@ func TestDefinitionUsesSharedClientIDAndNoProjectCredentialFields(t *testing.T) 
 	}
 }
 
+func TestGeneratedUnitPreservesAvailableGuiSessionWithoutPersistingTTY(t *testing.T) {
+	t.Setenv("DCH_CONFIG", filepath.Join(t.TempDir(), "config"))
+	t.Setenv("DISPLAY", ":1")
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	t.Setenv("XAUTHORITY", "/tmp/xauthority")
+	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/tmp/bus")
+	t.Setenv("GPG_TTY", "/dev/pts/8")
+	unit, err := serviceUnitContent(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"DISPLAY=:1", "WAYLAND_DISPLAY=wayland-0", "XAUTHORITY=/tmp/xauthority", "DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/bus"} {
+		if !strings.Contains(string(unit), "Environment=\""+value+"\"") {
+			t.Errorf("unit missing %s: %s", value, unit)
+		}
+	}
+	if strings.Contains(string(unit), "GPG_TTY") {
+		t.Fatalf("unit persisted GPG_TTY: %s", unit)
+	}
+}
+
 func TestStatusRecognizesLegacyInstallationAsAuthorizationRequired(t *testing.T) {
 	setupHostHookTest(t, false)
 	status, err := New().Status(context.Background(), plugins.HostContext{ProjectPath: t.TempDir(), Config: json.RawMessage(`{"app_id":2,"installation_id":3}`)})

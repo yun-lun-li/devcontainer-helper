@@ -39,6 +39,133 @@ func TestSecretStoreWritesAndReadsCompleteJSON(t *testing.T) {
 	}
 }
 
+func TestSecurePassEnvironmentAllowsPinentryAndKeepsSession(t *testing.T) {
+	env := securePassEnvironment([]string{"DISPLAY=:1", "WAYLAND_DISPLAY=wayland-0", "XAUTHORITY=/tmp/x", "DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/bus", "PASSWORD_STORE_GPG_OPTS=--bad", "GPG_TTY=/dev/pts/1"})
+	joined := strings.Join(env, "\n")
+	for _, value := range []string{"DISPLAY=:1", "WAYLAND_DISPLAY=wayland-0", "XAUTHORITY=/tmp/x", "DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/bus"} {
+		if !strings.Contains(joined, value) {
+			t.Errorf("missing %s in %q", value, joined)
+		}
+	}
+	if strings.Contains(joined, "pinentry-mode error") || strings.Contains(joined, "GPG_TTY=/dev/pts/1") {
+		t.Fatalf("pinentry is blocked or tty persisted: %q", joined)
+	}
+}
+
+func TestProviderTokenWaitRespectsCancellationAndReleasesForNextRequest(t *testing.T) {
+	cfg := testProviderConfig()
+	set := testTokenSet(cfg, time.Now().Add(time.Hour), time.Now().Add(24*time.Hour))
+	raw, err := json.Marshal(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "credential")
+	if err := os.WriteFile(entry, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	started := filepath.Join(dir, "started")
+	pass := filepath.Join(dir, "pass")
+	script := "#!/bin/sh\ntouch \"$PASS_STARTED\"\nsleep 1\ncat \"$PASS_SECRET\"\n"
+	if err := os.WriteFile(pass, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PASS_SECRET", entry)
+	t.Setenv("PASS_STARTED", started)
+	provider, err := NewProvider(cfg, ProviderOptions{PassPath: pass, PassTimeout: 3 * time.Second, VerifyScope: noVerifyScope, VerifyUser: noVerifyUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := make(chan error, 1)
+	go func() { _, err := provider.Token(context.Background()); first <- err }()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := os.Stat(started); err != nil {
+		t.Fatal("first pass request did not start")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	second := make(chan error, 1)
+	go func() { _, err := provider.Token(ctx); second <- err }()
+	select {
+	case err := <-second:
+		if err == nil {
+			t.Fatal("canceled queued request succeeded")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("queued request ignored cancellation while waiting for provider")
+	}
+	if err := <-first; err != nil {
+		t.Fatalf("first request failed: %v", err)
+	}
+	if token, err := provider.Token(context.Background()); err != nil || token != set.AccessToken {
+		t.Fatalf("subsequent token = %q, %v", token, err)
+	}
+}
+
+func TestSecretStorePassTimeoutStopsCommandAndReleasesLock(t *testing.T) {
+	pass := filepath.Join(t.TempDir(), "pass")
+	if err := os.WriteFile(pass, []byte("#!/bin/sh\nsleep 5\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	store := &SecretStore{PassPath: pass, Timeout: 40 * time.Millisecond, Entry: "timeout-entry", LockDir: filepath.Join(t.TempDir(), "locks")}
+	started := time.Now()
+	if _, err := store.run(context.Background(), nil, "show", store.Entry); err == nil {
+		t.Fatal("pass timeout succeeded")
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("pass timeout did not stop command promptly")
+	}
+	called := false
+	if err := store.WithLock(context.Background(), func() error { called = true; return nil }); err != nil || !called {
+		t.Fatalf("lock unavailable after timed out command: %v", err)
+	}
+}
+
+func TestProviderCallerCancellationStopsPassAndAllowsRetry(t *testing.T) {
+	cfg := testProviderConfig()
+	set := testTokenSet(cfg, time.Now().Add(time.Hour), time.Now().Add(24*time.Hour))
+	raw, err := json.Marshal(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	entry, hold := filepath.Join(dir, "credential"), filepath.Join(dir, "hold")
+	if err := os.WriteFile(entry, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hold, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	pass := filepath.Join(dir, "pass")
+	script := "#!/bin/sh\nif [ -e \"$PASS_HOLD\" ]; then sleep 5; fi\ncat \"$PASS_SECRET\"\n"
+	if err := os.WriteFile(pass, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PASS_SECRET", entry)
+	t.Setenv("PASS_HOLD", hold)
+	provider, err := NewProvider(cfg, ProviderOptions{PassPath: pass, PassTimeout: 3 * time.Second, VerifyScope: noVerifyScope, VerifyUser: noVerifyUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := provider.Token(ctx); err == nil {
+		t.Fatal("canceled credential request succeeded")
+	}
+	if err := os.Remove(hold); err != nil {
+		t.Fatal(err)
+	}
+	if token, err := provider.Token(context.Background()); err != nil || token != set.AccessToken {
+		t.Fatalf("retry token = %q, %v", token, err)
+	}
+}
+
 func TestContextFormClientAddsRepositoryIDOnlyToDevicePollAndHonorsCancellation(t *testing.T) {
 	var poll, request string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

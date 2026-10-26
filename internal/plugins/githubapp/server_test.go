@@ -144,6 +144,13 @@ func TestCheckCredentialUsesUnixSocket(t *testing.T) {
 	}
 }
 
+func TestUnixCredentialClientAllowsPinentryBudget(t *testing.T) {
+	client := unixHTTPClient("/tmp/credential.sock")
+	if client.Timeout != 125*time.Second {
+		t.Fatalf("unix credential client timeout = %s", client.Timeout)
+	}
+}
+
 func waitForSocket(t *testing.T, path string) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
