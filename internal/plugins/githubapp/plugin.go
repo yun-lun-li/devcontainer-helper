@@ -138,8 +138,16 @@ func statusWithoutConfiguration(status plugins.PluginStatus, host plugins.HostCo
 }
 
 func (p *Plugin) Configure(ctx context.Context, configure plugins.ConfigureContext, interaction plugins.Interaction) (plugins.PreparedConfiguration, error) {
+	_, hasInput := interaction.(plugins.InputInteraction)
+	hostCommands, hasHostCommands := interaction.(plugins.HostCommandInteraction)
+	if !hasInput || !hasHostCommands {
+		return plugins.PreparedConfiguration{}, fmt.Errorf("host setup interaction is unavailable")
+	}
 	shared, err := sharedClient(configure.SharedConfig)
 	if err != nil {
+		return plugins.PreparedConfiguration{}, err
+	}
+	if err := p.prepareHost(ctx, configure.Host.ProjectPath, shared.ClientID, interaction, hostCommands); err != nil {
 		return plugins.PreparedConfiguration{}, err
 	}
 	resolution, err := p.chooseRepository(ctx, configure.Host.ProjectPath, shared.ClientID, interaction)

@@ -120,6 +120,16 @@ type Interaction interface {
 	OpenBrowser(context.Context, string) error
 }
 
+// InputInteraction collects text without exposing secret values in the terminal.
+type InputInteraction interface {
+	Input(context.Context, string, string, bool) (string, error)
+}
+
+// HostCommandInteraction runs a host command while the console owns the terminal.
+type HostCommandInteraction interface {
+	RunHostCommand(context.Context, string, []string) error
+}
+
 // PreparedConfiguration holds a candidate project config and a commit hook.
 // The hook runs under the project lock after Manager revalidates its snapshot.
 type PreparedConfiguration struct {

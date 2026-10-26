@@ -3,6 +3,7 @@ package githubapp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -40,6 +41,183 @@ func TestConfigureUsesRemoteIDAndOneRepositoryScopedDeviceFlow(t *testing.T) {
 	if fixture.deviceCodes != 1 || ui.opened != 1 || ui.confirms != 2 {
 		t.Fatalf("device codes=%d browser=%d confirms=%d", fixture.deviceCodes, ui.opened, ui.confirms)
 	}
+	if len(ui.hostCommands) != 0 || len(ui.notices) == 0 || ui.notices[0] != "Using existing pass recipient" {
+		t.Fatalf("setup commands=%#v notices=%#v", ui.hostCommands, ui.notices)
+	}
+}
+
+func TestConfigureRequiresHostSetupCapabilitiesBeforeDeviceFlow(t *testing.T) {
+	project := gitProject(t, true)
+	fixture := newOAuthFixture(t, []int64{9001})
+	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
+	_, err := plugin.Configure(context.Background(), configureContext(project), &legacyInteraction{})
+	if err == nil || !strings.Contains(err.Error(), "host setup interaction") {
+		t.Fatalf("Configure() error = %v, want missing host setup interaction", err)
+	}
+	if fixture.deviceCodes != 0 {
+		t.Fatalf("device flow started %d times before host setup", fixture.deviceCodes)
+	}
+}
+
+func TestConfigureStopsBeforeDeviceFlowWhenHostRequirementsAreUnavailable(t *testing.T) {
+	project := gitProject(t, true)
+	missingPath := t.TempDir()
+	t.Setenv("PATH", missingPath)
+	ui := &fakeInteraction{denyAt: 1}
+	fixture := newOAuthFixture(t, []int64{9001})
+	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
+	_, err := plugin.Configure(context.Background(), configureContext(project), ui)
+	if err == nil || (!strings.Contains(err.Error(), "not supported") && !strings.Contains(err.Error(), "manually")) {
+		t.Fatalf("Configure() error = %v, want host setup guidance", err)
+	}
+	if len(ui.hostCommands) != 0 || len(fixture.deviceRequests) != 0 {
+		t.Fatalf("host commands=%#v device requests=%#v", ui.hostCommands, fixture.deviceRequests)
+	}
+}
+
+func TestConfigureInitializesUninitializedPassWithPrimaryFingerprint(t *testing.T) {
+	project := gitProject(t, true)
+	root := os.Getenv("PASSWORD_STORE_DIR")
+	if err := os.Remove(filepath.Join(root, ".gpg-id")); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newOAuthFixture(t, []int64{9001})
+	ui := &fakeInteraction{selected: "77"}
+	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
+	if _, err := plugin.Configure(context.Background(), configureContext(project), ui); err != nil {
+		t.Fatal(err)
+	}
+	if len(ui.hostCommands) != 1 || ui.hostCommands[0] != "pass init 0123456789012345678901234567890123456789" {
+		t.Fatalf("host commands = %#v", ui.hostCommands)
+	}
+}
+
+func TestConfigureDoesNotOverwriteRecipientInitializedDuringKeySelection(t *testing.T) {
+	project := gitProject(t, true)
+	root := os.Getenv("PASSWORD_STORE_DIR")
+	if err := os.Remove(filepath.Join(root, ".gpg-id")); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newOAuthFixture(t, []int64{9001})
+	ui := &fakeInteraction{selected: "77"}
+	ui.onSelect = func(title string) {
+		if strings.Contains(title, "GPG key") {
+			if err := os.WriteFile(filepath.Join(root, ".gpg-id"), []byte("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
+	if _, err := plugin.Configure(context.Background(), configureContext(project), ui); err != nil {
+		t.Fatal(err)
+	}
+	if len(ui.hostCommands) != 0 {
+		t.Fatalf("host commands overwrote concurrent init: %#v", ui.hostCommands)
+	}
+	if got := readTestFile(t, filepath.Join(root, ".gpg-id")); strings.TrimSpace(got) != "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" {
+		t.Fatalf("recipient was changed: %q", got)
+	}
+}
+
+func TestConfigureStopsWhenNoGPGKeyCreationIsDeclined(t *testing.T) {
+	project := gitProject(t, true)
+	if err := os.Remove(filepath.Join(os.Getenv("PASSWORD_STORE_DIR"), ".gpg-id")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DCH_FAKE_GPG_NO_KEYS", "1")
+	fixture := newOAuthFixture(t, []int64{9001})
+	ui := &fakeInteraction{denyAt: 1}
+	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
+	_, err := plugin.Configure(context.Background(), configureContext(project), ui)
+	if err == nil || !strings.Contains(err.Error(), "create a GPG key manually") {
+		t.Fatalf("Configure() error = %v, want key creation cancellation", err)
+	}
+	if fixture.deviceCodes != 0 || len(ui.hostCommands) != 0 {
+		t.Fatalf("device codes=%d commands=%#v", fixture.deviceCodes, ui.hostCommands)
+	}
+}
+
+func TestConfigureCreatesGPGKeyThenInitializesPass(t *testing.T) {
+	project := gitProject(t, true)
+	if err := os.Remove(filepath.Join(os.Getenv("PASSWORD_STORE_DIR"), ".gpg-id")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DCH_FAKE_GPG_NO_KEYS", "1")
+	fixture := newOAuthFixture(t, []int64{9001})
+	ui := &fakeInteraction{selected: "77"}
+	ui.onHostCommand = func(command string) {
+		if command == "gpg --full-generate-key" {
+			t.Setenv("DCH_FAKE_GPG_NO_KEYS", "")
+		}
+	}
+	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
+	if _, err := plugin.Configure(context.Background(), configureContext(project), ui); err != nil {
+		t.Fatal(err)
+	}
+	if len(ui.hostCommands) != 2 || ui.hostCommands[0] != "gpg --full-generate-key" || ui.hostCommands[1] != "pass init 0123456789012345678901234567890123456789" {
+		t.Fatalf("host commands = %#v", ui.hostCommands)
+	}
+}
+
+func TestConfigureStopsWhenInteractiveGPGCreationFails(t *testing.T) {
+	project := gitProject(t, true)
+	if err := os.Remove(filepath.Join(os.Getenv("PASSWORD_STORE_DIR"), ".gpg-id")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DCH_FAKE_GPG_NO_KEYS", "1")
+	fixture := newOAuthFixture(t, []int64{9001})
+	ui := &fakeInteraction{}
+	ui.commandErr = errors.New("gpg canceled")
+	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
+	_, err := plugin.Configure(context.Background(), configureContext(project), ui)
+	if err == nil || !strings.Contains(err.Error(), "key creation failed or was canceled") {
+		t.Fatalf("Configure() error = %v", err)
+	}
+	if fixture.deviceCodes != 0 {
+		t.Fatalf("device flow started %d times", fixture.deviceCodes)
+	}
+}
+
+func TestConfigureRejectsPasswordStoreProbeMismatchBeforeDeviceFlow(t *testing.T) {
+	project := gitProject(t, true)
+	passPath := writeProbePass(t, "wrong-value", false)
+	fixture := newOAuthFixture(t, []int64{9001})
+	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com", PassPath: passPath}
+	_, err := plugin.Configure(context.Background(), configureContext(project), &fakeInteraction{selected: "77"})
+	if err == nil || !strings.Contains(err.Error(), "readback verification failed") {
+		t.Fatalf("Configure() error = %v, want probe mismatch", err)
+	}
+	if fixture.deviceCodes != 0 {
+		t.Fatalf("device flow started %d times", fixture.deviceCodes)
+	}
+}
+
+func TestConfigureReportsProbeCleanupFailureAndStopsBeforeDeviceFlow(t *testing.T) {
+	project := gitProject(t, true)
+	passPath := writeProbePass(t, "wrong-value", true)
+	fixture := newOAuthFixture(t, []int64{9001})
+	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com", PassPath: passPath}
+	_, err := plugin.Configure(context.Background(), configureContext(project), &fakeInteraction{selected: "77"})
+	if err == nil || !strings.Contains(err.Error(), "pass rm --") {
+		t.Fatalf("Configure() error = %v, want cleanup instruction", err)
+	}
+	if strings.Contains(err.Error(), "wrong-value") || fixture.deviceCodes != 0 {
+		t.Fatalf("error=%v device flow=%d", err, fixture.deviceCodes)
+	}
+}
+
+func writeProbePass(t *testing.T, shown string, failRemove bool) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "pass")
+	remove := "rm -f \"$file\""
+	if failRemove {
+		remove = "exit 1"
+	}
+	script := "#!/bin/sh\nfor arg in \"$@\"; do entry=$arg; done\nfile=\"$PASSWORD_STORE_DIR/$entry\"\ncase \"$1\" in\n insert) mkdir -p \"$(dirname \"$file\")\"; cat > \"$file\" ;;\n show) if [ ! -f \"$file\" ]; then echo 'not in the password store' >&2; exit 1; fi; printf '%s\\n' '" + shown + "' ;;\n rm) " + remove + " ;;\n *) exit 1 ;;\nesac\n"
+	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestConfigureDiscoveryUsesTwoDeviceFlowsAndRequiresSameUser(t *testing.T) {
@@ -111,22 +289,14 @@ func TestConfigureRejectsTokenExpiredDuringConfirmation(t *testing.T) {
 	fixture.clock = clock.read
 	fixture.onIssue = func() { clock.advance(5 * time.Second) }
 	fixture.onScope = func() { clock.advance(10 * time.Second) }
-	marker := filepath.Join(t.TempDir(), "pass-used")
-	passPath := filepath.Join(t.TempDir(), "pass")
-	if err := os.WriteFile(passPath, []byte("#!/bin/sh\nprintf called > "+marker+"\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
 	ui := &fakeInteraction{selected: "77", onConfirm: func(title string) {
 		if title == "Confirm GitHub account" {
 			clock.advance(20 * time.Second)
 		}
 	}}
-	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com", PassPath: passPath, Now: clock.read}
+	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com", Now: clock.read}
 	if _, err := plugin.Configure(context.Background(), configureContext(project), ui); err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("Configure() error = %v", err)
-	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("pass was invoked for expired candidate: %v", err)
 	}
 }
 
@@ -168,13 +338,8 @@ func writablePass(t *testing.T) (string, string) {
 func TestConfigureStopsDiscoveryWhenUserDeclinesAccountBeforeRepositoryListing(t *testing.T) {
 	project := gitProject(t, false)
 	fixture := newOAuthFixture(t, []int64{9001})
-	marker := filepath.Join(t.TempDir(), "pass-writes")
-	pass := filepath.Join(t.TempDir(), "pass")
-	if err := os.WriteFile(pass, []byte("#!/bin/sh\nprintf called > "+marker+"\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
 	ui := &fakeInteraction{selected: "77", denyAt: 2}
-	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com", PassPath: pass}
+	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
 	if _, err := plugin.Configure(context.Background(), configureContext(project), ui); err == nil || !strings.Contains(err.Error(), "cancelled") {
 		t.Fatalf("Configure() error = %v", err)
 	}
@@ -183,9 +348,6 @@ func TestConfigureStopsDiscoveryWhenUserDeclinesAccountBeforeRepositoryListing(t
 	}
 	if fixture.deviceCodes != 1 || len(fixture.polls) != 1 || fixture.polls[0].Get("repository_id") != "" {
 		t.Fatalf("device codes=%d polls=%#v", fixture.deviceCodes, fixture.polls)
-	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("pass was invoked before account confirmation: %v", err)
 	}
 }
 
@@ -206,6 +368,7 @@ func configureContext(project string) plugins.ConfigureContext {
 
 func gitProject(t *testing.T, withRemote bool) string {
 	t.Helper()
+	setupConfigureHost(t)
 	project := t.TempDir()
 	command := exec.Command("git", "init", "--quiet", project)
 	if output, err := command.CombinedOutput(); err != nil {
@@ -220,6 +383,32 @@ func gitProject(t *testing.T, withRemote bool) string {
 	return filepath.Clean(project)
 }
 
+func setupConfigureHost(t *testing.T) {
+	t.Helper()
+	bin := t.TempDir()
+	gpg := "#!/bin/sh\nif [ \"$DCH_FAKE_GPG_NO_KEYS\" = 1 ]; then exit 0; fi\nprintf 'sec:u:2048:1:ABCDEF:0:0:::::scESC:\nfpr:::::::::0123456789012345678901234567890123456789:\nuid:u::::0::AABBCCDDEEFF::Test User <test@example.com>::::::::::0:\nssb:u:2048:1:SUBKEY:0:0:::::e:\nfpr:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:\n'\n"
+	pass := "#!/bin/sh\nfor arg in \"$@\"; do entry=$arg; done\nfile=\"$PASSWORD_STORE_DIR/$entry\"\ncase \"$1\" in\n init) exit 0 ;;\n insert) mkdir -p \"$(dirname \"$file\")\"; cat > \"$file\" ;;\n show) if [ ! -f \"$file\" ]; then echo 'not in the password store' >&2; exit 1; fi; cat \"$file\" ;;\n rm) rm -f \"$file\" ;;\n *) exit 1 ;;\nesac\n"
+	for name, body := range map[string]string{"gpg": gpg, "pass": pass} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	store := t.TempDir()
+	if err := os.WriteFile(filepath.Join(store, ".gpg-id"), []byte("0123456789012345678901234567890123456789\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PASSWORD_STORE_DIR", store)
+}
+
+func TestSecretKeyParserKeepsPrimaryFingerprintAndEncryptionSubkey(t *testing.T) {
+	output := []byte("sec:u:2048:1:PRIMARY:0:0:::::scESC:\nfpr:::::::::0123456789012345678901234567890123456789:\nuid:u::::0::AABBCCDDEEFF::Example User <user@example.com>::::::::::0:\nssb:u:2048:1:SUBKEY:0:0:::::e:\nfpr:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:\n")
+	keys := parseSecretKeys(output)
+	if len(keys) != 1 || keys[0].fingerprint != "0123456789012345678901234567890123456789" || keys[0].user != "Example User <user@example.com>" {
+		t.Fatalf("parsed keys = %#v", keys)
+	}
+}
+
 func assertPreparedUserBinding(t *testing.T, raw json.RawMessage, project string, repositoryID int64) {
 	t.Helper()
 	var cfg Config
@@ -232,15 +421,38 @@ func assertPreparedUserBinding(t *testing.T, raw json.RawMessage, project string
 }
 
 type fakeInteraction struct {
-	selected  string
-	confirms  int
-	denyAt    int
-	opened    int
-	onConfirm func(string)
+	selected      string
+	confirms      int
+	denyAt        int
+	opened        int
+	onConfirm     func(string)
+	onSelect      func(string)
+	hostCommands  []string
+	onHostCommand func(string)
+	commandErr    error
+	notices       []string
 }
 
-func (f *fakeInteraction) Notify(context.Context, string, string) error { return nil }
-func (f *fakeInteraction) Select(_ context.Context, _ string, _ []plugins.Choice, _ int) (string, error) {
+type legacyInteraction struct{}
+
+func (legacyInteraction) Notify(context.Context, string, string) error { return nil }
+func (legacyInteraction) Select(context.Context, string, []plugins.Choice, int) (string, error) {
+	return "", nil
+}
+func (legacyInteraction) Confirm(context.Context, string, string) (bool, error) { return false, nil }
+func (legacyInteraction) OpenBrowser(context.Context, string) error             { return nil }
+
+func (f *fakeInteraction) Notify(_ context.Context, title, _ string) error {
+	f.notices = append(f.notices, title)
+	return nil
+}
+func (f *fakeInteraction) Select(_ context.Context, title string, _ []plugins.Choice, _ int) (string, error) {
+	if f.onSelect != nil {
+		f.onSelect(title)
+	}
+	if strings.Contains(title, "GPG key") {
+		return "0123456789012345678901234567890123456789", nil
+	}
 	return f.selected, nil
 }
 func (f *fakeInteraction) Confirm(_ context.Context, title, _ string) (bool, error) {
@@ -251,6 +463,22 @@ func (f *fakeInteraction) Confirm(_ context.Context, title, _ string) (bool, err
 	return f.confirms != f.denyAt, nil
 }
 func (f *fakeInteraction) OpenBrowser(context.Context, string) error { f.opened++; return nil }
+func (f *fakeInteraction) Input(context.Context, string, string, bool) (string, error) {
+	return "", nil
+}
+func (f *fakeInteraction) RunHostCommand(_ context.Context, command string, args []string) error {
+	line := command + " " + strings.Join(args, " ")
+	f.hostCommands = append(f.hostCommands, line)
+	if command == "pass" && len(args) == 2 && args[0] == "init" {
+		if err := os.WriteFile(filepath.Join(os.Getenv("PASSWORD_STORE_DIR"), ".gpg-id"), []byte(args[1]+"\n"), 0600); err != nil {
+			return err
+		}
+	}
+	if f.onHostCommand != nil {
+		f.onHostCommand(line)
+	}
+	return f.commandErr
+}
 
 type oauthFixture struct {
 	client              *http.Client
