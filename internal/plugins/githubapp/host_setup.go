@@ -176,9 +176,16 @@ func (p *Plugin) runCommand(ctx context.Context, name string, args ...string) ([
 	commandCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	command := exec.CommandContext(commandCtx, name, args...)
+	command.WaitDelay = 100 * time.Millisecond
 	var output hostSetupOutput
 	command.Stdout, command.Stderr = &output, &output
 	err := command.Run()
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if commandCtx.Err() != nil {
+		return nil, commandCtx.Err()
+	}
 	if output.exceeded {
 		return nil, fmt.Errorf("host command output exceeded limit")
 	}
