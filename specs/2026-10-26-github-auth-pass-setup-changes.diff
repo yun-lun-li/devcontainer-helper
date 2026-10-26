@@ -1,0 +1,3776 @@
+diff --git a/README.md b/README.md
+index 1043227..10a0ee4 100644
+--- a/README.md
++++ b/README.md
+@@ -79,21 +79,27 @@ The first implementation is in `internal/plugins/githubapp/`. Adding another bui
+ 
+ ### GitHub App plugin
+ 
+-The built-in GitHub App plugin authenticates as the GitHub user who completes Device Flow. It requires Linux, local Docker, a systemd user service, `pass`, and a GPG agent on the host. Configure the GitHub App permissions and installation on GitHub, enable Device Flow, and enter its **Client ID** once under **Settings → Plugins → GitHub App**. No App ID, installation ID, client secret, or App private key is needed for the new authentication flow.
++The built-in GitHub App plugin offers **BYO GitHub App (Recommended)** and **Fine-grained token** authentication. Both require Linux, local Docker, a systemd user service, `pass`, and GPG on the host. For the App option, configure its permissions and installation on GitHub, enable Device Flow, then enter its **Client ID** during project setup. Existing project and shared Client IDs can be reused as defaults. No App ID, installation ID, client secret, or App private key is needed.
+ 
+-Open **Project → Plugins** to enable or reauthorize the plugin. dch reads the project's Git remotes and asks you to confirm the repository; with multiple supported remotes, select one. It obtains the numeric repository ID through the public GitHub API, or through the host's existing `gh` authentication for private repositories. SSH clone access alone does not authenticate REST API requests. If the ID cannot be obtained, dch offers an additional discovery authorization before the repository-scoped authorization. With a resolved ID, only one Device Flow is needed.
++Open **Project → Plugins** to enable or reauthorize the plugin and select an authentication method. Before requesting a token, dch checks GPG and `pass`. Missing packages can be installed with apt, dnf, or pacman after you approve the displayed command; sudo and the package manager handle their own prompts. Other systems receive manual installation guidance. dch reuses an initialized password store, or helps you select/create a GPG encryption key and run `pass init`. A temporary secret must pass an encrypt/decrypt round trip and be removed before authorization continues. Installed packages, new keys, and password-store initialization remain if later setup is canceled.
++
++For **BYO GitHub App**, dch reads the project's Git remotes and asks you to confirm the repository; with multiple supported remotes, select one. It obtains the numeric repository ID through the public GitHub API, or through the host's existing `gh` authentication for private repositories. SSH clone access alone does not authenticate REST API requests. If the ID cannot be obtained, dch offers an additional discovery authorization before the repository-scoped authorization. With a resolved ID, only one Device Flow is needed.
+ 
+ The final Device Flow exchanges include `repository_id`. dch verifies the returned token's repository access before saving it and supplying it to the container; an invalid ID or an unverifiable restriction never falls back to a broader token. Confirm the GitHub account shown by dch. Pull requests use this user's identity; Git commit author settings remain unchanged.
+ 
+-Each project keeps its own access token, refresh token, and expiration metadata as one encrypted JSON entry in host `pass`. dch derives the entry name automatically. Initialize `pass` and ensure its GPG agent can encrypt and decrypt for the host user running the service. The service invokes `pass` non-interactively; if the agent's cached unlock expires, unlock it on the host before retrying. Neither the refresh token nor GPG keys are mounted into the container.
++For **Fine-grained token**, create a PAT on GitHub with only the intended repository and the permissions your operations require. Paste it into the hidden terminal prompt. dch verifies the account and target repository API access; this does not prove the token is restricted to that repository or has every permission needed for Git or `gh`. Classic PATs are not supported. Each project stores its own PAT in host `pass`; PATs are not refreshed automatically. Reconfigure the plugin when a PAT expires, is revoked, or needs different permissions.
++
++Each project keeps its own encrypted credential entry in host `pass`. App credentials include access/refresh tokens and expiration metadata; PAT credentials include the token and project/account/repository binding. dch derives entry names automatically. It saves a replacement before switching services, restores the previous credential on a failed switch, and cleans up the old entry after a successful switch. Neither refresh tokens nor GPG keys are mounted into the container.
++
++The host service permits graphical pinentry and allows up to two minutes for a credential request, including GPG unlock. A working graphical pinentry and user session are required. dch forwards relevant display/session variables when configuring the service and does not change GPG agent configuration or save a passphrase. If the session changes, configure the service again. On SSH/headless hosts, unlock the same GPG agent in a host terminal and retry. Canceling pinentry or exceeding the deadline fails the credential request; cached tokens may be returned without another unlock prompt.
+ 
+ The container needs Git 2.30 or newer, GitHub CLI (`gh`), curl, and POSIX `sh`. The plugin adds a read-only mount at `/run/dch-github`, a Git credential helper for HTTPS `github.com`, and a `gh` wrapper available from Connect shells. The wrapper requests a token for each invocation and sets `GH_TOKEN` only for that `gh` process. Other Git hosts keep their existing credential helpers; SSH URLs are unchanged. Existing lifecycle hooks are preserved. The socket directory is mode `0700` and the socket is mode `0600`; the container user must be able to connect to it, so a mismatched UID will fail.
+ 
+-Any container process that can access the socket can request that project's short-lived token, and Docker administrators can access the mount. Use the plugin only with containers you trust.
++Any container process that can access the socket can request that project's credential (including a PAT), and Docker administrators can access the mount. Use the plugin only with containers you trust.
+ 
+ After enabling, Build the project to recreate the container, apply the mount, and initialize the Git helper. This does not force an image rebuild; image building follows the devcontainer configuration and cache. Enabling or disabling the plugin marks an existing container as needing Build. Reauthorization that keeps the adapter and mount unchanged does not add a Build requirement. dch does not rebuild automatically. Start and Connect are blocked for an existing container until Build succeeds. Disabling stops the host service and removes its runtime files immediately; removing a project also disables its plugin before unregistering it.
+ 
+-The systemd user service stays active when dch closes or the container stops. The service caches the access token in host memory and reloads the encrypted credential from `pass` after a restart. It reuses a token while it has more than five minutes left and refreshes it on the next credential request when five minutes or less remain. Refresh rotates and saves the credential pair before publishing the new token. Invalid or revoked authorization requires reauthorization through Project Plugins. No plaintext token files are mounted into the container and no refresh timer is installed.
++The systemd user service stays active when dch closes or the container stops. For App authentication, the service caches the access token in host memory and reloads the encrypted credential from `pass` after a restart. It reuses a token while it has more than five minutes left and refreshes it on the next credential request when five minutes or less remain. Refresh rotates and saves the credential pair before publishing the new token. Invalid or revoked authorization requires reauthorization through Project Plugins. No plaintext token files are mounted into the container and no refresh timer is installed.
+ 
+ To check that the host service is alive without requesting a credential, use:
+ 
+@@ -105,12 +111,15 @@ The health endpoint returns only service status. Do not request or print `/crede
+ 
+ #### Manual Linux verification
+ 
+-1. Configure the shared Client ID. In **Project → Plugins**, confirm the remote, complete Device Flow, and verify the selected repository restriction without printing the token.
++1. In **Project → Plugins**, select BYO GitHub App, complete the GPG/pass checks, enter or reuse a Client ID, confirm the remote, and complete Device Flow. Verify the selected repository restriction without printing the token.
+ 2. Close dch and stop the container. Confirm the user service remains active; run the `/health` request above and expect `ok`.
+ 3. Build and Connect. Confirm Git fetch/push and `gh pr create` use the configured repository and expected GitHub identity and permissions.
+ 4. Restart the user service while the container is running, then use Git or `gh` again to confirm the mounted runtime directory exposes the replacement socket.
+ 5. Reauthorize and verify it does not add a Build requirement. Disable the plugin and confirm the service stops immediately, its owned token entry is removed, and Build is required to remove the mount.
+-6. Repeat with a container user whose UID does not match the host socket owner and confirm connection fails. Also try enabling while the GPG agent cannot decrypt non-interactively and confirm activation fails without exposing credential contents.
++6. Repeat with a container user whose UID does not match the host socket owner and confirm connection fails.
++7. On apt, dnf, and pacman hosts, test missing-package approval, rejection, install failure, key creation, and password-store initialization. Verify no Device Flow or PAT input occurs when the prerequisite check fails.
++8. On a GUI host, test pinentry unlock after the agent cache expires, cancellation, and timeout. On SSH/headless hosts, unlock from the host terminal and retry. Confirm no passphrase or token appears in output.
++9. Configure a fine-grained PAT with intended permissions, test Git/gh, replace the PAT, switch between PAT and App, and disable the plugin. Test expired/revoked tokens and failed replacement; verify the previous configuration remains recoverable and other projects' entries remain intact.
+ 
+ These checks require Linux, Docker, systemd, `pass`, and GPG agent access; they are manual integration checks.
+ 
+diff --git a/go.mod b/go.mod
+index 17570fc..96365a9 100644
+--- a/go.mod
++++ b/go.mod
+@@ -4,9 +4,9 @@ go 1.26
+ 
+ toolchain go1.26.10
+ 
+-require github.com/cli/oauth v1.3.0
+-
+ require (
+-	github.com/cli/browser v1.3.0 // indirect
+-	golang.org/x/sys v0.13.0 // indirect
++	github.com/cli/oauth v1.3.0
++	golang.org/x/sys v0.13.0
+ )
++
++require github.com/cli/browser v1.3.0 // indirect
+diff --git a/internal/console/plugin_input.go b/internal/console/plugin_input.go
+new file mode 100644
+index 0000000..1ca35d7
+--- /dev/null
++++ b/internal/console/plugin_input.go
+@@ -0,0 +1,176 @@
++package console
++
++import (
++	"context"
++	"fmt"
++	"io"
++	"os"
++	"os/exec"
++	"unicode/utf8"
++
++	"dch/internal/plugins"
++	"golang.org/x/sys/unix"
++)
++
++const maxPluginInputBytes = 4096
++
++func (consoleInteraction) Input(ctx context.Context, title, defaultValue string, secret bool) (string, error) {
++	wasScreenActive := screenActive
++	stopScreen()
++	if wasScreenActive {
++		defer startScreen()
++	}
++	if secret && !terminalInput() {
++		return "", fmt.Errorf("secure terminal input is unavailable")
++	}
++	if err := ctx.Err(); err != nil {
++		return "", err
++	}
++	if !terminalInput() {
++		fmt.Print(title + ": ")
++		return readStreamInput(ctx, defaultValue)
++	}
++	return readWithTerminal(ctx, title, defaultValue, secret)
++}
++
++func readWithTerminal(ctx context.Context, title, defaultValue string, secret bool) (string, error) {
++	fd := int(os.Stdin.Fd())
++	state, err := unix.IoctlGetTermios(fd, unix.TCGETS)
++	if err != nil {
++		return "", terminalSetupError(secret, err)
++	}
++	updated := *state
++	updated.Lflag &^= unix.ICANON
++	if secret {
++		updated.Lflag &^= unix.ECHO
++	}
++	updated.Cc[unix.VMIN], updated.Cc[unix.VTIME] = 1, 0
++	if err := unix.IoctlSetTermios(fd, unix.TCSETS, &updated); err != nil {
++		return "", terminalSetupError(secret, err)
++	}
++	fmt.Print(title + ": ")
++	return readTerminalInput(ctx, defaultValue, state, secret)
++}
++
++func terminalSetupError(secret bool, err error) error {
++	if secret {
++		return fmt.Errorf("secure terminal input is unavailable")
++	}
++	return err
++}
++
++func readStreamInput(ctx context.Context, defaultValue string) (string, error) {
++	var input []byte
++	for {
++		character, err := readTerminalByte(ctx)
++		if err != nil && err != io.EOF {
++			return "", err
++		}
++		if err == io.EOF {
++			if len(input) == 0 {
++				return "", io.EOF
++			}
++			break
++		}
++		done, err := appendTerminalInput(&input, character, 0x7f)
++		if err != nil {
++			return "", err
++		}
++		if done {
++			break
++		}
++	}
++	if len(input) == 0 {
++		return defaultValue, nil
++	}
++	return string(input), nil
++}
++
++func readTerminalInput(ctx context.Context, defaultValue string, original *unix.Termios, secret bool) (value string, resultErr error) {
++	defer func() {
++		fd := int(os.Stdin.Fd())
++		if err := unix.IoctlSetTermios(fd, unix.TCSETS, original); err != nil && resultErr == nil {
++			value, resultErr = "", err
++		}
++		if secret {
++			fmt.Println()
++		}
++	}()
++	var input []byte
++	for {
++		character, err := readTerminalByte(ctx)
++		if err != nil {
++			return "", err
++		}
++		done, err := appendTerminalInput(&input, character, original.Cc[unix.VERASE])
++		if err != nil {
++			return "", err
++		}
++		if done {
++			break
++		}
++	}
++	if len(input) == 0 {
++		return defaultValue, nil
++	}
++	return string(input), nil
++}
++
++func appendTerminalInput(input *[]byte, character, erase byte) (bool, error) {
++	if character == '\n' {
++		return true, nil
++	}
++	if character == '\r' {
++		return false, nil
++	}
++	if character == erase || character == 8 || character == 127 {
++		if len(*input) > 0 {
++			_, size := utf8.DecodeLastRune(*input)
++			*input = (*input)[:len(*input)-size]
++		}
++		return false, nil
++	}
++	if len(*input) >= maxPluginInputBytes {
++		return false, fmt.Errorf("input exceeds %d bytes", maxPluginInputBytes)
++	}
++	*input = append(*input, character)
++	return false, nil
++}
++
++func readTerminalByte(ctx context.Context) (byte, error) {
++	for {
++		if err := ctx.Err(); err != nil {
++			return 0, err
++		}
++		fds := []unix.PollFd{{Fd: int32(os.Stdin.Fd()), Events: unix.POLLIN}}
++		if _, err := unix.Poll(fds, 100); err != nil {
++			return 0, err
++		}
++		if fds[0].Revents&(unix.POLLHUP|unix.POLLERR|unix.POLLNVAL) != 0 {
++			return 0, io.EOF
++		}
++		if fds[0].Revents&unix.POLLIN == 0 {
++			continue
++		}
++		buffer := []byte{0}
++		n, err := os.Stdin.Read(buffer)
++		if err == nil && n == 0 {
++			return 0, io.EOF
++		}
++		return buffer[0], err
++	}
++}
++
++func (consoleInteraction) RunHostCommand(ctx context.Context, command string, args []string) error {
++	wasScreenActive := screenActive
++	stopScreen()
++	if wasScreenActive {
++		defer startScreen()
++	}
++	process := exec.CommandContext(ctx, command, args...)
++	process.Stdin, process.Stdout, process.Stderr = os.Stdin, os.Stdout, os.Stderr
++	return process.Run()
++}
++
++var _ plugins.InputInteraction = consoleInteraction{}
++var _ plugins.HostCommandInteraction = consoleInteraction{}
+diff --git a/internal/console/plugin_input_test.go b/internal/console/plugin_input_test.go
+new file mode 100644
+index 0000000..d31f1f2
+--- /dev/null
++++ b/internal/console/plugin_input_test.go
+@@ -0,0 +1,334 @@
++package console
++
++import (
++	"context"
++	"errors"
++	"io"
++	"os"
++	"strconv"
++	"strings"
++	"testing"
++	"time"
++
++	"golang.org/x/sys/unix"
++)
++
++func TestPluginSecretInputFailsClosedWithoutTerminal(t *testing.T) {
++	previous := os.Stdin
++	file, err := os.CreateTemp(t.TempDir(), "input")
++	if err != nil {
++		t.Fatal(err)
++	}
++	os.Stdin = file
++	defer func() { os.Stdin = previous; _ = file.Close() }()
++	if _, err := (consoleInteraction{}).Input(context.Background(), "Token", "", true); err == nil || !strings.Contains(err.Error(), "secure terminal input") {
++		t.Fatalf("Input() error = %v, want secure terminal error", err)
++	}
++}
++
++func TestPluginSecretInputDisablesEchoAndRestoresTerminal(t *testing.T) {
++	master, slave := openPluginPTY(t)
++	previous := os.Stdin
++	os.Stdin = slave
++	defer func() { os.Stdin = previous; _ = slave.Close() }()
++	original, err := unix.IoctlGetTermios(int(slave.Fd()), unix.TCGETS)
++	if err != nil {
++		t.Fatal(err)
++	}
++	result := make(chan struct {
++		value string
++		err   error
++	}, 1)
++	go func() {
++		value, err := (consoleInteraction{}).Input(context.Background(), "Token", "", true)
++		result <- struct {
++			value string
++			err   error
++		}{value, err}
++	}()
++	waitForEcho(t, int(slave.Fd()), false)
++	if _, err := master.Write([]byte("secret\n")); err != nil {
++		t.Fatal(err)
++	}
++	got := <-result
++	if got.err != nil || got.value != "secret" {
++		t.Fatalf("Input() = %q, %v; want secret", got.value, got.err)
++	}
++	actual, err := unix.IoctlGetTermios(int(slave.Fd()), unix.TCGETS)
++	if err != nil || actual.Lflag != original.Lflag {
++		t.Fatalf("terminal flags = %#x, %v; want %#x", actual.Lflag, err, original.Lflag)
++	}
++}
++
++func TestPluginSecretInputDisablesEchoBeforeWritingPrompt(t *testing.T) {
++	master, slave := usePluginPTY(t)
++	defer master.Close()
++	reader, writer := filledOutputPipe(t)
++	defer reader.Close()
++	previousOutput := os.Stdout
++	os.Stdout = writer
++	defer func() { os.Stdout = previousOutput; _ = writer.Close() }()
++	previousScreenState := screenActive
++	screenActive = false
++	defer func() { screenActive = previousScreenState }()
++	result := startPluginInput(context.Background(), true)
++	time.Sleep(20 * time.Millisecond)
++	echoDuringPrompt := terminalFlags(t, slave)&unix.ECHO != 0
++	go func() { _, _ = io.Copy(io.Discard, reader) }()
++	waitForEcho(t, int(slave.Fd()), false)
++	if _, err := master.Write([]byte("secret\n")); err != nil {
++		t.Fatal(err)
++	}
++	if got := <-result; got.err != nil || got.value != "secret" {
++		t.Fatalf("Input() = %q, %v; want secret", got.value, got.err)
++	}
++	if echoDuringPrompt {
++		t.Fatal("terminal echo remained enabled while the secret prompt was being written")
++	}
++}
++
++func filledOutputPipe(t *testing.T) (*os.File, *os.File) {
++	t.Helper()
++	fds := []int{0, 0}
++	if err := unix.Pipe2(fds, unix.O_CLOEXEC|unix.O_NONBLOCK); err != nil {
++		t.Fatal(err)
++	}
++	reader := os.NewFile(uintptr(fds[0]), "output-reader")
++	writer := os.NewFile(uintptr(fds[1]), "output-writer")
++	if reader == nil || writer == nil {
++		_ = unix.Close(fds[0])
++		_ = unix.Close(fds[1])
++		t.Fatal("could not open output pipe")
++	}
++	if err := unix.SetNonblock(int(writer.Fd()), true); err != nil {
++		_ = reader.Close()
++		_ = writer.Close()
++		t.Fatal(err)
++	}
++	fillPipe(t, int(writer.Fd()))
++	if err := unix.SetNonblock(int(writer.Fd()), false); err != nil {
++		_ = reader.Close()
++		_ = writer.Close()
++		t.Fatal(err)
++	}
++	return reader, writer
++}
++
++func fillPipe(t *testing.T, fd int) {
++	t.Helper()
++	buffer := strings.Repeat("x", 4096)
++	for {
++		_, err := unix.Write(fd, []byte(buffer))
++		if errors.Is(err, unix.EAGAIN) {
++			return
++		}
++		if err != nil {
++			t.Fatal(err)
++		}
++	}
++}
++
++func TestPluginSecretInputRestoresTerminalAfterCancellation(t *testing.T) {
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	master, slave := usePluginPTY(t)
++	defer master.Close()
++	original := terminalFlags(t, slave)
++	result := startPluginInput(ctx, true)
++	waitForEcho(t, int(slave.Fd()), false)
++	cancel()
++	if got := <-result; got.err != context.Canceled {
++		t.Fatalf("Input() error = %v; want context cancellation", got.err)
++	}
++	assertTerminalFlags(t, slave, original)
++}
++
++func TestPluginInputCanBeCancelled(t *testing.T) {
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	master, _ := usePluginPTY(t)
++	defer master.Close()
++	result := startPluginInput(ctx, false)
++	cancel()
++	if got := <-result; got.err != context.Canceled {
++		t.Fatalf("Input() error = %v; want context cancellation", got.err)
++	}
++}
++
++func TestPluginSecretInputRestoresTerminalAfterHangup(t *testing.T) {
++	master, slave := usePluginPTY(t)
++	result := startPluginInput(context.Background(), true)
++	waitForEcho(t, int(slave.Fd()), false)
++	_ = master.Close()
++	got := <-result
++	if got.err == nil {
++		t.Fatal("Input() error = nil; want terminal hangup")
++	}
++}
++
++func TestPluginInputRejectsOversizedLine(t *testing.T) {
++	master, slave := usePluginPTY(t)
++	defer master.Close()
++	result := startPluginInput(context.Background(), true)
++	waitForEcho(t, int(slave.Fd()), false)
++	if _, err := master.Write(append([]byte(strings.Repeat("x", 4097)), '\n')); err != nil {
++		t.Fatal(err)
++	}
++	got := <-result
++	if got.err == nil || !strings.Contains(got.err.Error(), "exceeds") {
++		t.Fatalf("Input() error = %v; want input size error", got.err)
++	}
++}
++
++func TestPluginInputAppliesTerminalErase(t *testing.T) {
++	master, slave := usePluginPTY(t)
++	defer master.Close()
++	result := startPluginInput(context.Background(), true)
++	waitForEcho(t, int(slave.Fd()), false)
++	if _, err := master.Write([]byte("ab\x7fc\n")); err != nil {
++		t.Fatal(err)
++	}
++	if got := <-result; got.err != nil || got.value != "ac" {
++		t.Fatalf("Input() = %q, %v; want erased value ac", got.value, got.err)
++	}
++}
++
++func TestPluginInteractionRestoresActiveScreen(t *testing.T) {
++	master, slave := usePluginPTY(t)
++	previousOutput := os.Stdout
++	os.Stdout = slave
++	defer func() { os.Stdout = previousOutput }()
++	previousScreenState := screenActive
++	screenActive = true
++	t.Cleanup(func() { screenActive = previousScreenState })
++	result := startPluginInput(context.Background(), false)
++	if _, err := master.Write([]byte("value\n")); err != nil {
++		t.Fatal(err)
++	}
++	if got := <-result; got.err != nil || got.value != "value" {
++		t.Fatalf("Input() = %q, %v; want value", got.value, got.err)
++	}
++	if !screenActive {
++		t.Fatal("Input() did not restore active screen")
++	}
++	if err := (consoleInteraction{}).RunHostCommand(context.Background(), "true", nil); err != nil {
++		t.Fatal(err)
++	}
++	if !screenActive {
++		t.Fatal("RunHostCommand() did not restore active screen")
++	}
++}
++
++func TestPluginHostCommandCanBeCancelled(t *testing.T) {
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	result := make(chan error, 1)
++	go func() {
++		result <- (consoleInteraction{}).RunHostCommand(ctx, "sleep", []string{"30"})
++	}()
++	time.Sleep(20 * time.Millisecond)
++	cancel()
++	if err := <-result; err == nil {
++		t.Fatal("RunHostCommand() error = nil; want cancellation")
++	}
++}
++
++func usePluginPTY(t *testing.T) (*os.File, *os.File) {
++	t.Helper()
++	master, slave := openPluginPTY(t)
++	previous := os.Stdin
++	os.Stdin = slave
++	t.Cleanup(func() { os.Stdin = previous; _ = slave.Close() })
++	return master, slave
++}
++
++func startPluginInput(ctx context.Context, secret bool) <-chan struct {
++	value string
++	err   error
++} {
++	result := make(chan struct {
++		value string
++		err   error
++	}, 1)
++	go func() {
++		value, err := (consoleInteraction{}).Input(ctx, "Value", "", secret)
++		result <- struct {
++			value string
++			err   error
++		}{value, err}
++	}()
++	return result
++}
++
++func terminalFlags(t *testing.T, terminal *os.File) uint32 {
++	t.Helper()
++	state, err := unix.IoctlGetTermios(int(terminal.Fd()), unix.TCGETS)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return state.Lflag
++}
++
++func assertTerminalFlags(t *testing.T, terminal *os.File, expected uint32) {
++	t.Helper()
++	if actual := terminalFlags(t, terminal); actual != expected {
++		t.Fatalf("terminal flags = %#x; want %#x", actual, expected)
++	}
++}
++
++func openPluginPTY(t *testing.T) (*os.File, *os.File) {
++	t.Helper()
++	masterFD, err := unix.Open("/dev/ptmx", unix.O_RDWR|unix.O_NOCTTY, 0)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var unlock int32
++	if err := unix.IoctlSetPointerInt(masterFD, unix.TIOCSPTLCK, int(unlock)); err != nil {
++		_ = unix.Close(masterFD)
++		t.Fatal(err)
++	}
++	number, err := unix.IoctlGetUint32(masterFD, unix.TIOCGPTN)
++	if err != nil {
++		_ = unix.Close(masterFD)
++		t.Fatal(err)
++	}
++	slaveFD, err := unix.Open("/dev/pts/"+strconv.Itoa(int(number)), unix.O_RDWR|unix.O_NOCTTY, 0)
++	if err != nil {
++		_ = unix.Close(masterFD)
++		t.Fatal(err)
++	}
++	return os.NewFile(uintptr(masterFD), "pty-master"), os.NewFile(uintptr(slaveFD), "pty-slave")
++}
++
++func waitForEcho(t *testing.T, fd int, enabled bool) {
++	t.Helper()
++	deadline := time.Now().Add(time.Second)
++	for time.Now().Before(deadline) {
++		state, err := unix.IoctlGetTermios(fd, unix.TCGETS)
++		if err == nil && (state.Lflag&unix.ECHO != 0) == enabled {
++			return
++		}
++		time.Sleep(time.Millisecond)
++	}
++	t.Fatalf("terminal echo did not become %v", enabled)
++}
++
++func TestPluginInputReturnsDefaultOnEmptyLine(t *testing.T) {
++	previous := os.Stdin
++	file, err := os.CreateTemp(t.TempDir(), "input")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, err := file.WriteString("\n"); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := file.Seek(0, 0); err != nil {
++		t.Fatal(err)
++	}
++	os.Stdin = file
++	defer func() { os.Stdin = previous; _ = file.Close() }()
++	value, err := (consoleInteraction{}).Input(context.Background(), "Client ID", "default", false)
++	if err != nil || value != "default" {
++		t.Fatalf("Input() = %q, %v; want default", value, err)
++	}
++}
+diff --git a/internal/plugins/githubapp/adapter.go b/internal/plugins/githubapp/adapter.go
+index 229d772..42ea7aa 100644
+--- a/internal/plugins/githubapp/adapter.go
++++ b/internal/plugins/githubapp/adapter.go
+@@ -129,7 +129,7 @@ while IFS= read -r line; do
+ 	esac
+ done
+ [ "$protocol" = https ] && [ "$host" = github.com ] || exit 0
+-token=$(curl --disable --noproxy '*' --unix-socket /run/dch-github/credential.sock --fail --silent --show-error --max-time 20 http://localhost/credential) || exit 1
++token=$(curl --disable --noproxy '*' --unix-socket /run/dch-github/credential.sock --fail --silent --show-error --max-time 125 http://localhost/credential) || { echo 'dch: credential unavailable; on a headless host, reconfigure GitHub authorization in host Project Plugins or unlock the host GPG agent in a terminal and retry' >&2; exit 1; }
+ [ -n "$token" ] || exit 1
+ printf 'username=x-access-token\npassword=%s\n\n' "$token"
+ `
+@@ -152,8 +152,8 @@ done
+ PATH=$clean_path
+ export PATH
+ real_gh=$(command -v gh) || { echo 'dch: gh is required' >&2; exit 127; }
+-token=$(curl --disable --noproxy '*' --unix-socket /run/dch-github/credential.sock --fail --silent --show-error --max-time 20 http://localhost/credential) || { echo 'dch: GitHub credential unavailable' >&2; exit 1; }
+-[ -n "$token" ] || { echo 'dch: GitHub credential unavailable' >&2; exit 1; }
++token=$(curl --disable --noproxy '*' --unix-socket /run/dch-github/credential.sock --fail --silent --show-error --max-time 125 http://localhost/credential) || { echo 'dch: GitHub credential unavailable; on a headless host, reconfigure GitHub authorization in host Project Plugins or unlock the host GPG agent in a terminal and retry' >&2; exit 1; }
++[ -n "$token" ] || { echo 'dch: GitHub credential unavailable; on a headless host, reconfigure GitHub authorization in host Project Plugins or unlock the host GPG agent in a terminal and retry' >&2; exit 1; }
+ GH_TOKEN=$token
+ export GH_TOKEN
+ exec "$real_gh" "$@"
+diff --git a/internal/plugins/githubapp/adapter_test.go b/internal/plugins/githubapp/adapter_test.go
+index e78f083..d4ef857 100644
+--- a/internal/plugins/githubapp/adapter_test.go
++++ b/internal/plugins/githubapp/adapter_test.go
+@@ -414,6 +414,12 @@ func TestGHWrapperFetchesEachTimeAndPreservesArgumentsAndExitStatus(t *testing.T
+ 	ghLog := filepath.Join(root, "gh.log")
+ 	writeExecutable(t, filepath.Join(bin, "gh"), fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$GH_TOKEN\" >> %q\nprintf '<%%s>\\n' \"$@\" >> %q\nexit 23\n", ghLog, ghLog))
+ 	wrapper := filepath.Join(runtimeDir, "bin", "gh")
++	runGHWrapperTwice(t, wrapper, bin)
++	assertGHWrapperLogs(t, ghLog, curlLog)
++}
++
++func runGHWrapperTwice(t *testing.T, wrapper, bin string) {
++	t.Helper()
+ 	for range 2 {
+ 		cmd := exec.Command(wrapper, "pr", "create", "--title", "a title")
+ 		cmd.Env = append(os.Environ(), "PATH=/run/dch-github/bin:"+bin+":/run/dch-github/bin:"+os.Getenv("PATH"), "GH_TOKEN=ambient-token")
+@@ -423,6 +429,10 @@ func TestGHWrapperFetchesEachTimeAndPreservesArgumentsAndExitStatus(t *testing.T
+ 			t.Fatalf("gh exit = %v, want 23", err)
+ 		}
+ 	}
++}
++
++func assertGHWrapperLogs(t *testing.T, ghLog, curlLog string) {
++	t.Helper()
+ 	contents, err := os.ReadFile(ghLog)
+ 	if err != nil {
+ 		t.Fatal(err)
+@@ -438,11 +448,17 @@ func TestGHWrapperFetchesEachTimeAndPreservesArgumentsAndExitStatus(t *testing.T
+ 	if !strings.HasPrefix(string(curlArgs), "--disable --noproxy * --unix-socket /run/dch-github/credential.sock") {
+ 		t.Fatalf("curl does not begin with fixed config and proxy options: %q", curlArgs)
+ 	}
+-	for _, required := range []string{"--disable", "--noproxy *", "--unix-socket /run/dch-github/credential.sock", "--max-time 20", "http://localhost/credential"} {
++	for _, required := range []string{"--disable", "--noproxy *", "--unix-socket /run/dch-github/credential.sock", "--max-time 125", "http://localhost/credential"} {
+ 		if !strings.Contains(string(curlArgs), required) {
+ 			t.Errorf("curl arguments %q missing %q", curlArgs, required)
+ 		}
+ 	}
++	if !strings.Contains(ghWrapperScript, "unlock the host GPG agent in a terminal and retry") {
++		t.Fatal("adapter does not explain how to retry on a headless host")
++	}
++	if !strings.Contains(ghWrapperScript, "reconfigure GitHub authorization") {
++		t.Fatal("adapter does not explain how to reconfigure an invalid PAT")
++	}
+ }
+ 
+ func TestGHWrapperDoesNotRunGHWithoutCredential(t *testing.T) {
+diff --git a/internal/plugins/githubapp/commit_candidate_test.go b/internal/plugins/githubapp/commit_candidate_test.go
+index 95ebf05..35c8855 100644
+--- a/internal/plugins/githubapp/commit_candidate_test.go
++++ b/internal/plugins/githubapp/commit_candidate_test.go
+@@ -207,6 +207,17 @@ func TestServeHostRejectsActiveRecoveryMarker(t *testing.T) {
+ 	}
+ }
+ 
++func TestServeHostRejectsActivePATRecoveryMarker(t *testing.T) {
++	project := t.TempDir()
++	cfg := Config{AuthMethod: authMethodPAT, ProjectPath: project, UserID: 8, RepositoryID: 9, Repository: "octo/repo"}
++	raw, _ := json.Marshal(cfg)
++	state := encodeState(ownershipState{CredentialCleanupIdentities: []credentialIdentity{identityForConfig(cfg)}})
++	err := New().ServeHost(context.Background(), plugins.HostContext{ProjectPath: project, Config: raw, State: state})
++	if err == nil || !strings.Contains(err.Error(), "credential recovery is pending") {
++		t.Fatalf("ServeHost() error = %v", err)
++	}
++}
++
+ func TestDisableRetriesRecoveryOnlyCredentialCleanup(t *testing.T) {
+ 	project := t.TempDir()
+ 	clientID := "client-id"
+@@ -236,6 +247,29 @@ func TestDisableRetriesRecoveryOnlyCredentialCleanup(t *testing.T) {
+ 	}
+ }
+ 
++func TestDisableRetriesPATRecoveryCleanup(t *testing.T) {
++	project := t.TempDir()
++	patConfig := Config{AuthMethod: authMethodPAT, ProjectPath: project, UserID: 8, RepositoryID: 9, Repository: "octo/repo"}
++	passPath, root := credentialMapPass(t)
++	entry := filepath.Join(root, secretEntry(patConfig))
++	if err := os.MkdirAll(filepath.Dir(entry), 0700); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(entry, []byte("PAT credential"), 0600); err != nil {
++		t.Fatal(err)
++	}
++	state := encodeState(ownershipState{CredentialCleanupIdentities: []credentialIdentity{identityForConfig(patConfig)}})
++	store := &testScopedStore{state: state}
++	plugin := &Plugin{PassPath: passPath}
++	host := plugins.HostContext{ProjectPath: project, State: state, Store: store}
++	if _, err := plugin.HandleHost(context.Background(), host, plugins.EventDisable); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := os.Stat(entry); !os.IsNotExist(err) {
++		t.Fatalf("PAT credential remains after disable: %v", err)
++	}
++}
++
+ func retryDeletePass(t *testing.T) (string, string) {
+ 	t.Helper()
+ 	passPath, entry := filepath.Join(t.TempDir(), "pass"), filepath.Join(t.TempDir(), "secret.json")
+@@ -327,6 +361,127 @@ func TestSuccessfulReauthorizationKeepsActiveRecoveryEntryAndCleansOthers(t *tes
+ 	}
+ }
+ 
++func TestPATCleanupFailureRemainsPendingAndCanBeRetried(t *testing.T) {
++	project := t.TempDir()
++	patCfg := Config{AuthMethod: authMethodPAT, ProjectPath: project, UserID: 8, RepositoryID: 9, Repository: "octo/repo"}
++	passPath, passRoot := credentialMapPass(t)
++	writeMappedCredential(t, passRoot, patCfg, TokenSet{Schema: 2, AuthMethod: authMethodPAT, ProjectPath: project, UserID: patCfg.UserID, RepositoryID: patCfg.RepositoryID, Repository: patCfg.Repository, PersonalAccessToken: "github_pat_old"})
++	entry := filepath.Join(passRoot, secretEntry(patCfg))
++	failureMarker := filepath.Join(t.TempDir(), "fail-rm")
++	if err := os.WriteFile(failureMarker, nil, 0600); err != nil {
++		t.Fatal(err)
++	}
++	script := readTestFile(t, passPath)
++	script = strings.Replace(script, "rm) rm -f", "rm) [ ! -f \"$DCH_FAIL_RM\" ] || exit 1; rm -f", 1)
++	if err := os.WriteFile(passPath, []byte(script), 0700); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("DCH_FAIL_RM", failureMarker)
++	plugin := &Plugin{PassPath: passPath}
++	host := plugins.HostContext{ProjectPath: project}
++	state := ownershipState{CredentialCleanupIdentities: []credentialIdentity{identityForConfig(patCfg)}}
++	remaining, err := plugin.retryCredentialCleanupFor(context.Background(), host, state, credentialIdentity{Method: authMethodApp, Key: "Iv1_active"})
++	if err == nil || !containsRecoveryIdentity(remaining, identityForConfig(patCfg)) {
++		t.Fatalf("failed PAT cleanup state = %#v, error = %v", remaining, err)
++	}
++	if _, err := os.Stat(entry); err != nil {
++		t.Fatalf("failed cleanup removed PAT entry: %v", err)
++	}
++	if err := os.Remove(failureMarker); err != nil {
++		t.Fatal(err)
++	}
++	remaining, err = plugin.retryCredentialCleanupFor(context.Background(), host, remaining, credentialIdentity{Method: authMethodApp, Key: "Iv1_active"})
++	if err != nil || hasCredentialCleanup(remaining) {
++		t.Fatalf("retried PAT cleanup state = %#v, error = %v", remaining, err)
++	}
++	if _, err := os.Stat(entry); !os.IsNotExist(err) {
++		t.Fatalf("retried cleanup left PAT entry: %v", err)
++	}
++}
++
++func TestSwitchingFromAppToPATKeepsPATAndCleansOldAppEntry(t *testing.T) {
++	setupHostHookTest(t, true)
++	project := t.TempDir()
++	appCfg := testConfig(project)
++	patCfg := Config{AuthMethod: authMethodPAT, ProjectPath: project, UserID: appCfg.UserID, Login: appCfg.Login, RepositoryID: appCfg.RepositoryID, Repository: appCfg.Repository}
++	appRaw, _ := json.Marshal(appCfg)
++	patRaw, _ := json.Marshal(patCfg)
++	passPath, passRoot := credentialMapPass(t)
++	writeMappedCredential(t, passRoot, appCfg, candidateTokenSet(appCfg))
++	patSet := TokenSet{Schema: 2, AuthMethod: authMethodPAT, ProjectPath: project, UserID: patCfg.UserID, RepositoryID: patCfg.RepositoryID, Repository: patCfg.Repository, PersonalAccessToken: "github_pat_candidate"}
++	listener := readyCredentialSocket(t, project)
++	defer listener.Close()
++	store := &testScopedStore{}
++	plugin := &Plugin{PassPath: passPath}
++	if _, err := plugin.commitCandidate(context.Background(), plugins.HostContext{ProjectPath: project, Config: patRaw, PreviousConfig: appRaw, Store: store}, patCfg, patSet, patRaw); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := os.Stat(filepath.Join(passRoot, secretEntry(patCfg))); err != nil {
++		t.Fatalf("PAT entry was removed: %v", err)
++	}
++	if _, err := os.Stat(filepath.Join(passRoot, secretEntry(appCfg))); !os.IsNotExist(err) {
++		t.Fatalf("old App entry remains: %v", err)
++	}
++	state, err := decodeState(store.state)
++	if err != nil || hasCredentialCleanup(state) {
++		t.Fatalf("cleanup state = %#v, %v", state, err)
++	}
++}
++
++func TestSwitchingFromPATToAppKeepsAppAndCleansOldPATEntry(t *testing.T) {
++	setupHostHookTest(t, true)
++	project := t.TempDir()
++	patCfg := Config{AuthMethod: authMethodPAT, ProjectPath: project, UserID: 8, Login: "tester", RepositoryID: 9, Repository: "octo/repo"}
++	appCfg := testConfig(project)
++	patRaw, _ := json.Marshal(patCfg)
++	appRaw, _ := json.Marshal(appCfg)
++	passPath, passRoot := credentialMapPass(t)
++	patSet := TokenSet{Schema: 2, AuthMethod: authMethodPAT, ProjectPath: project, UserID: patCfg.UserID, RepositoryID: patCfg.RepositoryID, Repository: patCfg.Repository, PersonalAccessToken: "github_pat_previous"}
++	writeMappedCredential(t, passRoot, patCfg, patSet)
++	listener := readyCredentialSocket(t, project)
++	defer listener.Close()
++	store := &testScopedStore{}
++	plugin := &Plugin{PassPath: passPath}
++	if _, err := plugin.commitCandidate(context.Background(), plugins.HostContext{ProjectPath: project, Config: appRaw, PreviousConfig: patRaw, Store: store}, appCfg, candidateTokenSet(appCfg), appRaw); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := os.Stat(filepath.Join(passRoot, secretEntry(appCfg))); err != nil {
++		t.Fatalf("App entry was removed: %v", err)
++	}
++	if _, err := os.Stat(filepath.Join(passRoot, secretEntry(patCfg))); !os.IsNotExist(err) {
++		t.Fatalf("old PAT entry remains: %v", err)
++	}
++	state, err := decodeState(store.state)
++	if err != nil || hasCredentialCleanup(state) {
++		t.Fatalf("cleanup state = %#v, %v", state, err)
++	}
++}
++
++func TestPATReauthorizationRestoresPreviousTokenWhenEnableFails(t *testing.T) {
++	env := setupHostHookTest(t, false)
++	project := t.TempDir()
++	cfg := Config{AuthMethod: authMethodPAT, ProjectPath: project, UserID: 8, Login: "tester", RepositoryID: 9, Repository: "octo/repo"}
++	raw, _ := json.Marshal(cfg)
++	previous := TokenSet{Schema: 2, AuthMethod: authMethodPAT, ProjectPath: project, UserID: cfg.UserID, RepositoryID: cfg.RepositoryID, Repository: cfg.Repository, PersonalAccessToken: "github_pat_previous"}
++	candidate := previous
++	candidate.PersonalAccessToken = "github_pat_candidate"
++	passPath, root := credentialMapPass(t)
++	writeMappedCredential(t, root, cfg, previous)
++	if err := os.WriteFile(filepath.Join(env.root, "bin", "systemctl"), []byte("#!/bin/sh\nshift\ncase \"$1\" in\nis-active) exit 3 ;;\nenable) exit 1 ;;\n*) exit 0 ;;\nesac\n"), 0700); err != nil {
++		t.Fatal(err)
++	}
++	plugin := &Plugin{PassPath: passPath}
++	_, err := plugin.commitCandidate(context.Background(), plugins.HostContext{ProjectPath: project, Config: raw, PreviousConfig: raw, Store: &testScopedStore{}}, cfg, candidate, raw)
++	if err == nil || !strings.Contains(err.Error(), "enable") {
++		t.Fatalf("commitCandidate() error = %v", err)
++	}
++	store := &SecretStore{PassPath: passPath, Entry: secretEntry(cfg), LockDir: filepath.Join(t.TempDir(), "locks")}
++	got, err := store.Read(context.Background(), cfg)
++	if err != nil || got.PersonalAccessToken != previous.PersonalAccessToken {
++		t.Fatalf("restored PAT = %#v, %v", got, err)
++	}
++}
++
+ func TestCommitCandidateClearsActiveRecoveryBeforeStartingService(t *testing.T) {
+ 	setupHostHookTest(t, true)
+ 	cfg := testConfig(t.TempDir())
+diff --git a/internal/plugins/githubapp/config.go b/internal/plugins/githubapp/config.go
+index 5f8f4bf..45069f2 100644
+--- a/internal/plugins/githubapp/config.go
++++ b/internal/plugins/githubapp/config.go
+@@ -9,7 +9,8 @@ import (
+ )
+ 
+ type Config struct {
+-	ClientID     string `json:"client_id"`
++	AuthMethod   string `json:"auth_method,omitempty"`
++	ClientID     string `json:"client_id,omitempty"`
+ 	ProjectPath  string `json:"project_path"`
+ 	UserID       int64  `json:"user_id"`
+ 	Login        string `json:"login"`
+@@ -17,6 +18,11 @@ type Config struct {
+ 	Repository   string `json:"repository"`
+ }
+ 
++const (
++	authMethodApp = "app"
++	authMethodPAT = "pat"
++)
++
+ type SharedConfig struct {
+ 	ClientID string `json:"client_id"`
+ }
+@@ -28,6 +34,9 @@ func (p *Plugin) ValidateSharedSettings(raw json.RawMessage) error {
+ 	if err := json.Unmarshal(raw, &cfg); err != nil {
+ 		return fmt.Errorf("invalid GitHub App shared settings")
+ 	}
++	if cfg.ClientID == "" {
++		return nil
++	}
+ 	if strings.TrimSpace(cfg.ClientID) != cfg.ClientID || !clientIDPattern.MatchString(cfg.ClientID) {
+ 		return fmt.Errorf("GitHub App Client ID is required")
+ 	}
+@@ -57,15 +66,27 @@ func decodeConfig(raw json.RawMessage) (Config, error) {
+ }
+ 
+ func (c Config) Validate() error {
+-	if !clientIDPattern.MatchString(c.ClientID) || !filepath.IsAbs(c.ProjectPath) || filepath.Clean(c.ProjectPath) != c.ProjectPath || c.UserID <= 0 || c.RepositoryID <= 0 || c.Repository == "" {
++	method := c.authMethod()
++	validClientID := method == authMethodApp && clientIDPattern.MatchString(c.ClientID) || method == authMethodPAT && c.ClientID == ""
++	if !validClientID || !filepath.IsAbs(c.ProjectPath) || filepath.Clean(c.ProjectPath) != c.ProjectPath || c.UserID <= 0 || c.RepositoryID <= 0 || c.Repository == "" {
+ 		return fmt.Errorf("GitHub App user authorization is incomplete")
+ 	}
++	if method != authMethodApp && method != authMethodPAT {
++		return fmt.Errorf("GitHub authentication method is invalid")
++	}
+ 	if !validRepositoryName(c.Repository) {
+ 		return fmt.Errorf("GitHub App repository binding is invalid")
+ 	}
+ 	return nil
+ }
+ 
++func (c Config) authMethod() string {
++	if c.AuthMethod == "" {
++		return authMethodApp
++	}
++	return c.AuthMethod
++}
++
+ func validRepositoryName(name string) bool {
+ 	parts := strings.Split(name, "/")
+ 	return len(parts) == 2 && validOwner(parts[0]) && validRepository(parts[1])
+diff --git a/internal/plugins/githubapp/config_test.go b/internal/plugins/githubapp/config_test.go
+index 9641f12..6d7929a 100644
+--- a/internal/plugins/githubapp/config_test.go
++++ b/internal/plugins/githubapp/config_test.go
+@@ -18,6 +18,18 @@ func TestUserAuthorizationConfigValidation(t *testing.T) {
+ 	}
+ }
+ 
++func TestConfigValidationAcceptsFineGrainedPATWithoutClientID(t *testing.T) {
++	plugin := New()
++	raw := json.RawMessage(`{"auth_method":"pat","project_path":"/tmp/project","user_id":2,"login":"tester","repository_id":3,"repository":"octo/repo"}`)
++	if err := plugin.ValidateConfig(raw); err != nil {
++		t.Fatalf("PAT config without ClientID: %v", err)
++	}
++	withClientID := json.RawMessage(`{"auth_method":"pat","client_id":"Iv1_example","project_path":"/tmp/project","user_id":2,"login":"tester","repository_id":3,"repository":"octo/repo"}`)
++	if err := plugin.ValidateConfig(withClientID); err == nil {
++		t.Fatal("PAT config accepted an App ClientID")
++	}
++}
++
+ func TestDecodeConfigRejectsLegacyInstallationMode(t *testing.T) {
+ 	raw := json.RawMessage(`{"app_id":12,"installation_id":34,"private_key_pass_entry":"old/key","permissions":{"contents":"read"}}`)
+ 	if !isLegacyConfig(raw) {
+diff --git a/internal/plugins/githubapp/device_test.go b/internal/plugins/githubapp/device_test.go
+index 0483cee..f61b05e 100644
+--- a/internal/plugins/githubapp/device_test.go
++++ b/internal/plugins/githubapp/device_test.go
+@@ -3,6 +3,7 @@ package githubapp
+ import (
+ 	"context"
+ 	"encoding/json"
++	"errors"
+ 	"fmt"
+ 	"io"
+ 	"net/http"
+@@ -28,6 +29,13 @@ func TestConfigureUsesRemoteIDAndOneRepositoryScopedDeviceFlow(t *testing.T) {
+ 		t.Fatal(err)
+ 	}
+ 	assertPreparedUserBinding(t, prepared.Config, project, 77)
++	var cfg Config
++	if err := json.Unmarshal(prepared.Config, &cfg); err != nil {
++		t.Fatal(err)
++	}
++	if cfg.AuthMethod != authMethodApp {
++		t.Fatalf("prepared authentication method = %q, want explicit App method", cfg.AuthMethod)
++	}
+ 	if len(fixture.polls) != 1 || fixture.polls[0].Get("repository_id") != "77" {
+ 		t.Fatalf("device polls = %#v", fixture.polls)
+ 	}
+@@ -40,6 +48,406 @@ func TestConfigureUsesRemoteIDAndOneRepositoryScopedDeviceFlow(t *testing.T) {
+ 	if fixture.deviceCodes != 1 || ui.opened != 1 || ui.confirms != 2 {
+ 		t.Fatalf("device codes=%d browser=%d confirms=%d", fixture.deviceCodes, ui.opened, ui.confirms)
+ 	}
++	if len(ui.hostCommands) != 0 || len(ui.notices) == 0 || ui.notices[0] != "Using existing pass recipient" {
++		t.Fatalf("setup commands=%#v notices=%#v", ui.hostCommands, ui.notices)
++	}
++}
++
++func TestConfigureOffersAppAsRecommendedAuthenticationMethod(t *testing.T) {
++	project := gitProject(t, true)
++	fixture := newOAuthFixture(t, []int64{9001})
++	ui := &fakeInteraction{selected: "77"}
++	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
++	if _, err := plugin.Configure(context.Background(), configureContext(project), ui); err != nil {
++		t.Fatal(err)
++	}
++	if len(ui.selections) == 0 {
++		t.Fatal("Configure() did not ask for an authentication method")
++	}
++	selection := ui.selections[0]
++	if selection.title != "Choose GitHub authentication" || selection.defaultIndex != 0 {
++		t.Fatalf("first selection = %#v, want authentication method with App selected", selection)
++	}
++	if len(selection.choices) != 2 || selection.choices[0] != (plugins.Choice{Value: "app", Label: "BYO GitHub App (Recommended)"}) || selection.choices[1] != (plugins.Choice{Value: "pat", Label: "Fine-grained personal access token"}) {
++		t.Fatalf("authentication choices = %#v", selection.choices)
++	}
++}
++
++func TestConfigureUsesEnteredAppClientIDForOnlyThisProject(t *testing.T) {
++	project := gitProject(t, true)
++	fixture := newOAuthFixture(t, []int64{9001})
++	ui := &fakeInteraction{selected: "77", inputValue: "Iv1_project-specific"}
++	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
++	prepared, err := plugin.Configure(context.Background(), configureContext(project), ui)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var cfg Config
++	if err := json.Unmarshal(prepared.Config, &cfg); err != nil {
++		t.Fatal(err)
++	}
++	if cfg.ClientID != "Iv1_project-specific" {
++		t.Fatalf("prepared ClientID = %q, want project-specific value", cfg.ClientID)
++	}
++	if fixture.deviceRequests[0].Get("client_id") != "Iv1_project-specific" {
++		t.Fatalf("device flow used ClientID %q", fixture.deviceRequests[0].Get("client_id"))
++	}
++	if len(ui.inputs) != 1 || ui.inputs[0].secret {
++		t.Fatalf("App Client ID inputs = %#v, want one non-secret input", ui.inputs)
++	}
++}
++
++func TestConfigurePATValidatesAccountAndTargetRepositoryAfterHostSetup(t *testing.T) {
++	project := gitProject(t, true)
++	var requests []string
++	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		requests = append(requests, r.Method+" "+r.URL.Path)
++		if r.Header.Get("Authorization") != "Bearer github_pat_test" {
++			t.Errorf("authorization = %q", r.Header.Get("Authorization"))
++		}
++		switch r.URL.Path {
++		case "/user":
++			fmt.Fprint(w, `{"id":9001,"login":"octo-user"}`)
++		case "/repos/octo/repo":
++			fmt.Fprint(w, `{"id":77,"full_name":"octo/repo"}`)
++		default:
++			t.Errorf("unexpected API request %q", r.URL.Path)
++			http.NotFound(w, r)
++		}
++	}))
++	defer api.Close()
++	ui := &fakeInteraction{selected: "ignored", authMethod: "pat", inputValue: "github_pat_test"}
++	plugin := &Plugin{HTTPClient: api.Client(), APIBaseURL: api.URL}
++	prepared, err := plugin.Configure(context.Background(), plugins.ConfigureContext{Host: plugins.HostContext{ProjectPath: project}}, ui)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var cfg Config
++	if err := json.Unmarshal(prepared.Config, &cfg); err != nil {
++		t.Fatal(err)
++	}
++	if cfg.AuthMethod != authMethodPAT || cfg.ClientID != "" || cfg.UserID != 9001 || cfg.RepositoryID != 77 || cfg.Repository != "octo/repo" {
++		t.Fatalf("prepared PAT config = %#v", cfg)
++	}
++	if strings.Contains(string(prepared.Config), "github_pat_test") {
++		t.Fatal("PAT was included in project config")
++	}
++	if len(requests) != 2 || requests[0] != "GET /user" || requests[1] != "GET /repos/octo/repo" {
++		t.Fatalf("PAT validation requests = %#v", requests)
++	}
++	if len(ui.inputs) != 1 || !ui.inputs[0].secret {
++		t.Fatalf("PAT inputs = %#v, want one hidden input", ui.inputs)
++	}
++	if len(ui.noticeMessages) == 0 || !strings.Contains(ui.noticeMessages[len(ui.noticeMessages)-1], "https://github.com/settings/personal-access-tokens/new") || !strings.Contains(ui.noticeMessages[len(ui.noticeMessages)-1], "minimum permissions") || !strings.Contains(ui.noticeMessages[len(ui.noticeMessages)-1], "does not grant Git or gh push access") {
++		t.Fatalf("PAT creation guidance = %#v", ui.noticeMessages)
++	}
++}
++
++func TestConfigureRejectsMalformedPATRepositoryBeforeSecretInput(t *testing.T) {
++	project := gitProject(t, false)
++	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
++		t.Errorf("GitHub was called for a malformed repository")
++		http.Error(w, "unexpected", http.StatusInternalServerError)
++	}))
++	defer api.Close()
++	ui := &fakeInteraction{authMethod: authMethodPAT, inputValues: map[string]string{"GitHub repository (owner/repo)": "../repo"}}
++	plugin := &Plugin{HTTPClient: api.Client(), APIBaseURL: api.URL}
++	_, err := plugin.Configure(context.Background(), plugins.ConfigureContext{Host: plugins.HostContext{ProjectPath: project}}, ui)
++	if err == nil || !strings.Contains(err.Error(), "owner/repo") {
++		t.Fatalf("Configure() error = %v, want repository format guidance", err)
++	}
++	for _, input := range ui.inputs {
++		if input.secret {
++			t.Fatal("PAT was requested before repository input was validated")
++		}
++	}
++}
++
++func TestConfigurePATAllowsManualRepositoryWhenProjectHasNoGitRemote(t *testing.T) {
++	setupConfigureHost(t)
++	project := filepath.Clean(t.TempDir())
++	var requests []string
++	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		requests = append(requests, r.Method+" "+r.URL.Path)
++		switch r.URL.Path {
++		case "/user":
++			fmt.Fprint(w, `{"id":9001,"login":"octo-user"}`)
++		case "/repos/octo/repo":
++			fmt.Fprint(w, `{"id":77,"full_name":"octo/repo"}`)
++		default:
++			t.Errorf("unexpected API request %q", r.URL.Path)
++			http.NotFound(w, r)
++		}
++	}))
++	defer api.Close()
++	ui := &fakeInteraction{authMethod: authMethodPAT, inputValues: map[string]string{
++		"GitHub repository (owner/repo)":     "octo/repo",
++		"Fine-grained personal access token": "github_pat_test",
++	}}
++	plugin := &Plugin{HTTPClient: api.Client(), APIBaseURL: api.URL}
++	prepared, err := plugin.Configure(context.Background(), plugins.ConfigureContext{Host: plugins.HostContext{ProjectPath: project}}, ui)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var cfg Config
++	if err := json.Unmarshal(prepared.Config, &cfg); err != nil {
++		t.Fatal(err)
++	}
++	if cfg.Repository != "octo/repo" || cfg.AuthMethod != authMethodPAT {
++		t.Fatalf("prepared PAT config = %#v", cfg)
++	}
++	if len(requests) != 2 || requests[0] != "GET /user" || requests[1] != "GET /repos/octo/repo" {
++		t.Fatalf("PAT validation requests = %#v", requests)
++	}
++}
++
++func TestConfigureRequiresHostSetupCapabilitiesBeforeDeviceFlow(t *testing.T) {
++	project := gitProject(t, true)
++	fixture := newOAuthFixture(t, []int64{9001})
++	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
++	_, err := plugin.Configure(context.Background(), configureContext(project), &legacyInteraction{})
++	if err == nil || !strings.Contains(err.Error(), "host setup interaction") {
++		t.Fatalf("Configure() error = %v, want missing host setup interaction", err)
++	}
++	if fixture.deviceCodes != 0 {
++		t.Fatalf("device flow started %d times before host setup", fixture.deviceCodes)
++	}
++}
++
++func TestConfigureStopsBeforeDeviceFlowWhenHostRequirementsAreUnavailable(t *testing.T) {
++	project := gitProject(t, true)
++	missingPath := t.TempDir()
++	t.Setenv("PATH", missingPath)
++	ui := &fakeInteraction{denyAt: 1}
++	fixture := newOAuthFixture(t, []int64{9001})
++	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
++	_, err := plugin.Configure(context.Background(), configureContext(project), ui)
++	if err == nil || (!strings.Contains(err.Error(), "not supported") && !strings.Contains(err.Error(), "manually")) {
++		t.Fatalf("Configure() error = %v, want host setup guidance", err)
++	}
++	if len(ui.hostCommands) != 0 || len(fixture.deviceRequests) != 0 {
++		t.Fatalf("host commands=%#v device requests=%#v", ui.hostCommands, fixture.deviceRequests)
++	}
++}
++
++func TestConfigureInitializesUninitializedPassWithPrimaryFingerprint(t *testing.T) {
++	project := gitProject(t, true)
++	root := os.Getenv("PASSWORD_STORE_DIR")
++	if err := os.Remove(filepath.Join(root, ".gpg-id")); err != nil {
++		t.Fatal(err)
++	}
++	fixture := newOAuthFixture(t, []int64{9001})
++	ui := &fakeInteraction{selected: "77"}
++	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
++	if _, err := plugin.Configure(context.Background(), configureContext(project), ui); err != nil {
++		t.Fatal(err)
++	}
++	if len(ui.hostCommands) != 1 || ui.hostCommands[0] != "pass init 0123456789012345678901234567890123456789" {
++		t.Fatalf("host commands = %#v", ui.hostCommands)
++	}
++}
++
++func TestConfigureDoesNotOverwriteRecipientInitializedDuringKeySelection(t *testing.T) {
++	project := gitProject(t, true)
++	root := os.Getenv("PASSWORD_STORE_DIR")
++	if err := os.Remove(filepath.Join(root, ".gpg-id")); err != nil {
++		t.Fatal(err)
++	}
++	fixture := newOAuthFixture(t, []int64{9001})
++	ui := &fakeInteraction{selected: "77"}
++	ui.onSelect = func(title string) {
++		if strings.Contains(title, "GPG key") {
++			if err := os.WriteFile(filepath.Join(root, ".gpg-id"), []byte("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"), 0600); err != nil {
++				t.Fatal(err)
++			}
++		}
++	}
++	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
++	if _, err := plugin.Configure(context.Background(), configureContext(project), ui); err != nil {
++		t.Fatal(err)
++	}
++	if len(ui.hostCommands) != 0 {
++		t.Fatalf("host commands overwrote concurrent init: %#v", ui.hostCommands)
++	}
++	if got := readTestFile(t, filepath.Join(root, ".gpg-id")); strings.TrimSpace(got) != "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" {
++		t.Fatalf("recipient was changed: %q", got)
++	}
++}
++
++func TestConfigureDoesNotOfferDisabledPrimaryGPGKey(t *testing.T) {
++	assertDisabledGPGKeyNotOffered(t, "scESCD", "e")
++}
++
++func TestConfigureDoesNotOfferDisabledSubkeyBehindAggregateCapability(t *testing.T) {
++	assertDisabledGPGKeyNotOffered(t, "scESC", "eD")
++}
++
++func assertDisabledGPGKeyNotOffered(t *testing.T, primaryCapabilities, subkeyCapabilities string) {
++	t.Helper()
++	project := gitProject(t, true)
++	root := os.Getenv("PASSWORD_STORE_DIR")
++	if err := os.Remove(filepath.Join(root, ".gpg-id")); err != nil {
++		t.Fatal(err)
++	}
++	bin := strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))[0]
++	listing := fmt.Sprintf("sec:u:2048:1:ABCDEF:0:0:::::%s:\nfpr:::::::::0123456789012345678901234567890123456789:\nuid:u::::0::AABBCCDDEEFF::Disabled Key <disabled@example.com>::::::::::0:\nssb:u:2048:1:SUBKEY:0:0:::::%s:\nfpr:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:\n", primaryCapabilities, subkeyCapabilities)
++	writeGPGListing(t, bin, listing)
++	fixture := newOAuthFixture(t, []int64{9001})
++	ui := &fakeInteraction{selected: "77", denyAt: 1}
++	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
++	_, err := plugin.Configure(context.Background(), configureContext(project), ui)
++	if err == nil || !strings.Contains(err.Error(), "create a GPG key manually") {
++		t.Fatalf("Configure() error = %v, want no usable key guidance", err)
++	}
++	if fixture.deviceCodes != 0 || len(ui.hostCommands) != 0 {
++		t.Fatalf("device codes=%d host commands=%#v", fixture.deviceCodes, ui.hostCommands)
++	}
++	for _, selection := range ui.selections {
++		if selection.title == "Choose a GPG key for pass" {
++			t.Fatalf("disabled key was offered: %#v", selection.choices)
++		}
++	}
++}
++
++func TestConfigureCanUseEncryptionSubkeyWhenPrimaryIsOfflineStub(t *testing.T) {
++	project := gitProject(t, true)
++	if err := os.Remove(filepath.Join(os.Getenv("PASSWORD_STORE_DIR"), ".gpg-id")); err != nil {
++		t.Fatal(err)
++	}
++	bin := strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))[0]
++	listing := strings.Join([]string{
++		colonRecord("sec", "u", "scESC", "#"),
++		"fpr:::::::::0123456789012345678901234567890123456789:",
++		"uid:u::::0::AABBCCDDEEFF::Offline Primary <offline@example.com>::::::::::0:",
++		colonRecord("ssb", "u", "e", ""),
++		"fpr:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:",
++	}, "\n")
++	writeGPGListing(t, bin, listing)
++	fixture := newOAuthFixture(t, []int64{9001})
++	ui := &fakeInteraction{selected: "77"}
++	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
++	if _, err := plugin.Configure(context.Background(), configureContext(project), ui); err != nil {
++		t.Fatal(err)
++	}
++	if len(ui.hostCommands) != 1 || ui.hostCommands[0] != "pass init 0123456789012345678901234567890123456789" {
++		t.Fatalf("host commands = %#v", ui.hostCommands)
++	}
++}
++
++func colonRecord(kind, validity, capabilities, tokenMarker string) string {
++	fields := make([]string, 15)
++	fields[0], fields[1], fields[2], fields[3], fields[4] = kind, validity, "2048", "1", "ABCDEF"
++	fields[5], fields[6], fields[11], fields[14] = "0", "0", capabilities, tokenMarker
++	return strings.Join(fields, ":") + ":"
++}
++
++func writeGPGListing(t *testing.T, bin, listing string) {
++	t.Helper()
++	command := "#!/bin/sh\nprintf '%s' '" + strings.ReplaceAll(listing, "'", "'\\''") + "'\n"
++	if err := os.WriteFile(filepath.Join(bin, "gpg"), []byte(command), 0700); err != nil {
++		t.Fatal(err)
++	}
++}
++
++func TestConfigureStopsWhenNoGPGKeyCreationIsDeclined(t *testing.T) {
++	project := gitProject(t, true)
++	if err := os.Remove(filepath.Join(os.Getenv("PASSWORD_STORE_DIR"), ".gpg-id")); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("DCH_FAKE_GPG_NO_KEYS", "1")
++	fixture := newOAuthFixture(t, []int64{9001})
++	ui := &fakeInteraction{denyAt: 1}
++	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
++	_, err := plugin.Configure(context.Background(), configureContext(project), ui)
++	if err == nil || !strings.Contains(err.Error(), "create a GPG key manually") {
++		t.Fatalf("Configure() error = %v, want key creation cancellation", err)
++	}
++	if fixture.deviceCodes != 0 || len(ui.hostCommands) != 0 {
++		t.Fatalf("device codes=%d commands=%#v", fixture.deviceCodes, ui.hostCommands)
++	}
++}
++
++func TestConfigureCreatesGPGKeyThenInitializesPass(t *testing.T) {
++	project := gitProject(t, true)
++	if err := os.Remove(filepath.Join(os.Getenv("PASSWORD_STORE_DIR"), ".gpg-id")); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("DCH_FAKE_GPG_NO_KEYS", "1")
++	fixture := newOAuthFixture(t, []int64{9001})
++	ui := &fakeInteraction{selected: "77"}
++	ui.onHostCommand = func(command string) {
++		if command == "gpg --full-generate-key" {
++			t.Setenv("DCH_FAKE_GPG_NO_KEYS", "")
++		}
++	}
++	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
++	if _, err := plugin.Configure(context.Background(), configureContext(project), ui); err != nil {
++		t.Fatal(err)
++	}
++	if len(ui.hostCommands) != 2 || ui.hostCommands[0] != "gpg --full-generate-key" || ui.hostCommands[1] != "pass init 0123456789012345678901234567890123456789" {
++		t.Fatalf("host commands = %#v", ui.hostCommands)
++	}
++}
++
++func TestConfigureStopsWhenInteractiveGPGCreationFails(t *testing.T) {
++	project := gitProject(t, true)
++	if err := os.Remove(filepath.Join(os.Getenv("PASSWORD_STORE_DIR"), ".gpg-id")); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("DCH_FAKE_GPG_NO_KEYS", "1")
++	fixture := newOAuthFixture(t, []int64{9001})
++	ui := &fakeInteraction{}
++	ui.commandErr = errors.New("gpg canceled")
++	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
++	_, err := plugin.Configure(context.Background(), configureContext(project), ui)
++	if err == nil || !strings.Contains(err.Error(), "key creation failed or was canceled") {
++		t.Fatalf("Configure() error = %v", err)
++	}
++	if fixture.deviceCodes != 0 {
++		t.Fatalf("device flow started %d times", fixture.deviceCodes)
++	}
++}
++
++func TestConfigureRejectsPasswordStoreProbeMismatchBeforeDeviceFlow(t *testing.T) {
++	project := gitProject(t, true)
++	passPath := writeProbePass(t, "wrong-value", false)
++	fixture := newOAuthFixture(t, []int64{9001})
++	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com", PassPath: passPath}
++	_, err := plugin.Configure(context.Background(), configureContext(project), &fakeInteraction{selected: "77"})
++	if err == nil || !strings.Contains(err.Error(), "readback verification failed") {
++		t.Fatalf("Configure() error = %v, want probe mismatch", err)
++	}
++	if fixture.deviceCodes != 0 {
++		t.Fatalf("device flow started %d times", fixture.deviceCodes)
++	}
++}
++
++func TestConfigureReportsProbeCleanupFailureAndStopsBeforeDeviceFlow(t *testing.T) {
++	project := gitProject(t, true)
++	passPath := writeProbePass(t, "wrong-value", true)
++	fixture := newOAuthFixture(t, []int64{9001})
++	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com", PassPath: passPath}
++	_, err := plugin.Configure(context.Background(), configureContext(project), &fakeInteraction{selected: "77"})
++	if err == nil || !strings.Contains(err.Error(), "pass rm --") {
++		t.Fatalf("Configure() error = %v, want cleanup instruction", err)
++	}
++	if strings.Contains(err.Error(), "wrong-value") || fixture.deviceCodes != 0 {
++		t.Fatalf("error=%v device flow=%d", err, fixture.deviceCodes)
++	}
++}
++
++func writeProbePass(t *testing.T, shown string, failRemove bool) string {
++	t.Helper()
++	path := filepath.Join(t.TempDir(), "pass")
++	remove := "rm -f \"$file\""
++	if failRemove {
++		remove = "exit 1"
++	}
++	script := "#!/bin/sh\nfor arg in \"$@\"; do entry=$arg; done\nfile=\"$PASSWORD_STORE_DIR/$entry\"\ncase \"$1\" in\n insert) mkdir -p \"$(dirname \"$file\")\"; cat > \"$file\" ;;\n show) if [ ! -f \"$file\" ]; then echo 'not in the password store' >&2; exit 1; fi; printf '%s\\n' '" + shown + "' ;;\n rm) " + remove + " ;;\n *) exit 1 ;;\nesac\n"
++	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
++		t.Fatal(err)
++	}
++	return path
+ }
+ 
+ func TestConfigureDiscoveryUsesTwoDeviceFlowsAndRequiresSameUser(t *testing.T) {
+@@ -111,23 +519,15 @@ func TestConfigureRejectsTokenExpiredDuringConfirmation(t *testing.T) {
+ 	fixture.clock = clock.read
+ 	fixture.onIssue = func() { clock.advance(5 * time.Second) }
+ 	fixture.onScope = func() { clock.advance(10 * time.Second) }
+-	marker := filepath.Join(t.TempDir(), "pass-used")
+-	passPath := filepath.Join(t.TempDir(), "pass")
+-	if err := os.WriteFile(passPath, []byte("#!/bin/sh\nprintf called > "+marker+"\n"), 0700); err != nil {
+-		t.Fatal(err)
+-	}
+ 	ui := &fakeInteraction{selected: "77", onConfirm: func(title string) {
+ 		if title == "Confirm GitHub account" {
+ 			clock.advance(20 * time.Second)
+ 		}
+ 	}}
+-	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com", PassPath: passPath, Now: clock.read}
++	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com", Now: clock.read}
+ 	if _, err := plugin.Configure(context.Background(), configureContext(project), ui); err == nil || !strings.Contains(err.Error(), "expired") {
+ 		t.Fatalf("Configure() error = %v", err)
+ 	}
+-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+-		t.Fatalf("pass was invoked for expired candidate: %v", err)
+-	}
+ }
+ 
+ func TestConfigureRejectsNearExpiryAfterScopeVerification(t *testing.T) {
+@@ -168,13 +568,8 @@ func writablePass(t *testing.T) (string, string) {
+ func TestConfigureStopsDiscoveryWhenUserDeclinesAccountBeforeRepositoryListing(t *testing.T) {
+ 	project := gitProject(t, false)
+ 	fixture := newOAuthFixture(t, []int64{9001})
+-	marker := filepath.Join(t.TempDir(), "pass-writes")
+-	pass := filepath.Join(t.TempDir(), "pass")
+-	if err := os.WriteFile(pass, []byte("#!/bin/sh\nprintf called > "+marker+"\n"), 0700); err != nil {
+-		t.Fatal(err)
+-	}
+ 	ui := &fakeInteraction{selected: "77", denyAt: 2}
+-	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com", PassPath: pass}
++	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
+ 	if _, err := plugin.Configure(context.Background(), configureContext(project), ui); err == nil || !strings.Contains(err.Error(), "cancelled") {
+ 		t.Fatalf("Configure() error = %v", err)
+ 	}
+@@ -184,9 +579,6 @@ func TestConfigureStopsDiscoveryWhenUserDeclinesAccountBeforeRepositoryListing(t
+ 	if fixture.deviceCodes != 1 || len(fixture.polls) != 1 || fixture.polls[0].Get("repository_id") != "" {
+ 		t.Fatalf("device codes=%d polls=%#v", fixture.deviceCodes, fixture.polls)
+ 	}
+-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+-		t.Fatalf("pass was invoked before account confirmation: %v", err)
+-	}
+ }
+ 
+ func TestConfigureRejectsAccountChangeAfterDiscovery(t *testing.T) {
+@@ -206,6 +598,7 @@ func configureContext(project string) plugins.ConfigureContext {
+ 
+ func gitProject(t *testing.T, withRemote bool) string {
+ 	t.Helper()
++	setupConfigureHost(t)
+ 	project := t.TempDir()
+ 	command := exec.Command("git", "init", "--quiet", project)
+ 	if output, err := command.CombinedOutput(); err != nil {
+@@ -220,6 +613,32 @@ func gitProject(t *testing.T, withRemote bool) string {
+ 	return filepath.Clean(project)
+ }
+ 
++func setupConfigureHost(t *testing.T) {
++	t.Helper()
++	bin := t.TempDir()
++	gpg := "#!/bin/sh\nif [ \"$DCH_FAKE_GPG_NO_KEYS\" = 1 ]; then exit 0; fi\nprintf 'sec:u:2048:1:ABCDEF:0:0:::::scESC:\nfpr:::::::::0123456789012345678901234567890123456789:\nuid:u::::0::AABBCCDDEEFF::Test User <test@example.com>::::::::::0:\nssb:u:2048:1:SUBKEY:0:0:::::e:\nfpr:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:\n'\n"
++	pass := "#!/bin/sh\nfor arg in \"$@\"; do entry=$arg; done\nfile=\"$PASSWORD_STORE_DIR/$entry\"\ncase \"$1\" in\n init) exit 0 ;;\n insert) mkdir -p \"$(dirname \"$file\")\"; cat > \"$file\" ;;\n show) if [ ! -f \"$file\" ]; then echo 'not in the password store' >&2; exit 1; fi; cat \"$file\" ;;\n rm) rm -f \"$file\" ;;\n *) exit 1 ;;\nesac\n"
++	for name, body := range map[string]string{"gpg": gpg, "pass": pass} {
++		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0700); err != nil {
++			t.Fatal(err)
++		}
++	}
++	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
++	store := t.TempDir()
++	if err := os.WriteFile(filepath.Join(store, ".gpg-id"), []byte("0123456789012345678901234567890123456789\n"), 0600); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("PASSWORD_STORE_DIR", store)
++}
++
++func TestSecretKeyParserKeepsPrimaryFingerprintAndEncryptionSubkey(t *testing.T) {
++	output := []byte("sec:u:2048:1:PRIMARY:0:0:::::scESC:\nfpr:::::::::0123456789012345678901234567890123456789:\nuid:u::::0::AABBCCDDEEFF::Example User <user@example.com>::::::::::0:\nssb:u:2048:1:SUBKEY:0:0:::::e:\nfpr:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:\n")
++	keys := parseSecretKeys(output)
++	if len(keys) != 1 || keys[0].fingerprint != "0123456789012345678901234567890123456789" || keys[0].user != "Example User <user@example.com>" {
++		t.Fatalf("parsed keys = %#v", keys)
++	}
++}
++
+ func assertPreparedUserBinding(t *testing.T, raw json.RawMessage, project string, repositoryID int64) {
+ 	t.Helper()
+ 	var cfg Config
+@@ -232,15 +651,63 @@ func assertPreparedUserBinding(t *testing.T, raw json.RawMessage, project string
+ }
+ 
+ type fakeInteraction struct {
+-	selected  string
+-	confirms  int
+-	denyAt    int
+-	opened    int
+-	onConfirm func(string)
++	selected       string
++	confirms       int
++	denyAt         int
++	opened         int
++	onConfirm      func(string)
++	onSelect       func(string)
++	hostCommands   []string
++	onHostCommand  func(string)
++	commandErr     error
++	notices        []string
++	noticeMessages []string
++	selections     []recordedSelection
++	inputValue     string
++	authMethod     string
++	inputValues    map[string]string
++	inputs         []recordedInput
++}
++
++type recordedSelection struct {
++	title        string
++	choices      []plugins.Choice
++	defaultIndex int
++}
++
++type recordedInput struct {
++	title  string
++	secret bool
+ }
+ 
+-func (f *fakeInteraction) Notify(context.Context, string, string) error { return nil }
+-func (f *fakeInteraction) Select(_ context.Context, _ string, _ []plugins.Choice, _ int) (string, error) {
++type legacyInteraction struct{}
++
++func (legacyInteraction) Notify(context.Context, string, string) error { return nil }
++func (legacyInteraction) Select(context.Context, string, []plugins.Choice, int) (string, error) {
++	return "", nil
++}
++func (legacyInteraction) Confirm(context.Context, string, string) (bool, error) { return false, nil }
++func (legacyInteraction) OpenBrowser(context.Context, string) error             { return nil }
++
++func (f *fakeInteraction) Notify(_ context.Context, title, message string) error {
++	f.notices = append(f.notices, title)
++	f.noticeMessages = append(f.noticeMessages, message)
++	return nil
++}
++func (f *fakeInteraction) Select(_ context.Context, title string, choices []plugins.Choice, defaultIndex int) (string, error) {
++	f.selections = append(f.selections, recordedSelection{title: title, choices: append([]plugins.Choice(nil), choices...), defaultIndex: defaultIndex})
++	if f.onSelect != nil {
++		f.onSelect(title)
++	}
++	if title == "Choose GitHub authentication" {
++		if f.authMethod != "" {
++			return f.authMethod, nil
++		}
++		return "app", nil
++	}
++	if strings.Contains(title, "GPG key") {
++		return "0123456789012345678901234567890123456789", nil
++	}
+ 	return f.selected, nil
+ }
+ func (f *fakeInteraction) Confirm(_ context.Context, title, _ string) (bool, error) {
+@@ -251,6 +718,29 @@ func (f *fakeInteraction) Confirm(_ context.Context, title, _ string) (bool, err
+ 	return f.confirms != f.denyAt, nil
+ }
+ func (f *fakeInteraction) OpenBrowser(context.Context, string) error { f.opened++; return nil }
++func (f *fakeInteraction) Input(_ context.Context, title, defaultValue string, secret bool) (string, error) {
++	f.inputs = append(f.inputs, recordedInput{title: title, secret: secret})
++	if value, ok := f.inputValues[title]; ok {
++		return value, nil
++	}
++	if f.inputValue != "" {
++		return f.inputValue, nil
++	}
++	return defaultValue, nil
++}
++func (f *fakeInteraction) RunHostCommand(_ context.Context, command string, args []string) error {
++	line := command + " " + strings.Join(args, " ")
++	f.hostCommands = append(f.hostCommands, line)
++	if command == "pass" && len(args) == 2 && args[0] == "init" {
++		if err := os.WriteFile(filepath.Join(os.Getenv("PASSWORD_STORE_DIR"), ".gpg-id"), []byte(args[1]+"\n"), 0600); err != nil {
++			return err
++		}
++	}
++	if f.onHostCommand != nil {
++		f.onHostCommand(line)
++	}
++	return f.commandErr
++}
+ 
+ type oauthFixture struct {
+ 	client              *http.Client
+diff --git a/internal/plugins/githubapp/gpg.go b/internal/plugins/githubapp/gpg.go
+new file mode 100644
+index 0000000..ad0331b
+--- /dev/null
++++ b/internal/plugins/githubapp/gpg.go
+@@ -0,0 +1,93 @@
++package githubapp
++
++import (
++	"context"
++	"dch/internal/plugins"
++	"fmt"
++	"strings"
++)
++
++type secretKey struct{ fingerprint, user string }
++type keyParseState struct {
++	key                                 secretKey
++	active, canEncrypt, haveFingerprint bool
++}
++
++func parseSecretKeys(output []byte) []secretKey {
++	var keys []secretKey
++	var state keyParseState
++	for _, line := range strings.Split(string(output), "\n") {
++		parts := strings.Split(line, ":")
++		keys, state = consumeKeyRecord(keys, state, parts)
++	}
++	if completeKey(state) {
++		keys = append(keys, state.key)
++	}
++	return keys
++}
++
++func consumeKeyRecord(keys []secretKey, state keyParseState, parts []string) ([]secretKey, keyParseState) {
++	if len(parts) < 10 {
++		return keys, state
++	}
++	switch parts[0] {
++	case "sec":
++		if completeKey(state) {
++			keys = append(keys, state.key)
++		}
++		capabilities := colonField(parts, 11)
++		active := usableKeyValidity(colonField(parts, 1)) && !strings.Contains(capabilities, "D")
++		state = keyParseState{
++			active:     active,
++			canEncrypt: active && encryptionCapability(capabilities) && colonField(parts, 14) != "#",
++		}
++	case "ssb":
++		capabilities := colonField(parts, 11)
++		state.canEncrypt = state.canEncrypt || (state.active && usableKeyValidity(colonField(parts, 1)) && encryptionCapability(capabilities) && colonField(parts, 14) != "#")
++	case "fpr":
++		if state.active && !state.haveFingerprint && len(parts[9]) == 40 {
++			state.key.fingerprint, state.haveFingerprint = parts[9], true
++		}
++	case "uid":
++		if state.active && state.key.user == "" {
++			state.key.user = parts[9]
++		}
++	}
++	return keys, state
++}
++
++func colonField(fields []string, index int) string {
++	if index >= len(fields) {
++		return ""
++	}
++	return fields[index]
++}
++
++func encryptionCapability(capabilities string) bool {
++	return strings.Contains(capabilities, "e") && !strings.Contains(capabilities, "D")
++}
++
++func completeKey(state keyParseState) bool {
++	return state.active && state.canEncrypt && state.haveFingerprint && state.key.user != ""
++}
++
++func usableKeyValidity(validity string) bool {
++	return validity == "u" || validity == "m" || validity == "f"
++}
++
++func selectSecretKey(ctx context.Context, ui plugins.Interaction, keys []secretKey) (string, error) {
++	choices := make([]plugins.Choice, len(keys))
++	for i, key := range keys {
++		choices[i] = plugins.Choice{Value: key.fingerprint, Label: key.user + " — " + key.fingerprint}
++	}
++	selected, err := ui.Select(ctx, "Choose a GPG key for pass", choices, 0)
++	if err != nil {
++		return "", err
++	}
++	for _, key := range keys {
++		if selected == key.fingerprint {
++			return selected, nil
++		}
++	}
++	return "", fmt.Errorf("selected GPG key is unavailable")
++}
+diff --git a/internal/plugins/githubapp/host_cancel_test.go b/internal/plugins/githubapp/host_cancel_test.go
+new file mode 100644
+index 0000000..769d29e
+--- /dev/null
++++ b/internal/plugins/githubapp/host_cancel_test.go
+@@ -0,0 +1,41 @@
++package githubapp
++
++import (
++	"context"
++	"errors"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++)
++
++func TestConfigureReturnsPromptlyWhenCanceledGPGDescendantKeepsPipeOpen(t *testing.T) {
++	project := gitProject(t, true)
++	root := os.Getenv("PASSWORD_STORE_DIR")
++	if err := os.Remove(filepath.Join(root, ".gpg-id")); err != nil {
++		t.Fatal(err)
++	}
++	bin := strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))[0]
++	forkingGPG := "#!/bin/sh\n(sleep 1) &\nexit 0\n"
++	if err := os.WriteFile(filepath.Join(bin, "gpg"), []byte(forkingGPG), 0700); err != nil {
++		t.Fatal(err)
++	}
++	fixture := newOAuthFixture(t, []int64{9001})
++	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
++	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
++	defer cancel()
++	started := time.Now()
++	_, err := plugin.Configure(ctx, configureContext(project), &fakeInteraction{denyAt: 1})
++	elapsed := time.Since(started)
++	t.Logf("Configure returned after %s with error %v", elapsed, err)
++	if !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("Configure() error = %v, want deadline exceeded after cancellation", err)
++	}
++	if elapsed > 500*time.Millisecond {
++		t.Fatalf("Configure() took %s after a 50ms caller deadline", elapsed)
++	}
++	if fixture.deviceCodes != 0 {
++		t.Fatalf("Device Flow started %d times after cancellation", fixture.deviceCodes)
++	}
++}
+diff --git a/internal/plugins/githubapp/host_install.go b/internal/plugins/githubapp/host_install.go
+new file mode 100644
+index 0000000..bb3bb2b
+--- /dev/null
++++ b/internal/plugins/githubapp/host_install.go
+@@ -0,0 +1,97 @@
++package githubapp
++
++import (
++	"fmt"
++	"os"
++	"os/exec"
++	"runtime"
++)
++
++type packagePlan struct {
++	manager string
++	args    []string
++}
++
++func installationPlan(missing []string) (packagePlan, error) {
++	return installationPlanFor(missing, runtime.GOOS, linuxDistribution(), os.Geteuid() == 0, commandAvailable("sudo"))
++}
++
++func installationPlanFor(missing []string, operatingSystem, distribution string, root, sudoAvailable bool) (packagePlan, error) {
++	if len(missing) == 0 {
++		return packagePlan{}, nil
++	}
++	plan, err := packageManagerPlanFor(operatingSystem, distribution)
++	if err != nil {
++		return packagePlan{}, err
++	}
++	plan.args = append(plan.args, packageNames(missing, plan.manager)...)
++	if !root {
++		if !sudoAvailable {
++			return packagePlan{}, fmt.Errorf("install gpg and pass manually; sudo is unavailable")
++		}
++		plan.args = append([]string{plan.manager}, plan.args...)
++		plan.manager = "sudo"
++	}
++	return plan, nil
++}
++
++func packageManagerPlanFor(operatingSystem, distribution string) (packagePlan, error) {
++	plan := packagePlan{}
++	switch operatingSystem {
++	case "linux":
++		switch distribution {
++		case "debian":
++			plan = packagePlan{manager: "apt-get", args: []string{"install"}}
++		case "fedora":
++			plan = packagePlan{manager: "dnf", args: []string{"install"}}
++		case "arch":
++			plan = packagePlan{manager: "pacman", args: []string{"-S", "--needed"}}
++		default:
++			return packagePlan{}, fmt.Errorf("install gpg and pass manually; this Linux distribution is not supported")
++		}
++	default:
++		return packagePlan{}, fmt.Errorf("install gpg and pass manually; this operating system is not supported")
++	}
++	return plan, nil
++}
++
++func linuxDistribution() string {
++	if fileExists("/etc/debian_version") {
++		return "debian"
++	}
++	if releaseExists("/etc/fedora-release", "/etc/redhat-release") {
++		return "fedora"
++	}
++	if fileExists("/etc/arch-release") {
++		return "arch"
++	}
++	return ""
++}
++
++func fileExists(path string) bool       { _, err := os.Stat(path); return err == nil }
++func commandAvailable(name string) bool { _, err := exec.LookPath(name); return err == nil }
++
++func packageNames(missing []string, manager string) []string {
++	packages := make([]string, 0, len(missing))
++	for _, executable := range missing {
++		packageName := executable
++		if executable == "gpg" {
++			if manager == "dnf" {
++				packageName = "gnupg2"
++			} else {
++				packageName = "gnupg"
++			}
++		}
++		packages = append(packages, packageName)
++	}
++	return packages
++}
++
++func releaseExists(paths ...string) bool {
++	for _, path := range paths {
++		if _, err := os.Stat(path); err == nil {
++			return true
++		}
++	}
++	return false
++}
+diff --git a/internal/plugins/githubapp/host_install_test.go b/internal/plugins/githubapp/host_install_test.go
+new file mode 100644
+index 0000000..d1bd508
+--- /dev/null
++++ b/internal/plugins/githubapp/host_install_test.go
+@@ -0,0 +1,62 @@
++package githubapp
++
++import (
++	"context"
++	"reflect"
++	"testing"
++)
++
++func TestInstallationPlanUsesSupportedPackageCommands(t *testing.T) {
++	cases := []struct {
++		distro, command string
++		args            []string
++	}{
++		{"debian", "apt-get", []string{"install", "gnupg", "pass"}},
++		{"fedora", "dnf", []string{"install", "gnupg2", "pass"}},
++		{"arch", "pacman", []string{"-S", "--needed", "gnupg", "pass"}},
++	}
++	for _, test := range cases {
++		t.Run(test.distro, func(t *testing.T) {
++			plan, err := installationPlanFor([]string{"gpg", "pass"}, "linux", test.distro, true, false)
++			if err != nil {
++				t.Fatal(err)
++			}
++			if plan.manager != test.command || !reflect.DeepEqual(plan.args, test.args) {
++				t.Fatalf("plan = %#v; want %s %#v", plan, test.command, test.args)
++			}
++		})
++	}
++}
++
++func TestHostInstallRequiresConsentBeforeRunningCommand(t *testing.T) {
++	plan := packagePlan{manager: "sudo", args: []string{"apt-get", "install", "gnupg", "pass"}}
++	ui := &fakeInteraction{denyAt: 1}
++	err := confirmHostInstall(context.Background(), ui, ui, plan)
++	if err == nil || len(ui.hostCommands) != 0 {
++		t.Fatalf("error=%v commands=%#v", err, ui.hostCommands)
++	}
++}
++
++func TestHostInstallRunsTheConfirmedArgumentVector(t *testing.T) {
++	plan := packagePlan{manager: "sudo", args: []string{"apt-get", "install", "gnupg", "pass"}}
++	ui := &fakeInteraction{}
++	if err := confirmHostInstall(context.Background(), ui, ui, plan); err != nil {
++		t.Fatal(err)
++	}
++	if len(ui.hostCommands) != 1 || ui.hostCommands[0] != "sudo apt-get install gnupg pass" {
++		t.Fatalf("commands = %#v", ui.hostCommands)
++	}
++}
++
++func TestInstallationPlanRequiresSudoForNonRoot(t *testing.T) {
++	if _, err := installationPlanFor([]string{"pass"}, "linux", "debian", false, false); err == nil {
++		t.Fatal("installation plan succeeded without sudo")
++	}
++	plan, err := installationPlanFor([]string{"pass"}, "linux", "debian", false, true)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if plan.manager != "sudo" || !reflect.DeepEqual(plan.args, []string{"apt-get", "install", "pass"}) {
++		t.Fatalf("sudo plan = %#v", plan)
++	}
++}
+diff --git a/internal/plugins/githubapp/host_setup.go b/internal/plugins/githubapp/host_setup.go
+new file mode 100644
+index 0000000..3113bcd
+--- /dev/null
++++ b/internal/plugins/githubapp/host_setup.go
+@@ -0,0 +1,247 @@
++package githubapp
++
++import (
++	"context"
++	"crypto/rand"
++	"encoding/hex"
++	"errors"
++	"fmt"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"strings"
++	"time"
++
++	"dch/internal/plugins"
++)
++
++func (p *Plugin) prepareHost(ctx context.Context, cfg Config, ui plugins.Interaction, hostUI plugins.HostCommandInteraction) error {
++	if err := installRequirements(ctx, ui, hostUI); err != nil {
++		return err
++	}
++	root, err := passwordStoreRoot()
++	if err != nil {
++		return err
++	}
++	base := secretEntry(cfg)
++	if err := p.initializePass(ctx, base, root, ui, hostUI); err != nil {
++		return err
++	}
++	return p.verifyPass(ctx, &SecretStore{PassPath: p.PassPath, Entry: base})
++}
++
++func installRequirements(ctx context.Context, ui plugins.Interaction, hostUI plugins.HostCommandInteraction) error {
++	missing := missingExecutables()
++	plan, err := installationPlan(missing)
++	if err != nil {
++		return err
++	}
++	if len(plan.args) > 0 {
++		if err := confirmHostInstall(ctx, ui, hostUI, plan); err != nil {
++			return err
++		}
++		if missing := missingExecutables(); len(missing) > 0 {
++			return fmt.Errorf("installation did not provide %s; install them manually", strings.Join(missing, " and "))
++		}
++	}
++	return nil
++}
++
++func confirmHostInstall(ctx context.Context, ui plugins.Interaction, hostUI plugins.HostCommandInteraction, plan packagePlan) error {
++	command := plan.manager + " " + strings.Join(plan.args, " ")
++	ok, err := ui.Confirm(ctx, "Install host requirements", "dch needs GPG and pass. It will run: "+command+". Administrator privileges are required; the package manager keeps its own confirmation. Host package changes remain installed if setup is canceled.")
++	if err != nil {
++		return err
++	}
++	if !ok {
++		return fmt.Errorf("host setup canceled; install GPG and pass manually")
++	}
++	if err := hostUI.RunHostCommand(ctx, plan.manager, plan.args); err != nil {
++		return fmt.Errorf("host package installation failed; install GPG and pass manually: %w", err)
++	}
++	return nil
++}
++
++func (p *Plugin) initializePass(ctx context.Context, entry, root string, ui plugins.Interaction, hostUI plugins.HostCommandInteraction) error {
++	recipient, recipientErr := applicableGPGID(root, entry)
++	if errors.Is(recipientErr, os.ErrNotExist) {
++		return p.createPassStore(ctx, entry, root, ui, hostUI)
++	} else if recipientErr != nil {
++		return fmt.Errorf("could not inspect password-store recipient configuration: %w", recipientErr)
++	}
++	return ui.Notify(ctx, "Using existing pass recipient", "The password store already uses GPG key "+recipient+" for this credential path.")
++}
++
++func (p *Plugin) createPassStore(ctx context.Context, entry, root string, ui plugins.Interaction, hostUI plugins.HostCommandInteraction) error {
++	key, err := p.selectPassRecipient(ctx, ui, hostUI)
++	if err != nil {
++		return err
++	}
++	if _, err := applicableGPGID(root, entry); err == nil {
++		return ui.Notify(ctx, "Using existing pass recipient", "The password store was initialized during setup; its current GPG recipient will be used.")
++	} else if !errors.Is(err, os.ErrNotExist) {
++		return fmt.Errorf("could not inspect password-store recipient configuration: %w", err)
++	}
++	return p.initializeRecipient(ctx, entry, root, key, hostUI)
++}
++
++func (p *Plugin) selectPassRecipient(ctx context.Context, ui plugins.Interaction, hostUI plugins.HostCommandInteraction) (string, error) {
++	keys, err := p.usableKeys(ctx)
++	if err != nil {
++		return "", err
++	}
++	if len(keys) == 0 {
++		ok, err := ui.Confirm(ctx, "Create a GPG key", "No usable secret key was found. dch will open GPG's interactive key creation flow. GPG handles the identity and passphrase; dch does not receive the passphrase.")
++		if err != nil {
++			return "", err
++		}
++		if !ok {
++			return "", fmt.Errorf("host setup canceled; create a GPG key manually")
++		}
++		if err := hostUI.RunHostCommand(ctx, "gpg", []string{"--full-generate-key"}); err != nil {
++			return "", fmt.Errorf("GPG key creation failed or was canceled: %w", err)
++		}
++		keys, err = p.usableKeys(ctx)
++		if err != nil {
++			return "", fmt.Errorf("could not list GPG secret keys after creation: %w", err)
++		}
++	}
++	if len(keys) == 0 {
++		return "", fmt.Errorf("no usable GPG encryption key found")
++	}
++	return selectSecretKey(ctx, ui, keys)
++}
++
++func (p *Plugin) initializeRecipient(ctx context.Context, entry, root, key string, hostUI plugins.HostCommandInteraction) error {
++	if err := p.runHostCommand(ctx, hostUI, "pass", "init", key); err != nil {
++		return fmt.Errorf("pass initialization failed: %w", err)
++	}
++	recipient, err := applicableGPGID(root, entry)
++	if err != nil || recipient != key {
++		return fmt.Errorf("pass initialization did not set the selected GPG recipient; inspect the password store before retrying")
++	}
++	return nil
++}
++
++func (p *Plugin) usableKeys(ctx context.Context) ([]secretKey, error) {
++	output, err := p.runCommand(ctx, "gpg", "--batch", "--with-colons", "--list-secret-keys")
++	if err != nil {
++		return nil, fmt.Errorf("could not list GPG secret keys: %w", err)
++	}
++	return parseSecretKeys(output), nil
++}
++
++func passwordStoreRoot() (string, error) {
++	if root := os.Getenv("PASSWORD_STORE_DIR"); root != "" {
++		return filepath.Abs(root)
++	}
++	home, err := os.UserHomeDir()
++	if err != nil {
++		return "", err
++	}
++	return filepath.Join(home, ".password-store"), nil
++}
++
++func applicableGPGID(root, entry string) (string, error) {
++	dir := filepath.Join(root, filepath.Clean(entry))
++	for dir = filepath.Dir(dir); ; dir = filepath.Dir(dir) {
++		data, err := os.ReadFile(filepath.Join(dir, ".gpg-id"))
++		if err == nil {
++			recipient := strings.TrimSpace(string(data))
++			if recipient == "" {
++				return "", fmt.Errorf("password-store recipient file is empty")
++			}
++			return recipient, nil
++		}
++		if err != nil && !errors.Is(err, os.ErrNotExist) {
++			return "", err
++		}
++		if dir == root || filepath.Dir(dir) == dir {
++			return "", os.ErrNotExist
++		}
++	}
++}
++
++func missingExecutables() []string {
++	var missing []string
++	for _, name := range []string{"gpg", "pass"} {
++		if _, err := exec.LookPath(name); err != nil {
++			missing = append(missing, name)
++		}
++	}
++	return missing
++}
++
++func (p *Plugin) runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
++	commandCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
++	defer cancel()
++	command := exec.CommandContext(commandCtx, name, args...)
++	command.WaitDelay = 100 * time.Millisecond
++	var output hostSetupOutput
++	command.Stdout, command.Stderr = &output, &output
++	err := command.Run()
++	if ctx.Err() != nil {
++		return nil, ctx.Err()
++	}
++	if commandCtx.Err() != nil {
++		return nil, commandCtx.Err()
++	}
++	if output.exceeded {
++		return nil, fmt.Errorf("host command output exceeded limit")
++	}
++	return output.data, err
++}
++
++type hostSetupOutput struct {
++	data     []byte
++	exceeded bool
++}
++
++func (output *hostSetupOutput) Write(data []byte) (int, error) {
++	if len(output.data)+len(data) > 1<<20 {
++		output.exceeded = true
++		return 0, fmt.Errorf("output limit exceeded")
++	}
++	output.data = append(output.data, data...)
++	return len(data), nil
++}
++
++func (p *Plugin) runHostCommand(ctx context.Context, ui plugins.HostCommandInteraction, name string, args ...string) error {
++	return ui.RunHostCommand(ctx, name, args)
++}
++
++func (p *Plugin) verifyPass(ctx context.Context, store *SecretStore) error {
++	var random [24]byte
++	if _, err := rand.Read(random[:]); err != nil {
++		return fmt.Errorf("could not create password-store probe")
++	}
++	entry := filepath.Join(filepath.Dir(store.Entry), ".setup-probe-"+hex.EncodeToString(random[:8]))
++	value := hex.EncodeToString(random[:])
++	cleanup := func() error {
++		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++		defer cancel()
++		_, stderr, err := store.runCaptured(cleanupCtx, nil, "rm", "--force", entry)
++		if err != nil {
++			return fmt.Errorf("could not remove host setup probe %q; retry with pass rm -- %s", entry, entry)
++		}
++		_, stderr, err = store.runCaptured(cleanupCtx, nil, "show", entry)
++		if err == nil || !strings.Contains(strings.ToLower(string(stderr)), "not in the password store") {
++			return fmt.Errorf("host setup probe %q remains; retry with pass rm -- %s", entry, entry)
++		}
++		return nil
++	}
++	if _, _, err := store.runCaptured(ctx, []byte(value+"\n"), "insert", "--multiline", "--force", entry); err != nil {
++		if cleanupErr := cleanup(); cleanupErr != nil {
++			return cleanupErr
++		}
++		return fmt.Errorf("password-store write probe failed")
++	}
++	read, _, err := store.runCaptured(ctx, nil, "show", entry)
++	if err != nil || strings.TrimSpace(string(read)) != value {
++		if cleanupErr := cleanup(); cleanupErr != nil {
++			return cleanupErr
++		}
++		return errors.New("password-store readback verification failed")
++	}
++	return cleanup()
++}
+diff --git a/internal/plugins/githubapp/manager.go b/internal/plugins/githubapp/manager.go
+index 15b2fc8..6d31996 100644
+--- a/internal/plugins/githubapp/manager.go
++++ b/internal/plugins/githubapp/manager.go
+@@ -20,10 +20,50 @@ import (
+ )
+ 
+ type ownershipState struct {
+-	FragmentDigest    string   `json:"fragment_digest,omitempty"`
+-	UnitDigest        string   `json:"unit_digest,omitempty"`
+-	UnitPath          string   `json:"unit_path,omitempty"`
+-	CredentialCleanup []string `json:"credential_cleanup,omitempty"`
++	FragmentDigest              string               `json:"fragment_digest,omitempty"`
++	UnitDigest                  string               `json:"unit_digest,omitempty"`
++	UnitPath                    string               `json:"unit_path,omitempty"`
++	CredentialCleanup           []string             `json:"credential_cleanup,omitempty"`
++	CredentialCleanupIdentities []credentialIdentity `json:"credential_cleanup_identities,omitempty"`
++}
++
++type credentialIdentity struct {
++	Method string `json:"method"`
++	Key    string `json:"key"`
++}
++
++func identityForConfig(cfg Config) credentialIdentity {
++	if cfg.authMethod() == authMethodPAT {
++		return credentialIdentity{Method: authMethodPAT, Key: authMethodPAT}
++	}
++	return credentialIdentity{Method: authMethodApp, Key: cfg.ClientID}
++}
++
++func (identity credentialIdentity) valid() bool {
++	switch identity.Method {
++	case authMethodApp:
++		return clientIDPattern.MatchString(identity.Key)
++	case authMethodPAT:
++		return identity.Key == authMethodPAT
++	default:
++		return false
++	}
++}
++
++func containsRecoveryIdentity(state ownershipState, active credentialIdentity) bool {
++	if active.Method == authMethodApp && containsClientID(state.CredentialCleanup, active.Key) {
++		return true
++	}
++	for _, identity := range state.CredentialCleanupIdentities {
++		if identity == active {
++			return true
++		}
++	}
++	return false
++}
++
++func hasCredentialCleanup(state ownershipState) bool {
++	return len(state.CredentialCleanup) > 0 || len(state.CredentialCleanupIdentities) > 0
+ }
+ 
+ func decodeState(raw json.RawMessage) (ownershipState, error) {
+@@ -114,7 +154,7 @@ func prepareEnableResources(ctx context.Context, host plugins.HostContext) (enab
+ 	if err != nil {
+ 		return resources, errors.Join(err, resources.restoreFragment())
+ 	}
+-	resources.state = ownershipState{FragmentDigest: digest(fragment), UnitDigest: resources.unit.digest, UnitPath: resources.unit.path, CredentialCleanup: oldState.CredentialCleanup}
++	resources.state = ownershipState{FragmentDigest: digest(fragment), UnitDigest: resources.unit.digest, UnitPath: resources.unit.path, CredentialCleanup: oldState.CredentialCleanup, CredentialCleanupIdentities: oldState.CredentialCleanupIdentities}
+ 	return resources, nil
+ }
+ 
+@@ -231,6 +271,9 @@ func (p *Plugin) disableOwned(ctx context.Context, host plugins.HostContext, sta
+ 	if err := p.removeCredentialEntries(ctx, host, state.CredentialCleanup); err != nil {
+ 		return plugins.Result{}, fmt.Errorf("credential cleanup failed; disable can be retried: %w", err)
+ 	}
++	if err := p.removeCredentialIdentities(ctx, host, state.CredentialCleanupIdentities); err != nil {
++		return plugins.Result{}, fmt.Errorf("credential cleanup failed; disable can be retried: %w", err)
++	}
+ 	if err := host.Store.SaveState(nil); err != nil {
+ 		return plugins.Result{}, err
+ 	}
+@@ -241,6 +284,9 @@ func (p *Plugin) disableRecoveryOnly(ctx context.Context, host plugins.HostConte
+ 	if err := p.removeCredentialEntries(ctx, host, state.CredentialCleanup); err != nil {
+ 		return plugins.Result{}, fmt.Errorf("credential cleanup failed; disable can be retried: %w", err)
+ 	}
++	if err := p.removeCredentialIdentities(ctx, host, state.CredentialCleanupIdentities); err != nil {
++		return plugins.Result{}, fmt.Errorf("credential cleanup failed; disable can be retried: %w", err)
++	}
+ 	if err := host.Store.SaveState(nil); err != nil {
+ 		return plugins.Result{}, err
+ 	}
+@@ -265,31 +311,71 @@ func (p *Plugin) removeCredentialEntries(ctx context.Context, host plugins.HostC
+ 	return nil
+ }
+ 
++func (p *Plugin) removeCredentialIdentities(ctx context.Context, host plugins.HostContext, identities []credentialIdentity) error {
++	for _, identity := range identities {
++		if !identity.valid() {
++			return fmt.Errorf("credential cleanup metadata is invalid")
++		}
++		cfg := configForIdentity(identity, host.ProjectPath)
++		store := p.secretStore(cfg)
++		if err := store.WithLock(ctx, func() error { return store.Delete(ctx) }); err != nil {
++			return err
++		}
++	}
++	return nil
++}
++
++func configForIdentity(identity credentialIdentity, projectPath string) Config {
++	return Config{AuthMethod: identity.Method, ClientID: identity.Key, ProjectPath: projectPath}
++}
++
+ func (p *Plugin) retryCredentialCleanup(ctx context.Context, host plugins.HostContext, state ownershipState, protectedClientID string) (ownershipState, error) {
++	return p.retryCredentialCleanupFor(ctx, host, state, credentialIdentity{Method: authMethodApp, Key: protectedClientID})
++}
++
++func (p *Plugin) retryCredentialCleanupFor(ctx context.Context, host plugins.HostContext, state ownershipState, protected credentialIdentity) (ownershipState, error) {
+ 	pending := make([]string, 0, len(state.CredentialCleanup))
++	pendingIdentities := make([]credentialIdentity, 0, len(state.CredentialCleanupIdentities))
+ 	var failures []error
+ 	for _, clientID := range state.CredentialCleanup {
+-		if !clientIDPattern.MatchString(clientID) {
++		identity := credentialIdentity{Method: authMethodApp, Key: clientID}
++		keep, err := p.retryCredentialIdentity(ctx, host, identity, protected)
++		if keep {
+ 			pending = append(pending, clientID)
+-			failures = append(failures, fmt.Errorf("credential cleanup metadata is invalid"))
+-			continue
+ 		}
+-		if clientID == protectedClientID {
+-			pending = append(pending, clientID)
+-			continue
++		if err != nil {
++			failures = append(failures, err)
++		}
++	}
++	for _, identity := range state.CredentialCleanupIdentities {
++		keep, err := p.retryCredentialIdentity(ctx, host, identity, protected)
++		if keep {
++			pendingIdentities = append(pendingIdentities, identity)
+ 		}
+-		cfg := Config{ClientID: clientID, ProjectPath: host.ProjectPath}
+-		store := p.secretStore(cfg)
+-		err := store.WithLock(ctx, func() error { return store.Delete(ctx) })
+ 		if err != nil {
+-			pending = append(pending, clientID)
+ 			failures = append(failures, err)
+ 		}
+ 	}
+ 	state.CredentialCleanup = pending
++	state.CredentialCleanupIdentities = pendingIdentities
+ 	return state, errors.Join(failures...)
+ }
+ 
++func (p *Plugin) retryCredentialIdentity(ctx context.Context, host plugins.HostContext, identity, protected credentialIdentity) (bool, error) {
++	if !identity.valid() {
++		return true, fmt.Errorf("credential cleanup metadata is invalid")
++	}
++	if identity == protected {
++		return true, nil
++	}
++	cfg := configForIdentity(identity, host.ProjectPath)
++	store := p.secretStore(cfg)
++	if err := store.WithLock(ctx, func() error { return store.Delete(ctx) }); err != nil {
++		return true, err
++	}
++	return false, nil
++}
++
+ func (p *Plugin) quarantineLegacy(ctx context.Context, host plugins.HostContext) error {
+ 	state, err := decodeState(host.State)
+ 	if err != nil {
+@@ -413,7 +499,7 @@ func (p *Plugin) ensure(ctx context.Context, host plugins.HostContext) (plugins.
+ 	if err := checkReady(ctx, runtimeDir); err != nil {
+ 		return plugins.Result{}, p.rollbackEnsure(host, oldState, unit, err)
+ 	}
+-	state, _ = p.retryCredentialCleanup(ctx, host, state, cfg.ClientID)
++	state, _ = p.retryCredentialCleanupFor(ctx, host, state, identityForConfig(cfg))
+ 	if err := host.Store.SaveState(encodeState(state)); err != nil {
+ 		return plugins.Result{}, err
+ 	}
+@@ -432,7 +518,7 @@ func (p *Plugin) ensureReadyState(host plugins.HostContext) (Config, ownershipSt
+ 	if err != nil {
+ 		return Config{}, state, err
+ 	}
+-	if containsClientID(state.CredentialCleanup, cfg.ClientID) {
++	if containsRecoveryIdentity(state, identityForConfig(cfg)) {
+ 		return Config{}, state, fmt.Errorf("authorization required: credential recovery is pending; reauthorize this project")
+ 	}
+ 	state, err = p.ensureState(host)
+@@ -485,7 +571,7 @@ func (p *Plugin) ServeHost(ctx context.Context, host plugins.HostContext) error
+ 	if err != nil {
+ 		return err
+ 	}
+-	if containsClientID(state.CredentialCleanup, cfg.ClientID) {
++	if containsRecoveryIdentity(state, identityForConfig(cfg)) {
+ 		return fmt.Errorf("authorization required: credential recovery is pending; reauthorize this project")
+ 	}
+ 	runtimeDir, err := RuntimeDir(host.ProjectPath)
+@@ -719,7 +805,7 @@ func serviceUnitContent(projectPath string) ([]byte, error) {
+ 		return nil, err
+ 	}
+ 	content := "[Unit]\nDescription=dch GitHub App credential service\n\n[Service]\nType=simple\nExecStart=" + systemdExecArg(bin) + " _plugin-serve --plugin github-app --project " + systemdExecArg(projectPath) + "\nRestart=on-failure\n"
+-	for _, key := range []string{"DCH_CONFIG", "XDG_RUNTIME_DIR", "PATH", "GNUPGHOME", "PASSWORD_STORE_DIR"} {
++	for _, key := range []string{"DCH_CONFIG", "XDG_RUNTIME_DIR", "PATH", "GNUPGHOME", "PASSWORD_STORE_DIR", "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS"} {
+ 		value := os.Getenv(key)
+ 		if key == "DCH_CONFIG" {
+ 			value = configPath
+diff --git a/internal/plugins/githubapp/pat.go b/internal/plugins/githubapp/pat.go
+new file mode 100644
+index 0000000..4def22c
+--- /dev/null
++++ b/internal/plugins/githubapp/pat.go
+@@ -0,0 +1,133 @@
++package githubapp
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"strings"
++
++	"dch/internal/plugins"
++)
++
++const maxPATLength = 4096
++
++func (p *Plugin) configurePAT(ctx context.Context, configure plugins.ConfigureContext, cfg Config, interaction plugins.Interaction) (plugins.PreparedConfiguration, error) {
++	repositoryName, err := choosePATRepository(ctx, cfg.ProjectPath, interaction)
++	if err != nil {
++		return plugins.PreparedConfiguration{}, err
++	}
++	if err := notifyPATCreationGuide(ctx, interaction); err != nil {
++		return plugins.PreparedConfiguration{}, err
++	}
++	input := interaction.(plugins.InputInteraction)
++	token, err := input.Input(ctx, "Fine-grained personal access token", "", true)
++	if err != nil {
++		return plugins.PreparedConfiguration{}, err
++	}
++	if !isFineGrainedPAT(token) {
++		return plugins.PreparedConfiguration{}, fmt.Errorf("enter a fine-grained personal access token beginning with github_pat_")
++	}
++	user, err := p.fetchUser(ctx, token)
++	if err != nil {
++		return plugins.PreparedConfiguration{}, fmt.Errorf("could not verify GitHub account; check the PAT and organization approval")
++	}
++	repository, err := lookupRepositoryWithToken(ctx, token, repositoryName, p.repositoryOptions())
++	if err != nil {
++		return plugins.PreparedConfiguration{}, fmt.Errorf("could not verify repository access; check the PAT permissions and organization approval")
++	}
++	return p.preparePATConfiguration(ctx, cfg.ProjectPath, repository, user, token, interaction)
++}
++
++func choosePATRepository(ctx context.Context, project string, interaction plugins.Interaction) (string, error) {
++	remotes, err := ReadGitRemotes(ctx, project, "git")
++	if err != nil {
++		if ctx.Err() != nil {
++			return "", ctx.Err()
++		}
++		return inputPATRepository(ctx, interaction)
++	}
++	if len(remotes) == 0 {
++		return inputPATRepository(ctx, interaction)
++	}
++	selected, err := chooseRemote(ctx, interaction, remotes)
++	if err != nil {
++		return "", err
++	}
++	return selected.Repository, nil
++}
++
++func inputPATRepository(ctx context.Context, interaction plugins.Interaction) (string, error) {
++	input := interaction.(plugins.InputInteraction)
++	name, err := input.Input(ctx, "GitHub repository (owner/repo)", "", false)
++	if err != nil {
++		return "", err
++	}
++	return normalizeRepositoryName(name)
++}
++
++func normalizeRepositoryName(name string) (string, error) {
++	parts := strings.Split(strings.TrimSpace(name), "/")
++	if len(parts) != 2 || !validOwner(parts[0]) || !validRepository(parts[1]) {
++		return "", fmt.Errorf("enter a repository as owner/repo")
++	}
++	return parts[0] + "/" + parts[1], nil
++}
++
++func isFineGrainedPAT(token string) bool {
++	const prefix = "github_pat_"
++	if len(token) > maxPATLength || !strings.HasPrefix(token, prefix) || len(token) == len(prefix) {
++		return false
++	}
++	for _, character := range token[len(prefix):] {
++		if !isPATCharacter(character) {
++			return false
++		}
++	}
++	return true
++}
++
++func isPATCharacter(character rune) bool {
++	return character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '_' || character == '-'
++}
++
++func lookupRepositoryWithToken(ctx context.Context, token, fullName string, opts RepositoryOptions) (Repository, error) {
++	name, err := normalizeRepositoryName(fullName)
++	if err != nil {
++		return Repository{}, err
++	}
++	parts := strings.Split(name, "/")
++	repository, err := requestRepository(ctx, http.MethodGet, "/repos/"+parts[0]+"/"+parts[1], token, opts)
++	if err != nil || !sameRepositoryName(repository.FullName, name) {
++		return Repository{}, ErrRepositoryUnavailable
++	}
++	return repository, nil
++}
++
++func (p *Plugin) preparePATConfiguration(ctx context.Context, project string, repository Repository, user githubUser, token string, interaction plugins.Interaction) (plugins.PreparedConfiguration, error) {
++	cfg := Config{AuthMethod: authMethodPAT, ProjectPath: project, UserID: user.ID, Login: user.Login, RepositoryID: repository.ID, Repository: repository.FullName}
++	if err := cfg.Validate(); err != nil {
++		return plugins.PreparedConfiguration{}, err
++	}
++	message := fmt.Sprintf("Authorize this project as %s (%d) for %s? Check that the PAT has the access you need. GitHub lets dch check this repository's metadata, but not verify that the PAT is limited to this repository or inspect all its permissions. Public repository metadata access does not confirm that Git or gh can push.", user.Login, user.ID, repository.FullName)
++	confirmed, err := interaction.Confirm(ctx, "Confirm GitHub account and repository", message)
++	if err != nil {
++		return plugins.PreparedConfiguration{}, err
++	}
++	if !confirmed {
++		return plugins.PreparedConfiguration{}, fmt.Errorf("authorization cancelled")
++	}
++	tokens := TokenSet{Schema: 2, AuthMethod: authMethodPAT, ProjectPath: project, UserID: user.ID, RepositoryID: repository.ID, Repository: repository.FullName, PersonalAccessToken: token}
++	raw, err := json.Marshal(cfg)
++	if err != nil {
++		return plugins.PreparedConfiguration{}, err
++	}
++	return plugins.PreparedConfiguration{Config: raw, Commit: func(ctx context.Context, host plugins.HostContext) (plugins.Result, error) {
++		return p.commitCandidate(ctx, host, cfg, tokens, raw)
++	}}, nil
++}
++
++func notifyPATCreationGuide(ctx context.Context, interaction plugins.Interaction) error {
++	message := "Create a fine-grained token at https://github.com/settings/personal-access-tokens/new. Choose only this repository and grant the minimum permissions for your use. GitHub may require organization approval. Public repository metadata access alone does not grant Git or gh push access. More information: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens"
++	return interaction.Notify(ctx, "Create a fine-grained personal access token", message)
++}
+diff --git a/internal/plugins/githubapp/pat_test.go b/internal/plugins/githubapp/pat_test.go
+new file mode 100644
+index 0000000..da0e35a
+--- /dev/null
++++ b/internal/plugins/githubapp/pat_test.go
+@@ -0,0 +1,13 @@
++package githubapp
++
++import (
++	"strings"
++	"testing"
++)
++
++func TestFineGrainedPATRejectsValuesLargerThanInputLimit(t *testing.T) {
++	token := "github_pat_" + strings.Repeat("a", 4096)
++	if isFineGrainedPAT(token) {
++		t.Fatal("PAT larger than the input limit was accepted")
++	}
++}
+diff --git a/internal/plugins/githubapp/plugin.go b/internal/plugins/githubapp/plugin.go
+index a4e2781..5962383 100644
+--- a/internal/plugins/githubapp/plugin.go
++++ b/internal/plugins/githubapp/plugin.go
+@@ -30,7 +30,7 @@ type Plugin struct {
+ func New() *Plugin { return &Plugin{} }
+ 
+ func (p *Plugin) Definition() plugins.Definition {
+-	return plugins.Definition{ID: pluginID, Name: "GitHub App", Description: "Provide repository-scoped GitHub user credentials to this project.", ServiceAliases: []string{"_github-app-serve"}, SharedFields: []plugins.Field{{Name: "client_id", Label: "GitHub App Client ID", Required: true, Kind: plugins.FieldText}}, Notices: []string{"GitHub App Device Flow must be enabled for this Client ID.", "Tokens are limited to the selected repository and saved in the host password store."}}
++	return plugins.Definition{ID: pluginID, Name: "GitHub App", Description: "Provide repository-scoped GitHub user credentials to this project.", ServiceAliases: []string{"_github-app-serve"}, SharedFields: []plugins.Field{{Name: "client_id", Label: "GitHub App Client ID", Required: false, Kind: plugins.FieldText}}, Notices: []string{"GitHub App Device Flow must be enabled for this Client ID.", "Tokens are limited to the selected repository and saved in the host password store."}}
+ }
+ 
+ func (p *Plugin) ValidateConfig(raw json.RawMessage) error {
+@@ -96,20 +96,15 @@ func (p *Plugin) Status(ctx context.Context, host plugins.HostContext) (plugins.
+ 		status.Message = "Authorization required: project binding does not match"
+ 		return status, nil
+ 	}
+-	shared, sharedErr := sharedClient(host.SharedConfig)
+-	if sharedErr == nil && shared.ClientID != cfg.ClientID {
+-		status.Message = "GitHub App Client ID changed; reauthorize this project"
+-		return status, nil
+-	}
+ 	state, stateErr := decodeState(host.State)
+ 	if stateErr != nil {
+ 		return status, stateErr
+ 	}
+-	if containsClientID(state.CredentialCleanup, cfg.ClientID) {
++	if containsRecoveryIdentity(state, identityForConfig(cfg)) {
+ 		status.Message = "Authorization required: credential recovery is pending; reauthorize this project"
+ 		return status, nil
+ 	}
+-	if len(state.CredentialCleanup) > 0 {
++	if hasCredentialCleanup(state) {
+ 		status.Message = "Authorization active; previous project credential cleanup is pending"
+ 		return status, nil
+ 	}
+@@ -130,7 +125,7 @@ func statusWithoutConfiguration(status plugins.PluginStatus, host plugins.HostCo
+ 	if err != nil {
+ 		return status, err
+ 	}
+-	if len(state.CredentialCleanup) > 0 {
++	if hasCredentialCleanup(state) {
+ 		status.Message = "Disabled; previous project credential cleanup is pending"
+ 		status.CleanupPending = true
+ 	}
+@@ -138,19 +133,74 @@ func statusWithoutConfiguration(status plugins.PluginStatus, host plugins.HostCo
+ }
+ 
+ func (p *Plugin) Configure(ctx context.Context, configure plugins.ConfigureContext, interaction plugins.Interaction) (plugins.PreparedConfiguration, error) {
+-	shared, err := sharedClient(configure.SharedConfig)
++	_, hasInput := interaction.(plugins.InputInteraction)
++	hostCommands, hasHostCommands := interaction.(plugins.HostCommandInteraction)
++	if !hasInput || !hasHostCommands {
++		return plugins.PreparedConfiguration{}, fmt.Errorf("host setup interaction is unavailable")
++	}
++	method, err := chooseAuthenticationMethod(ctx, interaction)
+ 	if err != nil {
+ 		return plugins.PreparedConfiguration{}, err
+ 	}
+-	resolution, err := p.chooseRepository(ctx, configure.Host.ProjectPath, shared.ClientID, interaction)
++	config := Config{AuthMethod: method, ProjectPath: configure.Host.ProjectPath}
++	if method == authMethodApp {
++		config.ClientID, err = configuredAppClientID(ctx, configure, interaction)
++		if err != nil {
++			return plugins.PreparedConfiguration{}, err
++		}
++	}
++	if err := p.prepareHost(ctx, config, interaction, hostCommands); err != nil {
++		return plugins.PreparedConfiguration{}, err
++	}
++	if method == authMethodPAT {
++		return p.configurePAT(ctx, configure, config, interaction)
++	}
++	clientID := config.ClientID
++	resolution, err := p.chooseRepository(ctx, configure.Host.ProjectPath, clientID, interaction)
+ 	if err != nil {
+ 		return plugins.PreparedConfiguration{}, err
+ 	}
+-	issued, user, err := p.authorizeRepository(ctx, shared.ClientID, resolution.Repository, configure.Host.Config, resolution.DiscoveryUserID, interaction)
++	issued, user, err := p.authorizeRepository(ctx, clientID, resolution.Repository, configure.Host.Config, resolution.DiscoveryUserID, interaction)
+ 	if err != nil {
+ 		return plugins.PreparedConfiguration{}, err
+ 	}
+-	return p.prepareConfiguration(configure.Host.ProjectPath, shared.ClientID, resolution.Repository, user, issued)
++	return p.prepareConfiguration(configure.Host.ProjectPath, clientID, resolution.Repository, user, issued)
++}
++
++func configuredAppClientID(ctx context.Context, configure plugins.ConfigureContext, interaction plugins.Interaction) (string, error) {
++	defaultID := ""
++	if current, err := decodeConfig(configure.Host.Config); err == nil && current.ClientID != "" {
++		defaultID = current.ClientID
++	} else if shared, err := sharedClient(configure.SharedConfig); err == nil {
++		defaultID = shared.ClientID
++	}
++	input, ok := interaction.(plugins.InputInteraction)
++	if !ok {
++		return "", fmt.Errorf("secure GitHub App Client ID input is unavailable")
++	}
++	clientID, err := input.Input(ctx, "GitHub App Client ID (Enter keeps the current value)", defaultID, false)
++	if err != nil {
++		return "", err
++	}
++	if strings.TrimSpace(clientID) != clientID || !clientIDPattern.MatchString(clientID) {
++		return "", fmt.Errorf("GitHub App Client ID is required and must be valid")
++	}
++	return clientID, nil
++}
++
++func chooseAuthenticationMethod(ctx context.Context, interaction plugins.Interaction) (string, error) {
++	choices := []plugins.Choice{
++		{Value: "app", Label: "BYO GitHub App (Recommended)"},
++		{Value: "pat", Label: "Fine-grained personal access token"},
++	}
++	method, err := interaction.Select(ctx, "Choose GitHub authentication", choices, 0)
++	if err != nil {
++		return "", err
++	}
++	if method != "app" && method != "pat" {
++		return "", fmt.Errorf("unsupported GitHub authentication method")
++	}
++	return method, nil
+ }
+ 
+ func (p *Plugin) chooseRepository(ctx context.Context, project, clientID string, ui plugins.Interaction) (repositoryResolution, error) {
+@@ -170,7 +220,7 @@ func (p *Plugin) chooseRepository(ctx context.Context, project, clientID string,
+ }
+ 
+ func (p *Plugin) prepareConfiguration(project, clientID string, repo Repository, user githubUser, issued issuedToken) (plugins.PreparedConfiguration, error) {
+-	cfg := Config{ClientID: clientID, ProjectPath: project, UserID: user.ID, Login: user.Login, RepositoryID: repo.ID, Repository: repo.FullName}
++	cfg := Config{AuthMethod: authMethodApp, ClientID: clientID, ProjectPath: project, UserID: user.ID, Login: user.Login, RepositoryID: repo.ID, Repository: repo.FullName}
+ 	tokens, err := tokenSet(issued.Pair, cfg, issued.ReceivedAt)
+ 	if err != nil {
+ 		return plugins.PreparedConfiguration{}, err
+@@ -189,7 +239,8 @@ func (p *Plugin) prepareConfiguration(project, clientID string, repo Repository,
+ }
+ 
+ func (p *Plugin) commitCandidate(ctx context.Context, host plugins.HostContext, cfg Config, tokens TokenSet, raw json.RawMessage) (plugins.Result, error) {
+-	candidateState, err := clearRecoveryClient(host.State, cfg.ClientID)
++	activeIdentity := identityForConfig(cfg)
++	candidateState, err := clearRecoveryIdentity(host.State, activeIdentity)
+ 	if err != nil {
+ 		return plugins.Result{}, err
+ 	}
+@@ -197,7 +248,7 @@ func (p *Plugin) commitCandidate(ctx context.Context, host plugins.HostContext,
+ 	previousSecret, missing, err := saveCandidate(ctx, store, tokens)
+ 	if err != nil {
+ 		if isCredentialRestoreFailure(err) {
+-			err = errors.Join(err, recordCredentialRecovery(host, cfg.ClientID))
++			err = errors.Join(err, recordCredentialRecoveryIdentity(host, activeIdentity))
+ 		}
+ 		return plugins.Result{}, err
+ 	}
+@@ -207,31 +258,33 @@ func (p *Plugin) commitCandidate(ctx context.Context, host plugins.HostContext,
+ 	host.Store = tracker
+ 	result, enableErr := p.enable(ctx, host)
+ 	if enableErr == nil {
+-		old, decodeErr := decodeConfig(host.PreviousConfig)
+-		if decodeErr != nil {
+-			old = Config{}
++		oldIdentity := credentialIdentity{}
++		if old, decodeErr := decodeConfig(host.PreviousConfig); decodeErr == nil {
++			oldIdentity = identityForConfig(old)
+ 		}
+-		return p.cleanupPreviousClient(ctx, host, result, old.ClientID, cfg.ClientID)
++		return p.cleanupPreviousCredential(ctx, host, result, oldIdentity, activeIdentity)
+ 	}
+-	restoreErr := store.WithLock(context.Background(), func() error {
++	restoreCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
++	defer cancel()
++	restoreErr := store.WithLock(restoreCtx, func() error {
+ 		if missing {
+-			return store.Delete(context.Background())
++			return store.Delete(restoreCtx)
+ 		}
+-		return store.RestoreRaw(context.Background(), previousSecret)
++		return store.RestoreRaw(restoreCtx, previousSecret)
+ 	})
+ 	if restoreErr != nil {
+-		recoveryErr := recordCredentialRecovery(host, cfg.ClientID)
++		recoveryErr := recordCredentialRecoveryIdentity(host, activeIdentity)
+ 		return plugins.Result{}, errors.Join(fmt.Errorf("%w; previous credential restore failed and authorization is required: %v", enableErr, restoreErr), recoveryErr)
+ 	}
+ 	return plugins.Result{}, enableErr
+ }
+ 
+-func clearRecoveryClient(raw json.RawMessage, clientID string) (json.RawMessage, error) {
++func clearRecoveryIdentity(raw json.RawMessage, identity credentialIdentity) (json.RawMessage, error) {
+ 	state, err := decodeState(raw)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	state.CredentialCleanup = removeClientID(state.CredentialCleanup, clientID)
++	state = removeCredentialIdentity(state, identity)
+ 	return encodeState(state), nil
+ }
+ 
+@@ -245,9 +298,9 @@ func isCredentialRestoreFailure(err error) bool {
+ 	return errors.As(err, &failure)
+ }
+ 
+-func recordCredentialRecovery(host plugins.HostContext, clientID string) error {
+-	if !clientIDPattern.MatchString(clientID) {
+-		return fmt.Errorf("credential recovery metadata cannot be recorded: invalid Client ID")
++func recordCredentialRecoveryIdentity(host plugins.HostContext, identity credentialIdentity) error {
++	if !identity.valid() {
++		return fmt.Errorf("credential recovery metadata cannot be recorded: invalid identity")
+ 	}
+ 	baseState := host.State
+ 	if tracker, ok := host.Store.(*stateTrackingStore); ok && tracker.saved {
+@@ -257,9 +310,7 @@ func recordCredentialRecovery(host plugins.HostContext, clientID string) error {
+ 	if err != nil {
+ 		return fmt.Errorf("credential recovery metadata cannot be recorded: %w", err)
+ 	}
+-	if !containsClientID(state.CredentialCleanup, clientID) {
+-		state.CredentialCleanup = append(state.CredentialCleanup, clientID)
+-	}
++	state = addCredentialIdentity(state, identity)
+ 	if err := host.Store.SaveState(encodeState(state)); err != nil {
+ 		return fmt.Errorf("credential rollback failed and recovery metadata could not be saved: %w", err)
+ 	}
+@@ -317,19 +368,19 @@ func saveCandidateLocked(ctx context.Context, store *SecretStore, tokens TokenSe
+ 	}
+ }
+ 
+-func (p *Plugin) cleanupPreviousClient(ctx context.Context, host plugins.HostContext, result plugins.Result, oldClientID, activeClientID string) (plugins.Result, error) {
++func (p *Plugin) cleanupPreviousCredential(ctx context.Context, host plugins.HostContext, result plugins.Result, oldIdentity, activeIdentity credentialIdentity) (plugins.Result, error) {
+ 	state, err := decodeState(result.State)
+ 	if err != nil {
+ 		return plugins.Result{}, err
+ 	}
+-	if oldClientID != "" && oldClientID != activeClientID && !containsClientID(state.CredentialCleanup, oldClientID) {
+-		state.CredentialCleanup = append(state.CredentialCleanup, oldClientID)
++	if oldIdentity.valid() && oldIdentity != activeIdentity {
++		state = addCredentialIdentity(state, oldIdentity)
+ 	}
+-	state.CredentialCleanup = removeClientID(state.CredentialCleanup, activeClientID)
++	state = removeCredentialIdentity(state, activeIdentity)
+ 	if err := host.Store.SaveState(encodeState(state)); err != nil {
+ 		return plugins.Result{}, err
+ 	}
+-	state, _ = p.retryCredentialCleanup(ctx, host, state, activeClientID)
++	state, _ = p.retryCredentialCleanupFor(ctx, host, state, activeIdentity)
+ 	if err := host.Store.SaveState(encodeState(state)); err != nil {
+ 		return plugins.Result{}, err
+ 	}
+@@ -337,6 +388,47 @@ func (p *Plugin) cleanupPreviousClient(ctx context.Context, host plugins.HostCon
+ 	return result, nil
+ }
+ 
++func (p *Plugin) cleanupPreviousClient(ctx context.Context, host plugins.HostContext, result plugins.Result, oldClientID, activeClientID string) (plugins.Result, error) {
++	old := credentialIdentity{}
++	if oldClientID != "" {
++		old = credentialIdentity{Method: authMethodApp, Key: oldClientID}
++	}
++	return p.cleanupPreviousCredential(ctx, host, result, old, credentialIdentity{Method: authMethodApp, Key: activeClientID})
++}
++
++func addCredentialIdentity(state ownershipState, identity credentialIdentity) ownershipState {
++	if !identity.valid() {
++		return state
++	}
++	if identity.Method == authMethodApp {
++		if !containsClientID(state.CredentialCleanup, identity.Key) {
++			state.CredentialCleanup = append(state.CredentialCleanup, identity.Key)
++		}
++		return state
++	}
++	for _, previous := range state.CredentialCleanupIdentities {
++		if previous == identity {
++			return state
++		}
++	}
++	state.CredentialCleanupIdentities = append(state.CredentialCleanupIdentities, identity)
++	return state
++}
++
++func removeCredentialIdentity(state ownershipState, identity credentialIdentity) ownershipState {
++	if identity.Method == authMethodApp {
++		state.CredentialCleanup = removeClientID(state.CredentialCleanup, identity.Key)
++	}
++	remaining := make([]credentialIdentity, 0, len(state.CredentialCleanupIdentities))
++	for _, pending := range state.CredentialCleanupIdentities {
++		if pending != identity {
++			remaining = append(remaining, pending)
++		}
++	}
++	state.CredentialCleanupIdentities = remaining
++	return state
++}
++
+ func removeClientID(values []string, clientID string) []string {
+ 	remaining := make([]string, 0, len(values))
+ 	for _, value := range values {
+diff --git a/internal/plugins/githubapp/plugin_contract_test.go b/internal/plugins/githubapp/plugin_contract_test.go
+index 37aa86b..5a94643 100644
+--- a/internal/plugins/githubapp/plugin_contract_test.go
++++ b/internal/plugins/githubapp/plugin_contract_test.go
+@@ -25,6 +25,27 @@ func TestDefinitionUsesSharedClientIDAndNoProjectCredentialFields(t *testing.T)
+ 	}
+ }
+ 
++func TestGeneratedUnitPreservesAvailableGuiSessionWithoutPersistingTTY(t *testing.T) {
++	t.Setenv("DCH_CONFIG", filepath.Join(t.TempDir(), "config"))
++	t.Setenv("DISPLAY", ":1")
++	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
++	t.Setenv("XAUTHORITY", "/tmp/xauthority")
++	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/tmp/bus")
++	t.Setenv("GPG_TTY", "/dev/pts/8")
++	unit, err := serviceUnitContent(t.TempDir())
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, value := range []string{"DISPLAY=:1", "WAYLAND_DISPLAY=wayland-0", "XAUTHORITY=/tmp/xauthority", "DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/bus"} {
++		if !strings.Contains(string(unit), "Environment=\""+value+"\"") {
++			t.Errorf("unit missing %s: %s", value, unit)
++		}
++	}
++	if strings.Contains(string(unit), "GPG_TTY") {
++		t.Fatalf("unit persisted GPG_TTY: %s", unit)
++	}
++}
++
+ func TestStatusRecognizesLegacyInstallationAsAuthorizationRequired(t *testing.T) {
+ 	setupHostHookTest(t, false)
+ 	status, err := New().Status(context.Background(), plugins.HostContext{ProjectPath: t.TempDir(), Config: json.RawMessage(`{"app_id":2,"installation_id":3}`)})
+@@ -140,6 +161,33 @@ func TestEnablePersistsOwnershipAfterCredentialReadiness(t *testing.T) {
+ 	}
+ }
+ 
++func TestEnablePreservesTypedCredentialCleanupMarkers(t *testing.T) {
++	setupHostHookTest(t, false)
++	project := filepath.Join(t.TempDir(), "project")
++	if err := os.MkdirAll(filepath.Join(project, ".devcontainer"), 0700); err != nil {
++		t.Fatal(err)
++	}
++	listener := readyCredentialSocket(t, project)
++	defer listener.Close()
++	cfg := Config{AuthMethod: authMethodPAT, ProjectPath: project, UserID: 8, RepositoryID: 9, Repository: "octo/repo"}
++	config, _ := json.Marshal(cfg)
++	pending := credentialIdentity{Method: authMethodPAT, Key: authMethodPAT}
++	store := &testScopedStore{}
++	_, err := New().HandleHost(context.Background(), plugins.HostContext{
++		ProjectPath: project,
++		Config:      config,
++		State:       encodeState(ownershipState{CredentialCleanupIdentities: []credentialIdentity{pending}}),
++		Store:       store,
++	}, plugins.EventEnable)
++	if err != nil {
++		t.Fatal(err)
++	}
++	state, err := decodeState(store.state)
++	if err != nil || !containsRecoveryIdentity(state, pending) {
++		t.Fatalf("typed credential cleanup marker was lost: %#v, %v", state, err)
++	}
++}
++
+ func TestEnableRestartsActiveServiceWhenConfigChanges(t *testing.T) {
+ 	env := setupHostHookTest(t, true)
+ 	project := filepath.Join(env.root, "project")
+diff --git a/internal/plugins/githubapp/provider.go b/internal/plugins/githubapp/provider.go
+index 1c51cfa..e041464 100644
+--- a/internal/plugins/githubapp/provider.go
++++ b/internal/plugins/githubapp/provider.go
+@@ -13,16 +13,17 @@ import (
+ 	"os"
+ 	"os/exec"
+ 	"strings"
+-	"sync"
+ 	"time"
+ 
+ 	oauth "github.com/cli/oauth"
+ )
+ 
+ const maxResponseBytes = 1 << 20
++const credentialRequestTimeout = 120 * time.Second
+ 
+ type TokenSet struct {
+ 	Schema                int       `json:"schema"`
++	AuthMethod            string    `json:"auth_method,omitempty"`
+ 	ClientID              string    `json:"client_id"`
+ 	ProjectPath           string    `json:"project_path"`
+ 	UserID                int64     `json:"user_id"`
+@@ -30,6 +31,7 @@ type TokenSet struct {
+ 	Repository            string    `json:"repository"`
+ 	AccessToken           string    `json:"access_token"`
+ 	RefreshToken          string    `json:"refresh_token"`
++	PersonalAccessToken   string    `json:"personal_access_token,omitempty"`
+ 	AccessTokenExpiresAt  time.Time `json:"access_token_expires_at"`
+ 	RefreshTokenExpiresAt time.Time `json:"refresh_token_expires_at"`
+ }
+@@ -49,7 +51,7 @@ type ProviderOptions struct {
+ type Provider struct {
+ 	cfg    Config
+ 	opts   ProviderOptions
+-	mu     sync.Mutex
++	gate   chan struct{}
+ 	cached TokenSet
+ }
+ 
+@@ -68,7 +70,7 @@ func NewProvider(cfg Config, options ...ProviderOptions) (*Provider, error) {
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	return &Provider{cfg: cfg, opts: normalized}, nil
++	return &Provider{cfg: cfg, opts: normalized, gate: make(chan struct{}, 1)}, nil
+ }
+ 
+ func normalizeProviderOptions(cfg Config, opts ProviderOptions) (ProviderOptions, error) {
+@@ -76,7 +78,7 @@ func normalizeProviderOptions(cfg Config, opts ProviderOptions) (ProviderOptions
+ 		opts.PassPath = "pass"
+ 	}
+ 	if opts.PassTimeout <= 0 {
+-		opts.PassTimeout = 10 * time.Second
++		opts.PassTimeout = credentialRequestTimeout
+ 	}
+ 	if opts.RequestTimeout <= 0 {
+ 		opts.RequestTimeout = 15 * time.Second
+@@ -126,20 +128,31 @@ func configuredSecret(cfg Config, opts ProviderOptions) *SecretStore {
+ 
+ func defaultScopeVerifier(opts ProviderOptions) func(context.Context, string, Config) error {
+ 	return func(ctx context.Context, token string, config Config) error {
+-		return VerifyRepositoryScope(ctx, token, Repository{ID: config.RepositoryID, FullName: config.Repository}, RepositoryOptions{HTTPClient: opts.HTTPClient, APIBaseURL: opts.APIBaseURL})
++		repository := Repository{ID: config.RepositoryID, FullName: config.Repository}
++		repositoryOptions := RepositoryOptions{HTTPClient: opts.HTTPClient, APIBaseURL: opts.APIBaseURL}
++		if config.authMethod() == authMethodPAT {
++			return VerifyRepositoryAccess(ctx, token, repository, repositoryOptions)
++		}
++		return VerifyRepositoryScope(ctx, token, repository, repositoryOptions)
+ 	}
+ }
+ 
+ func (p *Provider) Token(ctx context.Context) (string, error) {
+-	p.mu.Lock()
+-	defer p.mu.Unlock()
++	requestCtx, cancel := context.WithTimeout(ctx, credentialRequestTimeout)
++	defer cancel()
++	select {
++	case p.gate <- struct{}{}:
++		defer func() { <-p.gate }()
++	case <-requestCtx.Done():
++		return "", requestCtx.Err()
++	}
+ 	if p.cached.AccessToken != "" && p.cached.AccessTokenExpiresAt.After(p.opts.Now().Add(5*time.Minute)) {
+ 		return p.cached.AccessToken, nil
+ 	}
+ 	var token string
+-	err := p.opts.Secret.WithLock(ctx, func() error {
++	err := p.opts.Secret.WithLock(requestCtx, func() error {
+ 		var err error
+-		token, err = p.tokenLocked(ctx)
++		token, err = p.tokenLocked(requestCtx)
+ 		return err
+ 	})
+ 	return token, err
+@@ -150,6 +163,15 @@ func (p *Provider) tokenLocked(ctx context.Context) (string, error) {
+ 	if err != nil {
+ 		return "", err
+ 	}
++	if p.cfg.authMethod() == authMethodPAT {
++		if err := p.opts.VerifyUser(ctx, set.PersonalAccessToken, p.cfg.UserID); err != nil {
++			return "", fmt.Errorf("authorization required: account verification failed; check or reconfigure the PAT")
++		}
++		if err := p.opts.VerifyScope(ctx, set.PersonalAccessToken, p.cfg); err != nil {
++			return "", fmt.Errorf("authorization required: repository access verification failed; check or reconfigure the PAT")
++		}
++		return set.PersonalAccessToken, nil
++	}
+ 	if set.AccessToken == "" || set.RefreshToken == "" {
+ 		return "", fmt.Errorf("authorization required")
+ 	}
+@@ -273,7 +295,11 @@ func verifyGitHubUser(ctx context.Context, token string, expectedID int64, opts
+ }
+ 
+ func secretEntry(cfg Config) string {
+-	return "dch/github-app/users/" + projectDigest(cfg.ProjectPath) + "/" + clientDigest(cfg.ClientID)
++	base := "dch/github-app/users/" + projectDigest(cfg.ProjectPath) + "/"
++	if cfg.authMethod() == authMethodPAT {
++		return base + authMethodPAT
++	}
++	return base + clientDigest(cfg.ClientID)
+ }
+ func projectDigest(path string) string  { return pathHash(path) }
+ func clientDigest(client string) string { return pathHash(client) }
+@@ -294,7 +320,7 @@ func securePassEnvironment(env []string) []string {
+ 		}
+ 		filtered = append(filtered, value)
+ 	}
+-	return append(filtered, "GPG_TTY=", "PASSWORD_STORE_GPG_OPTS=--batch --pinentry-mode error", "LC_ALL=C")
++	return append(filtered, "PASSWORD_STORE_GPG_OPTS=--pinentry-mode ask", "LC_ALL=C")
+ }
+ func cleanPassOutput(data []byte) string        { return strings.TrimSpace(string(data)) }
+ func tokenSetJSON(set TokenSet) ([]byte, error) { return json.Marshal(set) }
+diff --git a/internal/plugins/githubapp/provider_test.go b/internal/plugins/githubapp/provider_test.go
+index 6c1e887..bc9ead2 100644
+--- a/internal/plugins/githubapp/provider_test.go
++++ b/internal/plugins/githubapp/provider_test.go
+@@ -39,6 +39,227 @@ func TestSecretStoreWritesAndReadsCompleteJSON(t *testing.T) {
+ 	}
+ }
+ 
++func TestSecretStoreWritesAndReadsPATWithoutAppExpiryFields(t *testing.T) {
++	pass := filepath.Join(t.TempDir(), "pass")
++	if err := os.WriteFile(pass, []byte("#!/bin/sh\ncat \"$PASS_SECRET\"\n"), 0700); err != nil {
++		t.Fatal(err)
++	}
++	cfg := Config{AuthMethod: authMethodPAT, ProjectPath: "/tmp/p", UserID: 8, Login: "tester", RepositoryID: 9, Repository: "octo/repo"}
++	entry := filepath.Join(t.TempDir(), "secret.json")
++	data := `{"schema":2,"auth_method":"pat","project_path":"/tmp/p","user_id":8,"repository_id":9,"repository":"octo/repo","personal_access_token":"github_pat_test"}`
++	if err := os.WriteFile(entry, []byte(data), 0600); err != nil {
++		t.Fatal(err)
++	}
++	store := &SecretStore{PassPath: pass, Entry: "entry"}
++	t.Setenv("PASS_SECRET", entry)
++	got, err := store.Read(context.Background(), cfg)
++	if err != nil {
++		t.Fatal(err)
++	}
++	encoded, _ := json.Marshal(got)
++	if got.Schema != 2 || got.RefreshToken != "" || !got.AccessTokenExpiresAt.IsZero() || !strings.Contains(string(encoded), `"personal_access_token":"github_pat_test"`) {
++		t.Fatalf("PAT credential = %#v", got)
++	}
++}
++
++func TestSecretStoreRejectsPATFieldsInLegacyAppCredential(t *testing.T) {
++	called := filepath.Join(t.TempDir(), "called")
++	pass := filepath.Join(t.TempDir(), "pass")
++	if err := os.WriteFile(pass, []byte("#!/bin/sh\ntouch \"$PASS_CALLED\"\nexit 0\n"), 0700); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("PASS_CALLED", called)
++	cfg := testProviderConfig()
++	set := testTokenSet(cfg, time.Now().Add(time.Hour), time.Now().Add(24*time.Hour))
++	set.AuthMethod = authMethodPAT
++	set.PersonalAccessToken = "github_pat_test"
++	store := &SecretStore{PassPath: pass, Entry: "entry"}
++	if err := store.Write(context.Background(), set); err == nil {
++		t.Fatal("legacy App schema accepted PAT fields")
++	}
++	if _, err := os.Stat(called); !os.IsNotExist(err) {
++		t.Fatalf("pass ran for invalid credential: %v", err)
++	}
++}
++
++func TestProviderReturnsPATAfterCheckingAccountAndRepository(t *testing.T) {
++	cfg := Config{AuthMethod: authMethodPAT, ProjectPath: "/tmp/p", UserID: 8, Login: "tester", RepositoryID: 9, Repository: "octo/repo"}
++	const token = "github_pat_test"
++	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.Header.Get("Authorization") != "Bearer "+token {
++			t.Errorf("%s authorization = %q", r.URL.Path, r.Header.Get("Authorization"))
++		}
++		switch r.URL.Path {
++		case "/user":
++			fmt.Fprint(w, `{"id":8}`)
++		case "/repos/octo/repo":
++			fmt.Fprint(w, `{"id":9,"full_name":"octo/repo"}`)
++		default:
++			t.Errorf("unexpected request path %q", r.URL.Path)
++			http.NotFound(w, r)
++		}
++	}))
++	defer api.Close()
++	pass := filepath.Join(t.TempDir(), "pass")
++	if err := os.WriteFile(pass, []byte("#!/bin/sh\ncat \"$PASS_SECRET\"\n"), 0700); err != nil {
++		t.Fatal(err)
++	}
++	entry := filepath.Join(t.TempDir(), "secret.json")
++	secret := `{"schema":2,"auth_method":"pat","project_path":"/tmp/p","user_id":8,"repository_id":9,"repository":"octo/repo","personal_access_token":"` + token + `"}`
++	if err := os.WriteFile(entry, []byte(secret), 0600); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("PASS_SECRET", entry)
++	store := &SecretStore{PassPath: pass, Entry: "entry", LockDir: filepath.Join(t.TempDir(), "locks")}
++	provider, err := NewProvider(cfg, ProviderOptions{APIBaseURL: api.URL, Secret: store})
++	if err != nil {
++		t.Fatal(err)
++	}
++	got, err := provider.Token(context.Background())
++	if err != nil || got != token {
++		t.Fatalf("Provider.Token() = %q, %v", got, err)
++	}
++}
++
++func TestCredentialEntriesKeepLegacyAppPathAndSeparatePATPath(t *testing.T) {
++	project := "/tmp/project"
++	app := Config{ClientID: "Iv1_example", ProjectPath: project}
++	pat := Config{AuthMethod: authMethodPAT, ProjectPath: project}
++	if got, want := secretEntry(app), "dch/github-app/users/f630ad93b344dd6bd04d44ec/818fbcd4b513d986a681b5f3"; got != want {
++		t.Fatalf("legacy App entry = %q, want %q", got, want)
++	}
++	if got, want := secretEntry(pat), "dch/github-app/users/f630ad93b344dd6bd04d44ec/pat"; got != want {
++		t.Fatalf("PAT entry = %q, want %q", got, want)
++	}
++}
++
++func TestSecurePassEnvironmentAllowsPinentryAndKeepsSession(t *testing.T) {
++	env := securePassEnvironment([]string{"DISPLAY=:1", "WAYLAND_DISPLAY=wayland-0", "XAUTHORITY=/tmp/x", "DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/bus", "PASSWORD_STORE_GPG_OPTS=--bad", "GPG_TTY=/dev/pts/1"})
++	joined := strings.Join(env, "\n")
++	for _, value := range []string{"DISPLAY=:1", "WAYLAND_DISPLAY=wayland-0", "XAUTHORITY=/tmp/x", "DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/bus"} {
++		if !strings.Contains(joined, value) {
++			t.Errorf("missing %s in %q", value, joined)
++		}
++	}
++	if strings.Contains(joined, "pinentry-mode error") || strings.Contains(joined, "GPG_TTY=/dev/pts/1") {
++		t.Fatalf("pinentry is blocked or tty persisted: %q", joined)
++	}
++}
++
++func TestProviderTokenWaitRespectsCancellationAndReleasesForNextRequest(t *testing.T) {
++	cfg := testProviderConfig()
++	set := testTokenSet(cfg, time.Now().Add(time.Hour), time.Now().Add(24*time.Hour))
++	raw, err := json.Marshal(set)
++	if err != nil {
++		t.Fatal(err)
++	}
++	dir := t.TempDir()
++	entry := filepath.Join(dir, "credential")
++	if err := os.WriteFile(entry, raw, 0600); err != nil {
++		t.Fatal(err)
++	}
++	started := filepath.Join(dir, "started")
++	pass := filepath.Join(dir, "pass")
++	script := "#!/bin/sh\ntouch \"$PASS_STARTED\"\nsleep 1\ncat \"$PASS_SECRET\"\n"
++	if err := os.WriteFile(pass, []byte(script), 0700); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("PASS_SECRET", entry)
++	t.Setenv("PASS_STARTED", started)
++	provider, err := NewProvider(cfg, ProviderOptions{PassPath: pass, PassTimeout: 3 * time.Second, VerifyScope: noVerifyScope, VerifyUser: noVerifyUser})
++	if err != nil {
++		t.Fatal(err)
++	}
++	first := make(chan error, 1)
++	go func() { _, err := provider.Token(context.Background()); first <- err }()
++	deadline := time.Now().Add(time.Second)
++	for time.Now().Before(deadline) {
++		if _, err := os.Stat(started); err == nil {
++			break
++		}
++		time.Sleep(time.Millisecond)
++	}
++	if _, err := os.Stat(started); err != nil {
++		t.Fatal("first pass request did not start")
++	}
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel()
++	second := make(chan error, 1)
++	go func() { _, err := provider.Token(ctx); second <- err }()
++	select {
++	case err := <-second:
++		if err == nil {
++			t.Fatal("canceled queued request succeeded")
++		}
++	case <-time.After(100 * time.Millisecond):
++		t.Fatal("queued request ignored cancellation while waiting for provider")
++	}
++	if err := <-first; err != nil {
++		t.Fatalf("first request failed: %v", err)
++	}
++	if token, err := provider.Token(context.Background()); err != nil || token != set.AccessToken {
++		t.Fatalf("subsequent token = %q, %v", token, err)
++	}
++}
++
++func TestSecretStorePassTimeoutStopsCommandAndReleasesLock(t *testing.T) {
++	pass := filepath.Join(t.TempDir(), "pass")
++	if err := os.WriteFile(pass, []byte("#!/bin/sh\nsleep 5\n"), 0700); err != nil {
++		t.Fatal(err)
++	}
++	store := &SecretStore{PassPath: pass, Timeout: 40 * time.Millisecond, Entry: "timeout-entry", LockDir: filepath.Join(t.TempDir(), "locks")}
++	started := time.Now()
++	if _, err := store.run(context.Background(), nil, "show", store.Entry); err == nil {
++		t.Fatal("pass timeout succeeded")
++	}
++	if time.Since(started) > time.Second {
++		t.Fatal("pass timeout did not stop command promptly")
++	}
++	called := false
++	if err := store.WithLock(context.Background(), func() error { called = true; return nil }); err != nil || !called {
++		t.Fatalf("lock unavailable after timed out command: %v", err)
++	}
++}
++
++func TestProviderCallerCancellationStopsPassAndAllowsRetry(t *testing.T) {
++	cfg := testProviderConfig()
++	set := testTokenSet(cfg, time.Now().Add(time.Hour), time.Now().Add(24*time.Hour))
++	raw, err := json.Marshal(set)
++	if err != nil {
++		t.Fatal(err)
++	}
++	dir := t.TempDir()
++	entry, hold := filepath.Join(dir, "credential"), filepath.Join(dir, "hold")
++	if err := os.WriteFile(entry, raw, 0600); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(hold, nil, 0600); err != nil {
++		t.Fatal(err)
++	}
++	pass := filepath.Join(dir, "pass")
++	script := "#!/bin/sh\nif [ -e \"$PASS_HOLD\" ]; then sleep 5; fi\ncat \"$PASS_SECRET\"\n"
++	if err := os.WriteFile(pass, []byte(script), 0700); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("PASS_SECRET", entry)
++	t.Setenv("PASS_HOLD", hold)
++	provider, err := NewProvider(cfg, ProviderOptions{PassPath: pass, PassTimeout: 3 * time.Second, VerifyScope: noVerifyScope, VerifyUser: noVerifyUser})
++	if err != nil {
++		t.Fatal(err)
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
++	defer cancel()
++	if _, err := provider.Token(ctx); err == nil {
++		t.Fatal("canceled credential request succeeded")
++	}
++	if err := os.Remove(hold); err != nil {
++		t.Fatal(err)
++	}
++	if token, err := provider.Token(context.Background()); err != nil || token != set.AccessToken {
++		t.Fatalf("retry token = %q, %v", token, err)
++	}
++}
++
+ func TestContextFormClientAddsRepositoryIDOnlyToDevicePollAndHonorsCancellation(t *testing.T) {
+ 	var poll, request string
+ 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+diff --git a/internal/plugins/githubapp/repository.go b/internal/plugins/githubapp/repository.go
+index deee24e..07a5308 100644
+--- a/internal/plugins/githubapp/repository.go
++++ b/internal/plugins/githubapp/repository.go
+@@ -356,3 +356,15 @@ func VerifyRepositoryScope(ctx context.Context, token string, selected Repositor
+ 	}
+ 	return nil
+ }
++
++func VerifyRepositoryAccess(ctx context.Context, token string, selected Repository, opts RepositoryOptions) error {
++	if selected.ID <= 0 || !validFullName(selected.FullName) {
++		return ErrRepositoryUnavailable
++	}
++	parts := strings.Split(selected.FullName, "/")
++	got, err := requestRepository(ctx, http.MethodGet, "/repos/"+url.PathEscape(parts[0])+"/"+url.PathEscape(parts[1]), token, opts)
++	if err != nil || got.ID != selected.ID || !sameRepositoryName(got.FullName, selected.FullName) {
++		return ErrRepositoryUnavailable
++	}
++	return nil
++}
+diff --git a/internal/plugins/githubapp/secret.go b/internal/plugins/githubapp/secret.go
+index 325fa8a..83ccddf 100644
+--- a/internal/plugins/githubapp/secret.go
++++ b/internal/plugins/githubapp/secret.go
+@@ -170,11 +170,12 @@ func (s *SecretStore) runCaptured(ctx context.Context, input []byte, args ...str
+ 	}
+ 	timeout := s.Timeout
+ 	if timeout <= 0 {
+-		timeout = 10 * time.Second
++		timeout = credentialRequestTimeout
+ 	}
+ 	callCtx, cancel := context.WithTimeout(ctx, timeout)
+ 	defer cancel()
+ 	cmd := exec.CommandContext(callCtx, path, args...)
++	cmd.WaitDelay = 250 * time.Millisecond
+ 	cmd.Env = securePassEnvironment(os.Environ())
+ 	cmd.Stdin = bytes.NewReader(input)
+ 	var stdout, stderr boundedBuffer
+@@ -194,14 +195,30 @@ func (s *SecretStore) now() time.Time {
+ }
+ 
+ func validateCandidate(set TokenSet, now time.Time) error {
+-	if set.Schema != 1 || set.ClientID == "" || set.ProjectPath == "" || set.UserID <= 0 || set.RepositoryID <= 0 || !validRepositoryName(set.Repository) || set.AccessToken == "" || set.RefreshToken == "" || strings.ContainsAny(set.AccessToken+set.RefreshToken, "\r\n") || !set.AccessTokenExpiresAt.After(now) || !set.RefreshTokenExpiresAt.After(now) {
++	if set.Schema == 2 {
++		return validatePATCandidate(set)
++	}
++	if set.Schema != 1 || set.AuthMethod != "" || set.PersonalAccessToken != "" || !clientIDPattern.MatchString(set.ClientID) || set.ProjectPath == "" || set.UserID <= 0 || set.RepositoryID <= 0 || !validRepositoryName(set.Repository) || set.AccessToken == "" || set.RefreshToken == "" || strings.ContainsAny(set.AccessToken+set.RefreshToken, "\r\n") || !set.AccessTokenExpiresAt.After(now) || !set.RefreshTokenExpiresAt.After(now) {
++		return fmt.Errorf("invalid GitHub credential")
++	}
++	return nil
++}
++
++func validatePATCandidate(set TokenSet) error {
++	if set.AuthMethod != authMethodPAT || set.ClientID != "" || set.ProjectPath == "" || set.UserID <= 0 || set.RepositoryID <= 0 || !validRepositoryName(set.Repository) || !isFineGrainedPAT(set.PersonalAccessToken) || set.AccessToken != "" || set.RefreshToken != "" || !set.AccessTokenExpiresAt.IsZero() || !set.RefreshTokenExpiresAt.IsZero() {
+ 		return fmt.Errorf("invalid GitHub credential")
+ 	}
+ 	return nil
+ }
+ 
+ func validateTokenSet(set TokenSet, cfg Config, now time.Time) error {
+-	if set.Schema != 1 || set.ClientID != cfg.ClientID || filepath.Clean(set.ProjectPath) != filepath.Clean(cfg.ProjectPath) || set.UserID != cfg.UserID || set.RepositoryID != cfg.RepositoryID || set.Repository != cfg.Repository || set.AccessToken == "" || set.RefreshToken == "" || strings.ContainsAny(set.AccessToken+set.RefreshToken, "\r\n") || set.AccessTokenExpiresAt.IsZero() || !set.RefreshTokenExpiresAt.After(now) {
++	if cfg.authMethod() == authMethodPAT {
++		if set.Schema != 2 || validatePATCandidate(set) != nil || filepath.Clean(set.ProjectPath) != filepath.Clean(cfg.ProjectPath) || set.UserID != cfg.UserID || set.RepositoryID != cfg.RepositoryID || set.Repository != cfg.Repository {
++			return fmt.Errorf("authorization required")
++		}
++		return nil
++	}
++	if set.Schema != 1 || set.AuthMethod != "" || set.PersonalAccessToken != "" || set.ClientID != cfg.ClientID || filepath.Clean(set.ProjectPath) != filepath.Clean(cfg.ProjectPath) || set.UserID != cfg.UserID || set.RepositoryID != cfg.RepositoryID || set.Repository != cfg.Repository || set.AccessToken == "" || set.RefreshToken == "" || strings.ContainsAny(set.AccessToken+set.RefreshToken, "\r\n") || set.AccessTokenExpiresAt.IsZero() || !set.RefreshTokenExpiresAt.After(now) {
+ 		return fmt.Errorf("authorization required")
+ 	}
+ 	return nil
+diff --git a/internal/plugins/githubapp/server.go b/internal/plugins/githubapp/server.go
+index 5073141..e248016 100644
+--- a/internal/plugins/githubapp/server.go
++++ b/internal/plugins/githubapp/server.go
+@@ -98,9 +98,15 @@ func credentialHandler(provider *Provider) http.HandlerFunc {
+ 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+ 			return
+ 		}
+-		token, err := provider.Token(r.Context())
++		ctx, cancel := context.WithTimeout(r.Context(), credentialRequestTimeout)
++		defer cancel()
++		token, err := provider.Token(ctx)
+ 		if err != nil {
+-			http.Error(w, "credential unavailable", http.StatusServiceUnavailable)
++			message := "credential unavailable"
++			if provider.cfg.authMethod() == authMethodPAT {
++				message = "credential unavailable; reconfigure the PAT in host Project Plugins or unlock host GPG, then retry"
++			}
++			http.Error(w, message, http.StatusServiceUnavailable)
+ 			return
+ 		}
+ 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+@@ -170,7 +176,7 @@ func CheckCredential(ctx context.Context, socketPath string) error {
+ }
+ 
+ func unixHTTPClient(path string) *http.Client {
+-	return &http.Client{Timeout: 20 * time.Second, Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
++	return &http.Client{Timeout: credentialRequestTimeout + 5*time.Second, Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+ 		return (&net.Dialer{}).DialContext(ctx, "unix", path)
+ 	}}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+ }
+diff --git a/internal/plugins/githubapp/server_test.go b/internal/plugins/githubapp/server_test.go
+index 6aeed6b..eb683a0 100644
+--- a/internal/plugins/githubapp/server_test.go
++++ b/internal/plugins/githubapp/server_test.go
+@@ -2,9 +2,11 @@ package githubapp
+ 
+ import (
+ 	"context"
++	"encoding/json"
+ 	"io"
+ 	"net"
+ 	"net/http"
++	"net/http/httptest"
+ 	"os"
+ 	"path/filepath"
+ 	"strings"
+@@ -144,6 +146,57 @@ func TestCheckCredentialUsesUnixSocket(t *testing.T) {
+ 	}
+ }
+ 
++func TestPATCredentialFailureGuidesRecoveryWithoutLeakingAPIError(t *testing.T) {
++	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		http.Error(w, "sensitive GitHub detail", http.StatusUnauthorized)
++	}))
++	defer api.Close()
++	cfg := Config{AuthMethod: authMethodPAT, ProjectPath: "/tmp/project", UserID: 8, Login: "tester", RepositoryID: 9, Repository: "octo/repo"}
++	set := TokenSet{Schema: 2, AuthMethod: authMethodPAT, ProjectPath: cfg.ProjectPath, UserID: cfg.UserID, RepositoryID: cfg.RepositoryID, Repository: cfg.Repository, PersonalAccessToken: "github_pat_private_value"}
++	secretPath := filepath.Join(t.TempDir(), "secret.json")
++	data, err := json.Marshal(set)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(secretPath, data, 0600); err != nil {
++		t.Fatal(err)
++	}
++	pass := filepath.Join(t.TempDir(), "pass")
++	if err := os.WriteFile(pass, []byte("#!/bin/sh\ncat \"$PASS_SECRET\"\n"), 0700); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("PASS_SECRET", secretPath)
++	provider, err := NewProvider(cfg, ProviderOptions{PassPath: pass, APIBaseURL: api.URL, Secret: &SecretStore{PassPath: pass, Entry: "entry", LockDir: filepath.Join(t.TempDir(), "locks")}})
++	if err != nil {
++		t.Fatal(err)
++	}
++	service := httptest.NewServer(credentialMux(provider))
++	defer service.Close()
++	response, err := service.Client().Get(service.URL + "/credential")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer response.Body.Close()
++	body, err := io.ReadAll(response.Body)
++	if err != nil {
++		t.Fatal(err)
++	}
++	message := string(body)
++	if response.StatusCode != http.StatusServiceUnavailable || !strings.Contains(message, "reconfigure the PAT in host Project Plugins") || !strings.Contains(message, "unlock host GPG") {
++		t.Fatalf("PAT failure response = %d %q", response.StatusCode, message)
++	}
++	if strings.Contains(message, "sensitive GitHub detail") || strings.Contains(message, "github_pat_private_value") {
++		t.Fatalf("PAT failure leaked secret or API detail: %q", message)
++	}
++}
++
++func TestUnixCredentialClientAllowsPinentryBudget(t *testing.T) {
++	client := unixHTTPClient("/tmp/credential.sock")
++	if client.Timeout != 125*time.Second {
++		t.Fatalf("unix credential client timeout = %s", client.Timeout)
++	}
++}
++
+ func waitForSocket(t *testing.T, path string) {
+ 	t.Helper()
+ 	deadline := time.Now().Add(time.Second)
+diff --git a/internal/plugins/githubapp/user_config_test.go b/internal/plugins/githubapp/user_config_test.go
+index 43856a9..6a82244 100644
+--- a/internal/plugins/githubapp/user_config_test.go
++++ b/internal/plugins/githubapp/user_config_test.go
+@@ -36,7 +36,13 @@ func TestSharedSettingsRequiresClientID(t *testing.T) {
+ 	}
+ }
+ 
+-func TestStatusRequiresReauthorizationAfterSharedClientIDChanges(t *testing.T) {
++func TestSharedSettingsCanOmitAppClientIDForPATProjects(t *testing.T) {
++	if err := New().ValidateSharedSettings(json.RawMessage(`{}`)); err != nil {
++		t.Fatalf("empty shared settings: %v", err)
++	}
++}
++
++func TestStatusKeepsProjectAuthorizationWhenSharedClientIDChanges(t *testing.T) {
+ 	cfg := Config{ClientID: "Iv1.old", ProjectPath: t.TempDir(), UserID: 42, Login: "octo", RepositoryID: 9, Repository: "octo/repo"}
+ 	raw, _ := json.Marshal(cfg)
+ 	shared, _ := json.Marshal(SharedConfig{ClientID: "Iv1.new"})
+@@ -44,7 +50,21 @@ func TestStatusRequiresReauthorizationAfterSharedClientIDChanges(t *testing.T) {
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+-	if !strings.Contains(status.Message, "reauthorize") {
++	if strings.Contains(status.Message, "reauthorize") {
++		t.Fatalf("status message = %q", status.Message)
++	}
++}
++
++func TestStatusBlocksPATWhenItsCredentialRecoveryIsPending(t *testing.T) {
++	project := t.TempDir()
++	cfg := Config{AuthMethod: authMethodPAT, ProjectPath: project, UserID: 42, Login: "octo", RepositoryID: 9, Repository: "octo/repo"}
++	raw, _ := json.Marshal(cfg)
++	state := json.RawMessage(`{"credential_cleanup_identities":[{"method":"pat","key":"pat"}]}`)
++	status, err := New().Status(context.Background(), plugins.HostContext{ProjectPath: project, Config: raw, State: state})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !strings.Contains(status.Message, "recovery is pending") {
+ 		t.Fatalf("status message = %q", status.Message)
+ 	}
+ }
+diff --git a/internal/plugins/plugin.go b/internal/plugins/plugin.go
+index fd12b0b..d9dd1ec 100644
+--- a/internal/plugins/plugin.go
++++ b/internal/plugins/plugin.go
+@@ -120,6 +120,16 @@ type Interaction interface {
+ 	OpenBrowser(context.Context, string) error
+ }
+ 
++// InputInteraction collects text without exposing secret values in the terminal.
++type InputInteraction interface {
++	Input(context.Context, string, string, bool) (string, error)
++}
++
++// HostCommandInteraction runs a host command while the console owns the terminal.
++type HostCommandInteraction interface {
++	RunHostCommand(context.Context, string, []string) error
++}
++
+ // PreparedConfiguration holds a candidate project config and a commit hook.
+ // The hook runs under the project lock after Manager revalidates its snapshot.
+ type PreparedConfiguration struct {
+diff --git a/specs/2026-10-26-github-auth-pass-setup-spec.md b/specs/2026-10-26-github-auth-pass-setup-spec.md
+new file mode 100644
+index 0000000..06286b6
+--- /dev/null
++++ b/specs/2026-10-26-github-auth-pass-setup-spec.md
+@@ -0,0 +1,314 @@
++---
++title: GitHub 認證與 Host 密碼庫設定規格
++subtitle: BYO GitHub App、Fine-grained PAT、GPG/pass 初始化與背景 pinentry
++lang: zh-Hant
++template: doc
++theme: paper
++---
++
++本規格待使用者核准。核准後才拆分本機 tickets 與實作。
++
++## A 問題與方案
++
++目前 GitHub App plugin 已有 Device Flow、pass 儲存與 host credential service。
++使用者必須先自行準備 GPG/pass，且目前背景解密禁止 pinentry。
++目前沒有 Fine-grained personal access token（PAT）的設定入口。
++
++本次提供兩種認證方式。BYO GitHub App 為預設與推薦選項。
++兩種方式共用 host GPG/pass 前置設定，完成驗證後才取得或輸入 token。
++PAT 每個專案獨立儲存，沿用既有 host credential service 與容器 adapter。
++背景服務允許觸發圖形 pinentry；純 SSH/headless 使用 host 終端解鎖後重試。
++
++| 項目 | 決定 |
++| --- | --- |
++| 開發模式 | hard：規格核准、tickets、子代理 TDD、Code/Security Review、最終核准、PR |
++| 起點 | 7aa1998c882c665554bcedb30e5763d53a28846f |
++| 工作分支 | feat/github-auth-pass-setup |
++| 主機範圍 | 沿用既有 Linux、local Docker、systemd user service 條件 |
++| 自動安裝 | apt、dnf、pacman；每次先顯示命令並取得產品使用者同意 |
++| 套件選擇 | 保留現有 pass 封裝；本次不引入 byteness/keyring |
++| 原有改動 | 不納入既存 update.go、先前 spec/review 與 .scratch 工作 |
++
++## B 使用情境與操作順序
++
++1. 使用者在 Project plugins 選 Configure and enable 或 Reauthorize。
++2. 使用者選 BYO GitHub App（Recommended）或 Fine-grained token。
++3. dch 檢查 host 的 GPG 與 pass；缺少時提出安裝建議與確認。
++4. pass 已初始化時，顯示並沿用適用於 dch 憑證路徑的收件金鑰。
++5. pass 未初始化時，列出有效、可加密且可解密的 secret key 供選擇。
++6. 沒有可用 secret key 時，經確認開啟互動式 GPG 金鑰建立流程。
++7. 使用者由 GPG 設定身分與 passphrase；dch 不接收或儲存該 passphrase。
++8. 建立後重新列出可用 key，再讓使用者選擇。
++9. 使用選定 key 的完整 fingerprint 執行 pass init，再檢查初始化結果。
++10. 寫入隨機測試 secret、讀回比對、刪除並確認刪除成功。
++11. 全部前置檢查成功後，才進行 App Device Flow 或隱藏輸入 PAT。
++12. 使用者確認 GitHub 帳號與目標 repository，再提交候選設定。
++13. 憑證儲存、服務啟動與驗證成功後，才完成專案啟用。
++14. 切換認證方式失敗時，維持原有設定、服務與憑證的可恢復狀態。
++15. PAT 過期、撤銷或權限不足時，提示檢查或重新設定 PAT。
++16. 使用者可在圖形 pinentry 輸入 passphrase；取消或逾時則取得明確失敗訊息。
++
++```flow
++設定認證方式 -> 檢查 GPG 與 pass
++檢查 GPG 與 pass -> 檢查密碼庫與金鑰
++檢查密碼庫與金鑰 -> 測試寫入讀取刪除
++測試寫入讀取刪除 -> {認證方式}
++{認證方式} -> App Device Flow
++{認證方式} -> 隱藏輸入 PAT
++App Device Flow -> 驗證帳號與 repository
++隱藏輸入 PAT -> 驗證帳號與 repository
++驗證帳號與 repository -> 儲存候選憑證並啟用服務
++```
++
++## C GPG 與 pass 前置設定
++
++### 套件安裝
++
++先檢查可執行檔與 host 發行版，選擇適用的套件管理器。
++只安裝缺少的套件，不以 shell 拼接使用者輸入。
++
++| 平台 | GPG 套件 | pass 套件 | 安裝命令範本 |
++| --- | --- | --- | --- |
++| Debian / Ubuntu | gnupg | pass | apt-get install 套件名稱 |
++| Fedora / RHEL 系列 | gnupg2 | pass | dnf install 套件名稱 |
++| Arch Linux | gnupg | pass | pacman -S --needed 套件名稱 |
++
++顯示實際缺少項目、將執行的命令與需管理員權限的原因，再詢問同意。
++非 root 安裝使用 sudo，認證由 sudo 自行處理。
++只有套件安裝可提升權限；GPG、pass 與服務設定以目前使用者身分執行。
++保留套件管理器本身的確認，不強制無互動安裝。
++
++不支援的系統、缺少 sudo、拒絕安裝、取消或安裝失敗時，提供手動處理指引並停止啟用。
++安裝後重新檢查可執行檔；不在本次流程自動升級套件或修改套件來源。
++
++### 金鑰與初始化
++
++尊重目前的 GNUPGHOME 與 PASSWORD_STORE_DIR，未指定時使用工具預設值。
++解析 GPG 機器可讀的 secret key 清單，顯示 UID 與完整 fingerprint。
++排除過期、撤銷、停用及沒有可用加密能力的 key。
++選擇的 key 必須包含可用的加密 secret key／subkey；實際可用性再以讀寫驗證確認。
++
++沒有合適 key 時，說明即將建立金鑰，確認後執行 GPG 互動式建立。
++建立失敗或取消時停止，不自動建立無 passphrase 的 key。
++
++已初始化的 pass 沿用既有設定；不重跑根目錄 pass init，也不重新加密其他秘密。
++應考慮 dch 儲存路徑上既有的子目錄 .gpg-id 覆寫規則。
++若適用的收件設定損壞、缺少可用私鑰或無法解密，提供修復指引並中止。
++未初始化時才使用使用者選定的 key 初始化密碼庫。
++若在操作期間偵測到其他程序已初始化，重新讀取設定，不覆寫該結果。
++
++### 讀寫驗證與清理
++
++測試 secret 使用密碼學安全亂數，entry 位於相同的 dch 憑證加密範圍。
++entry 名稱隨機且僅屬於本次測試，不覆寫既有憑證。
++以正式服務相同的 pass／GPG 選項與環境規則寫入並讀回完整比對。
++測試值不得顯示於畫面、log 或錯誤訊息。
++
++成功、比對失敗、取消與逾時都必須嘗試刪除測試 entry。
++取消後清理使用獨立且有限的等待時間，不無限阻塞。
++刪除失敗需顯示待清理的 entry 名稱與重試指引，且不得繼續認證或啟用。
++
++已同意完成的套件安裝、新金鑰與 pass 初始化不會因後續取消而自動移除。
++這些 host 變更與專案憑證切換的回復範圍不同，介面需提前說明。
++
++## D App 與 PAT 認證契約
++
++| 項目 | BYO GitHub App（Recommended） | Fine-grained token |
++| --- | --- | --- |
++| 輸入 | GitHub App client_id | 隱藏輸入使用者建立的 PAT |
++| 授權 | Device Flow，沿用目前流程 | 不啟動 Device Flow |
++| 帳號驗證 | 沿用目前 GitHub user 驗證 | 呼叫 GET /user 確認帳號 |
++| repository | 沿用選擇與 scoped token 驗證 | 驗證目標 repository 的 API 可讀性與 ID |
++| 更新 | 沿用 refresh token 流程 | 不呼叫 refresh endpoint；失效時重新輸入 |
++| 儲存 | pass 內含 access／refresh token | pass 內僅含 PAT 與必要綁定資料 |
++
++App 設定時可沿用或修改 client_id。
++舊專案目前使用的 client_id 優先保留；共用設定仍可作為新設定的預設值。
++本次設定中輸入的 client_id 綁定該專案，不因修改輸入而偷偷更新其他專案。
++已儲存的專案認證不因共用預設值不同就被直接停用。
++GitHub App 本身必須啟用 Device Flow，且完成適當的 GitHub 權限與安裝設定。
++
++PAT 只接受 Fine-grained token，不接受 classic PAT 或 App token 冒充。
++格式檢查不能取代 GitHub API 驗證，錯誤不得含有輸入值。
++PAT 輸入必須關閉終端 echo；完成、取消或錯誤後都恢復終端狀態。
++不支援安全輸入的介面應明確失敗，不降級成明文輸入。
++
++PAT 不寫入專案 JSON、共用設定、命令參數、環境變數或產生的 unit／adapter。
++
++PAT 提供 GitHub 建立指引，建議只選目前 repository 並依用途授予最小權限。
++從 git remote 推導 repository；無法推導時可輸入 owner/repo。
++用該 PAT 驗證帳號與目標 repository，顯示帳號及完整 repository 名稱供確認。
++公開 repository 的 metadata 可讀性不代表具備 git push 或其他操作權限。
++
++不得以 metadata 驗證宣稱 PAT 權限完整，或宣稱已證明 PAT 僅授權該 repository。
++GitHub 上的組織核准與實際權限仍由使用者管理。
++無法讀取、核准未完成或認證失敗時提供可操作的指引，不儲存候選憑證。
++
++## E 背景 pinentry 與憑證生命週期
++
++移除目前強制禁止 pinentry 的設定，明確使用允許正常 pinentry 的 GPG 模式。
++繼續隔離外部 PASSWORD_STORE_GPG_OPTS，保留輸出大小限制與秘密遮蔽。
++不使用 loopback 將 passphrase 送入 dch，也不儲存 passphrase。
++service 保留 GNUPGHOME、PASSWORD_STORE_DIR，並傳遞必要的 GUI session 環境。
++
++包含存在時的 DISPLAY、WAYLAND_DISPLAY、XAUTHORITY 與 DBUS_SESSION_BUS_ADDRESS。
++不把設定時的 TTY 永久寫入背景 unit；不自動修改 gpg-agent.conf 或快取政策。
++不自動安裝或更換使用者的 pinentry frontend；不可用時提供安裝或設定指引。
++
++每次憑證請求允許最多 120 秒進行解鎖與取得憑證。
++pass 執行受請求 context 與上述預算約束；取消後須停止等待並釋放鎖。
++Unix HTTP client、容器端 git/gh adapter 與啟用驗證採相容期限。
++外層傳輸可保留少量緩衝，但不可讓某一層仍以既有 10／20 秒提早中斷解鎖。
++
++HTTP 到 GitHub 的網路請求仍採短而有限的逾時，不因 pinentry 而全部拉長。
++service socket readiness 與實際 credential readiness 分開處理。
++
++GUI host 上，由同一使用者的 gpg-agent 呼叫可用的圖形 pinentry。
++關閉或拒絕 pinentry、session 不可用、缺少 frontend 或逾時時，憑證請求失敗。
++
++介面說明如何確認 session／pinentry，或在 host 終端解鎖後重試。
++純 SSH/headless 不自動把背景提示導向任意終端，使用者主動解鎖同一 agent 後重試。
++快取中仍有效的憑證可能直接使用，不保證每次請求都會跳出 pinentry。
++
++專案 config 與 pass token schema 新增明確的認證方式識別。
++舊版未提供識別的有效設定解讀為 GitHub App，保留既有 entry 與 refresh 行為。
++PAT 不偽造 refresh token 或無限的 App token 到期時間。
++
++PAT 綁定專案、帳號與 repository；讀取時驗證綁定，並檢查已知的失效資訊。
++GitHub 驗證失敗時提示檢查 PAT；不承諾 metadata 檢查能預知所有權限錯誤。
++到期資訊若無可靠來源，不杜撰到期日，並以 GitHub 回應判斷是否需重新設定。
++
++App 與 PAT 使用可區別且可安全清理的憑證識別，PAT 不依賴虛構 client_id。
++沿用既有 project lock、pass entry lock、候選憑證驗證與 commit／rollback 邏輯。
++切換成功才清理先前憑證；清理失敗保留待重試狀態。
++
++切換失敗需還原被修改的憑證與設定；不得刪除其他專案或未擁有的 entry。
++disable、重試清理與服務重啟都須辨識兩種認證方式。
++更早的 installation private-key legacy 設定繼續隔離，不恢復已停用的舊模式。
++
++## F 改動後的目錄架構與職責
++
++下列新增檔案均為提案，實作前不建立空殼。
++既有模組維持責任邊界；不因這次功能建立通用認證框架。
++
++```tree
++devcontainer-helper/
++  internal/
++    plugins/
++      plugin.go | 既有互動契約；新增文字、秘密輸入與受控 host 互動執行能力
++      manager.go | 既有設定快照、專案鎖與候選提交入口
++      githubapp/
++        plugin.go | 組裝認證選擇、前置驗證與候選設定
++        config.go | 認證方式、舊設定相容與綁定驗證
++        host_setup.go（新增提案） | GPG/pass 檢查、初始化與測試 secret 清理
++        host_install.go（新增提案） | 發行版與 apt/dnf/pacman 命令規劃
++        gpg.go（新增提案） | secret key 清單解析、可用性與互動建立
++        pat.go（新增提案） | PAT 輸入後驗證、repository 選擇與候選憑證
++        repository.go | 共用 GitHub API 與 repository 解析
++        provider.go | App refresh、PAT 讀取與有界請求
++        secret.go | pass 封裝、鎖、輸出限制與讀寫驗證
++        manager.go | systemd 環境、服務啟用與資源回復
++        server.go | Host credential socket、請求 context 與期限
++        adapter.go | Container 的 git/gh adapter 與相容等待期限
++        *_test.go | 各行為既有測試與新增回歸測試
++    console/
++      plugins.go | 互動能力組裝與產品訊息
++      plugin_input.go（新增提案） | 終端隱藏輸入、復原與取消
++      *_test.go | 輸入與選單行為測試
++  README.md | 認證選擇、安裝與 pinentry 操作指引
++  specs/
++    2026-10-26-github-auth-pass-setup-spec.md | 本規格來源
++    2026-10-26-github-auth-pass-setup-spec.html | 完整審閱頁
++```
++
++共用互動契約放在 internal/plugins，由 console 提供實作。
++可用小型可選介面新增輸入及互動執行能力，避免迫使所有非互動 plugin 實作無關方法。
++plugin 僅請求受控的 host 命令；console 負責終端接管、取消與畫面恢復。
++安裝器、GPG 建立與隱藏輸入的新增公開方法遵循 Go 文件慣例。
++
++```flow
++Host console -> Plugins Manager: ConfigureAndEnable
++Plugins Manager -> GitHub plugin: Configure
++GitHub plugin -> Host setup: 安裝與密碼庫驗證
++Host setup -> Host console: 確認及互動命令
++GitHub plugin -> App 或 PAT: 認證與驗證
++App 或 PAT -> SecretStore: 提交候選憑證
++SecretStore -> Host pass 與 gpg-agent
++Plugins Manager -> Host systemd service: 啟用與驗證
++Container git 與 gh -> Host credential socket
++Host credential socket -> Provider
++Provider -> SecretStore
++Host pass 與 gpg-agent -> GUI pinentry: 需要解鎖時
++```
++
++## G 測試邊界與驗收條件
++
++優先使用 ConfigureAndEnable／Configure、Provider／credential service 等既有邊界。
++外部命令替身用於觀察安裝、GPG 與 pass 行為，不測私有函式實作細節。
++沿用現有 device、provider、secret、manager 與 adapter 測試風格。
++隱藏輸入以可控制終端或替身驗證 echo 恢復與取消，不使用真實 token。
++
++| 編號 | 必須可觀察的驗收行為 |
++| --- | --- |
++| AC01 | 顯示兩種選項；App 預設且標示 Recommended；PAT 不要求 client_id |
++| AC02 | App 能沿用或輸入 client_id，完成既有 Device Flow、帳號與 scope 驗證 |
++| AC03 | 前置驗證完成前，不呼叫 Device Flow，也不詢問 PAT |
++| AC04 | apt、dnf、pacman 只安裝缺少項目；未同意不執行安裝 |
++| AC05 | 安裝失敗、拒絕、取消與不支援平台均不啟用，並提供指引 |
++| AC06 | 選擇有效加密 secret key；建立流程失敗或取消不繼續 |
++| AC07 | 未初始化時 pass init 使用完整 fingerprint；已初始化不重寫收件人 |
++| AC08 | 測試 secret 寫讀相符且清除；錯誤、取消及清理失敗都阻止啟用 |
++| AC09 | PAT 隱藏輸入且復原終端；無安全輸入能力時失敗，秘密不外洩 |
++| AC10 | PAT 驗證帳號與 repository，拒絕 classic／錯誤／失效 token，無 refresh 呼叫 |
++| AC11 | PAT provider 能提供憑證；失效與權限錯誤提供重新設定指引 |
++| AC12 | 背景 pass 允許 pinentry；unit 傳遞必要 session 與密碼庫環境 |
++| AC13 | 解鎖等待容納 120 秒；各層不提早截斷；取消／逾時停止並釋放鎖 |
++| AC14 | 舊 App 設定與 pass entry 可繼續使用；既有 App refresh 回歸測試通過 |
++| AC15 | App/PAT 雙向切換及重新授權失敗時保留原設定，成功後才清理舊 entry |
++| AC16 | disable、清理重試不刪除其他專案秘密；legacy quarantine 行為保留 |
++
++自動測試使用替身命令、本機 HTTP 與 Unix socket，不安裝 host 套件。
++完整測試不依賴 live Docker、GitHub、systemd 或實際圖形桌面。
++逾時測試使用可注入的短期限，不讓測試等待完整 120 秒。
++需檢查生成 adapter／unit 的等待與環境契約，並測試整合取消傳播。
++
++整合檢查包含 gofmt、go test ./...、go vet ./... 與 make build。
++使用適合 Go 的 Cognitive Complexity 分析器，檢查所有新增或修改函式，含測試與匿名函式。
++每個函式上限 15；超過時重構，不以 suppression 排除。
++
++TDD 每項行為保留預期失敗與通過證據。
++Code 與 Security Review 最多三輪，修正 item 各自提交。
++
++實機手動驗證另外記錄，包含三種套件管理器的安裝路徑、GUI pinentry 解鎖／取消、
++agent 快取失效與 SSH/headless 解鎖後重試。
++無對應實機時明列未驗證，不把替身測試當成真實平台測試。
++
++## H 範圍外、流程與參考資料
++
++本次不新增 macOS、Windows、遠端 Docker 或 Docker Compose 支援。
++不自動設定 GitHub App 權限／安裝、不替使用者建立 PAT、不管理組織審批。
++不提供跨專案共用 PAT、classic PAT、其他 keyring backend 或無人值守 passphrase 儲存。
++不重新加密既有密碼庫、不自動變更 gpg-agent 快取政策。
++不自動把背景 TTY pinentry 接到 SSH session，不保證所有桌面皆有可用 frontend。
++
++本規格核准前不拆 tickets 或修改產品程式。
++核准後在 .scratch/github-auth-pass-setup 建立本機 tickets 與進度索引。
++每個可實作 item 驗證通過後獨立 commit，子代理不自行 stage／commit。
++最終提供 Code/Security Review、測試證據與 HTML review，等待明確核准再 push 與建立 PR。
++
++規劃前基線：2026-10-26 執行 go test ./...，全部套件通過。
++該結果僅為現有程式基線，不代表本功能已實作或驗證。
++
++參考資料：
++
++- [GitHub App 使用者認證](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-with-a-github-app-on-behalf-of-a-user)
++- [GitHub PAT 建立與權限](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
++- [GitHub repository API](https://docs.github.com/en/rest/repos/repos#get-a-repository)
++- [GitHub PAT repository 清單 API 的限制](https://docs.github.com/en/rest/orgs/personal-access-tokens#list-repositories-a-fine-grained-personal-access-token-has-access-to)
++- [pass 初始化與儲存模型](https://www.passwordstore.org/)
++- [GnuPG agent 與 pinentry](https://www.gnupg.org/documentation/manuals/gnupg/Invoking-GPG_002dAGENT.html)
++- [GnuPG 啟動 TTY 與 display 更新](https://www.gnupg.org/documentation/manuals/gnupg/Agent-UPDATESTARTUPTTY.html)
++- [byteness/keyring pass backend](https://github.com/byteness/keyring/blob/main/pass.go)
++
++keyring 評估結論：其 pass backend 無呼叫端 context／timeout，且無現有交易與讀回驗證。
++直接替換須補回既有能力，本次保留現有封裝。
