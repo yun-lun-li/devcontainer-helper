@@ -29,6 +29,13 @@ func TestConfigureUsesRemoteIDAndOneRepositoryScopedDeviceFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertPreparedUserBinding(t, prepared.Config, project, 77)
+	var cfg Config
+	if err := json.Unmarshal(prepared.Config, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuthMethod != authMethodApp {
+		t.Fatalf("prepared authentication method = %q, want explicit App method", cfg.AuthMethod)
+	}
 	if len(fixture.polls) != 1 || fixture.polls[0].Get("repository_id") != "77" {
 		t.Fatalf("device polls = %#v", fixture.polls)
 	}
@@ -43,6 +50,154 @@ func TestConfigureUsesRemoteIDAndOneRepositoryScopedDeviceFlow(t *testing.T) {
 	}
 	if len(ui.hostCommands) != 0 || len(ui.notices) == 0 || ui.notices[0] != "Using existing pass recipient" {
 		t.Fatalf("setup commands=%#v notices=%#v", ui.hostCommands, ui.notices)
+	}
+}
+
+func TestConfigureOffersAppAsRecommendedAuthenticationMethod(t *testing.T) {
+	project := gitProject(t, true)
+	fixture := newOAuthFixture(t, []int64{9001})
+	ui := &fakeInteraction{selected: "77"}
+	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
+	if _, err := plugin.Configure(context.Background(), configureContext(project), ui); err != nil {
+		t.Fatal(err)
+	}
+	if len(ui.selections) == 0 {
+		t.Fatal("Configure() did not ask for an authentication method")
+	}
+	selection := ui.selections[0]
+	if selection.title != "Choose GitHub authentication" || selection.defaultIndex != 0 {
+		t.Fatalf("first selection = %#v, want authentication method with App selected", selection)
+	}
+	if len(selection.choices) != 2 || selection.choices[0] != (plugins.Choice{Value: "app", Label: "BYO GitHub App (Recommended)"}) || selection.choices[1] != (plugins.Choice{Value: "pat", Label: "Fine-grained personal access token"}) {
+		t.Fatalf("authentication choices = %#v", selection.choices)
+	}
+}
+
+func TestConfigureUsesEnteredAppClientIDForOnlyThisProject(t *testing.T) {
+	project := gitProject(t, true)
+	fixture := newOAuthFixture(t, []int64{9001})
+	ui := &fakeInteraction{selected: "77", inputValue: "Iv1_project-specific"}
+	plugin := &Plugin{HTTPClient: fixture.client, APIBaseURL: "https://api.github.com"}
+	prepared, err := plugin.Configure(context.Background(), configureContext(project), ui)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(prepared.Config, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ClientID != "Iv1_project-specific" {
+		t.Fatalf("prepared ClientID = %q, want project-specific value", cfg.ClientID)
+	}
+	if fixture.deviceRequests[0].Get("client_id") != "Iv1_project-specific" {
+		t.Fatalf("device flow used ClientID %q", fixture.deviceRequests[0].Get("client_id"))
+	}
+	if len(ui.inputs) != 1 || ui.inputs[0].secret {
+		t.Fatalf("App Client ID inputs = %#v, want one non-secret input", ui.inputs)
+	}
+}
+
+func TestConfigurePATValidatesAccountAndTargetRepositoryAfterHostSetup(t *testing.T) {
+	project := gitProject(t, true)
+	var requests []string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		if r.Header.Get("Authorization") != "Bearer github_pat_test" {
+			t.Errorf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		switch r.URL.Path {
+		case "/user":
+			fmt.Fprint(w, `{"id":9001,"login":"octo-user"}`)
+		case "/repos/octo/repo":
+			fmt.Fprint(w, `{"id":77,"full_name":"octo/repo"}`)
+		default:
+			t.Errorf("unexpected API request %q", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+	ui := &fakeInteraction{selected: "ignored", authMethod: "pat", inputValue: "github_pat_test"}
+	plugin := &Plugin{HTTPClient: api.Client(), APIBaseURL: api.URL}
+	prepared, err := plugin.Configure(context.Background(), plugins.ConfigureContext{Host: plugins.HostContext{ProjectPath: project}}, ui)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(prepared.Config, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuthMethod != authMethodPAT || cfg.ClientID != "" || cfg.UserID != 9001 || cfg.RepositoryID != 77 || cfg.Repository != "octo/repo" {
+		t.Fatalf("prepared PAT config = %#v", cfg)
+	}
+	if strings.Contains(string(prepared.Config), "github_pat_test") {
+		t.Fatal("PAT was included in project config")
+	}
+	if len(requests) != 2 || requests[0] != "GET /user" || requests[1] != "GET /repos/octo/repo" {
+		t.Fatalf("PAT validation requests = %#v", requests)
+	}
+	if len(ui.inputs) != 1 || !ui.inputs[0].secret {
+		t.Fatalf("PAT inputs = %#v, want one hidden input", ui.inputs)
+	}
+	if len(ui.noticeMessages) == 0 || !strings.Contains(ui.noticeMessages[len(ui.noticeMessages)-1], "https://github.com/settings/personal-access-tokens/new") || !strings.Contains(ui.noticeMessages[len(ui.noticeMessages)-1], "minimum permissions") || !strings.Contains(ui.noticeMessages[len(ui.noticeMessages)-1], "does not grant Git or gh push access") {
+		t.Fatalf("PAT creation guidance = %#v", ui.noticeMessages)
+	}
+}
+
+func TestConfigureRejectsMalformedPATRepositoryBeforeSecretInput(t *testing.T) {
+	project := gitProject(t, false)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Errorf("GitHub was called for a malformed repository")
+		http.Error(w, "unexpected", http.StatusInternalServerError)
+	}))
+	defer api.Close()
+	ui := &fakeInteraction{authMethod: authMethodPAT, inputValues: map[string]string{"GitHub repository (owner/repo)": "../repo"}}
+	plugin := &Plugin{HTTPClient: api.Client(), APIBaseURL: api.URL}
+	_, err := plugin.Configure(context.Background(), plugins.ConfigureContext{Host: plugins.HostContext{ProjectPath: project}}, ui)
+	if err == nil || !strings.Contains(err.Error(), "owner/repo") {
+		t.Fatalf("Configure() error = %v, want repository format guidance", err)
+	}
+	for _, input := range ui.inputs {
+		if input.secret {
+			t.Fatal("PAT was requested before repository input was validated")
+		}
+	}
+}
+
+func TestConfigurePATAllowsManualRepositoryWhenProjectHasNoGitRemote(t *testing.T) {
+	setupConfigureHost(t)
+	project := filepath.Clean(t.TempDir())
+	var requests []string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		switch r.URL.Path {
+		case "/user":
+			fmt.Fprint(w, `{"id":9001,"login":"octo-user"}`)
+		case "/repos/octo/repo":
+			fmt.Fprint(w, `{"id":77,"full_name":"octo/repo"}`)
+		default:
+			t.Errorf("unexpected API request %q", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+	ui := &fakeInteraction{authMethod: authMethodPAT, inputValues: map[string]string{
+		"GitHub repository (owner/repo)":     "octo/repo",
+		"Fine-grained personal access token": "github_pat_test",
+	}}
+	plugin := &Plugin{HTTPClient: api.Client(), APIBaseURL: api.URL}
+	prepared, err := plugin.Configure(context.Background(), plugins.ConfigureContext{Host: plugins.HostContext{ProjectPath: project}}, ui)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(prepared.Config, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Repository != "octo/repo" || cfg.AuthMethod != authMethodPAT {
+		t.Fatalf("prepared PAT config = %#v", cfg)
+	}
+	if len(requests) != 2 || requests[0] != "GET /user" || requests[1] != "GET /repos/octo/repo" {
+		t.Fatalf("PAT validation requests = %#v", requests)
 	}
 }
 
@@ -421,16 +576,33 @@ func assertPreparedUserBinding(t *testing.T, raw json.RawMessage, project string
 }
 
 type fakeInteraction struct {
-	selected      string
-	confirms      int
-	denyAt        int
-	opened        int
-	onConfirm     func(string)
-	onSelect      func(string)
-	hostCommands  []string
-	onHostCommand func(string)
-	commandErr    error
-	notices       []string
+	selected       string
+	confirms       int
+	denyAt         int
+	opened         int
+	onConfirm      func(string)
+	onSelect       func(string)
+	hostCommands   []string
+	onHostCommand  func(string)
+	commandErr     error
+	notices        []string
+	noticeMessages []string
+	selections     []recordedSelection
+	inputValue     string
+	authMethod     string
+	inputValues    map[string]string
+	inputs         []recordedInput
+}
+
+type recordedSelection struct {
+	title        string
+	choices      []plugins.Choice
+	defaultIndex int
+}
+
+type recordedInput struct {
+	title  string
+	secret bool
 }
 
 type legacyInteraction struct{}
@@ -442,13 +614,21 @@ func (legacyInteraction) Select(context.Context, string, []plugins.Choice, int) 
 func (legacyInteraction) Confirm(context.Context, string, string) (bool, error) { return false, nil }
 func (legacyInteraction) OpenBrowser(context.Context, string) error             { return nil }
 
-func (f *fakeInteraction) Notify(_ context.Context, title, _ string) error {
+func (f *fakeInteraction) Notify(_ context.Context, title, message string) error {
 	f.notices = append(f.notices, title)
+	f.noticeMessages = append(f.noticeMessages, message)
 	return nil
 }
-func (f *fakeInteraction) Select(_ context.Context, title string, _ []plugins.Choice, _ int) (string, error) {
+func (f *fakeInteraction) Select(_ context.Context, title string, choices []plugins.Choice, defaultIndex int) (string, error) {
+	f.selections = append(f.selections, recordedSelection{title: title, choices: append([]plugins.Choice(nil), choices...), defaultIndex: defaultIndex})
 	if f.onSelect != nil {
 		f.onSelect(title)
+	}
+	if title == "Choose GitHub authentication" {
+		if f.authMethod != "" {
+			return f.authMethod, nil
+		}
+		return "app", nil
 	}
 	if strings.Contains(title, "GPG key") {
 		return "0123456789012345678901234567890123456789", nil
@@ -463,8 +643,15 @@ func (f *fakeInteraction) Confirm(_ context.Context, title, _ string) (bool, err
 	return f.confirms != f.denyAt, nil
 }
 func (f *fakeInteraction) OpenBrowser(context.Context, string) error { f.opened++; return nil }
-func (f *fakeInteraction) Input(context.Context, string, string, bool) (string, error) {
-	return "", nil
+func (f *fakeInteraction) Input(_ context.Context, title, defaultValue string, secret bool) (string, error) {
+	f.inputs = append(f.inputs, recordedInput{title: title, secret: secret})
+	if value, ok := f.inputValues[title]; ok {
+		return value, nil
+	}
+	if f.inputValue != "" {
+		return f.inputValue, nil
+	}
+	return defaultValue, nil
 }
 func (f *fakeInteraction) RunHostCommand(_ context.Context, command string, args []string) error {
 	line := command + " " + strings.Join(args, " ")

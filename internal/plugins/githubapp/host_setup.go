@@ -15,7 +15,7 @@ import (
 	"dch/internal/plugins"
 )
 
-func (p *Plugin) prepareHost(ctx context.Context, project, clientID string, ui plugins.Interaction, hostUI plugins.HostCommandInteraction) error {
+func (p *Plugin) prepareHost(ctx context.Context, cfg Config, ui plugins.Interaction, hostUI plugins.HostCommandInteraction) error {
 	if err := installRequirements(ctx, ui, hostUI); err != nil {
 		return err
 	}
@@ -23,7 +23,7 @@ func (p *Plugin) prepareHost(ctx context.Context, project, clientID string, ui p
 	if err != nil {
 		return err
 	}
-	base := secretEntry(Config{ProjectPath: project, ClientID: clientID})
+	base := secretEntry(cfg)
 	if err := p.initializePass(ctx, base, root, ui, hostUI); err != nil {
 		return err
 	}

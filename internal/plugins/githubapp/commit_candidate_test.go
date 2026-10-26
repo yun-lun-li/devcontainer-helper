@@ -207,6 +207,17 @@ func TestServeHostRejectsActiveRecoveryMarker(t *testing.T) {
 	}
 }
 
+func TestServeHostRejectsActivePATRecoveryMarker(t *testing.T) {
+	project := t.TempDir()
+	cfg := Config{AuthMethod: authMethodPAT, ProjectPath: project, UserID: 8, RepositoryID: 9, Repository: "octo/repo"}
+	raw, _ := json.Marshal(cfg)
+	state := encodeState(ownershipState{CredentialCleanupIdentities: []credentialIdentity{identityForConfig(cfg)}})
+	err := New().ServeHost(context.Background(), plugins.HostContext{ProjectPath: project, Config: raw, State: state})
+	if err == nil || !strings.Contains(err.Error(), "credential recovery is pending") {
+		t.Fatalf("ServeHost() error = %v", err)
+	}
+}
+
 func TestDisableRetriesRecoveryOnlyCredentialCleanup(t *testing.T) {
 	project := t.TempDir()
 	clientID := "client-id"
@@ -233,6 +244,29 @@ func TestDisableRetriesRecoveryOnlyCredentialCleanup(t *testing.T) {
 	}
 	if len(store.state) != 0 {
 		t.Fatalf("recovery metadata remains: %s", store.state)
+	}
+}
+
+func TestDisableRetriesPATRecoveryCleanup(t *testing.T) {
+	project := t.TempDir()
+	patConfig := Config{AuthMethod: authMethodPAT, ProjectPath: project, UserID: 8, RepositoryID: 9, Repository: "octo/repo"}
+	passPath, root := credentialMapPass(t)
+	entry := filepath.Join(root, secretEntry(patConfig))
+	if err := os.MkdirAll(filepath.Dir(entry), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entry, []byte("PAT credential"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	state := encodeState(ownershipState{CredentialCleanupIdentities: []credentialIdentity{identityForConfig(patConfig)}})
+	store := &testScopedStore{state: state}
+	plugin := &Plugin{PassPath: passPath}
+	host := plugins.HostContext{ProjectPath: project, State: state, Store: store}
+	if _, err := plugin.HandleHost(context.Background(), host, plugins.EventDisable); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(entry); !os.IsNotExist(err) {
+		t.Fatalf("PAT credential remains after disable: %v", err)
 	}
 }
 
@@ -324,6 +358,127 @@ func TestSuccessfulReauthorizationKeepsActiveRecoveryEntryAndCleansOthers(t *tes
 	cleaned, err := decodeState(result.State)
 	if err != nil || len(cleaned.CredentialCleanup) != 0 {
 		t.Fatalf("cleanup state = %#v, error = %v", cleaned, err)
+	}
+}
+
+func TestPATCleanupFailureRemainsPendingAndCanBeRetried(t *testing.T) {
+	project := t.TempDir()
+	patCfg := Config{AuthMethod: authMethodPAT, ProjectPath: project, UserID: 8, RepositoryID: 9, Repository: "octo/repo"}
+	passPath, passRoot := credentialMapPass(t)
+	writeMappedCredential(t, passRoot, patCfg, TokenSet{Schema: 2, AuthMethod: authMethodPAT, ProjectPath: project, UserID: patCfg.UserID, RepositoryID: patCfg.RepositoryID, Repository: patCfg.Repository, PersonalAccessToken: "github_pat_old"})
+	entry := filepath.Join(passRoot, secretEntry(patCfg))
+	failureMarker := filepath.Join(t.TempDir(), "fail-rm")
+	if err := os.WriteFile(failureMarker, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	script := readTestFile(t, passPath)
+	script = strings.Replace(script, "rm) rm -f", "rm) [ ! -f \"$DCH_FAIL_RM\" ] || exit 1; rm -f", 1)
+	if err := os.WriteFile(passPath, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DCH_FAIL_RM", failureMarker)
+	plugin := &Plugin{PassPath: passPath}
+	host := plugins.HostContext{ProjectPath: project}
+	state := ownershipState{CredentialCleanupIdentities: []credentialIdentity{identityForConfig(patCfg)}}
+	remaining, err := plugin.retryCredentialCleanupFor(context.Background(), host, state, credentialIdentity{Method: authMethodApp, Key: "Iv1_active"})
+	if err == nil || !containsRecoveryIdentity(remaining, identityForConfig(patCfg)) {
+		t.Fatalf("failed PAT cleanup state = %#v, error = %v", remaining, err)
+	}
+	if _, err := os.Stat(entry); err != nil {
+		t.Fatalf("failed cleanup removed PAT entry: %v", err)
+	}
+	if err := os.Remove(failureMarker); err != nil {
+		t.Fatal(err)
+	}
+	remaining, err = plugin.retryCredentialCleanupFor(context.Background(), host, remaining, credentialIdentity{Method: authMethodApp, Key: "Iv1_active"})
+	if err != nil || hasCredentialCleanup(remaining) {
+		t.Fatalf("retried PAT cleanup state = %#v, error = %v", remaining, err)
+	}
+	if _, err := os.Stat(entry); !os.IsNotExist(err) {
+		t.Fatalf("retried cleanup left PAT entry: %v", err)
+	}
+}
+
+func TestSwitchingFromAppToPATKeepsPATAndCleansOldAppEntry(t *testing.T) {
+	setupHostHookTest(t, true)
+	project := t.TempDir()
+	appCfg := testConfig(project)
+	patCfg := Config{AuthMethod: authMethodPAT, ProjectPath: project, UserID: appCfg.UserID, Login: appCfg.Login, RepositoryID: appCfg.RepositoryID, Repository: appCfg.Repository}
+	appRaw, _ := json.Marshal(appCfg)
+	patRaw, _ := json.Marshal(patCfg)
+	passPath, passRoot := credentialMapPass(t)
+	writeMappedCredential(t, passRoot, appCfg, candidateTokenSet(appCfg))
+	patSet := TokenSet{Schema: 2, AuthMethod: authMethodPAT, ProjectPath: project, UserID: patCfg.UserID, RepositoryID: patCfg.RepositoryID, Repository: patCfg.Repository, PersonalAccessToken: "github_pat_candidate"}
+	listener := readyCredentialSocket(t, project)
+	defer listener.Close()
+	store := &testScopedStore{}
+	plugin := &Plugin{PassPath: passPath}
+	if _, err := plugin.commitCandidate(context.Background(), plugins.HostContext{ProjectPath: project, Config: patRaw, PreviousConfig: appRaw, Store: store}, patCfg, patSet, patRaw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(passRoot, secretEntry(patCfg))); err != nil {
+		t.Fatalf("PAT entry was removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(passRoot, secretEntry(appCfg))); !os.IsNotExist(err) {
+		t.Fatalf("old App entry remains: %v", err)
+	}
+	state, err := decodeState(store.state)
+	if err != nil || hasCredentialCleanup(state) {
+		t.Fatalf("cleanup state = %#v, %v", state, err)
+	}
+}
+
+func TestSwitchingFromPATToAppKeepsAppAndCleansOldPATEntry(t *testing.T) {
+	setupHostHookTest(t, true)
+	project := t.TempDir()
+	patCfg := Config{AuthMethod: authMethodPAT, ProjectPath: project, UserID: 8, Login: "tester", RepositoryID: 9, Repository: "octo/repo"}
+	appCfg := testConfig(project)
+	patRaw, _ := json.Marshal(patCfg)
+	appRaw, _ := json.Marshal(appCfg)
+	passPath, passRoot := credentialMapPass(t)
+	patSet := TokenSet{Schema: 2, AuthMethod: authMethodPAT, ProjectPath: project, UserID: patCfg.UserID, RepositoryID: patCfg.RepositoryID, Repository: patCfg.Repository, PersonalAccessToken: "github_pat_previous"}
+	writeMappedCredential(t, passRoot, patCfg, patSet)
+	listener := readyCredentialSocket(t, project)
+	defer listener.Close()
+	store := &testScopedStore{}
+	plugin := &Plugin{PassPath: passPath}
+	if _, err := plugin.commitCandidate(context.Background(), plugins.HostContext{ProjectPath: project, Config: appRaw, PreviousConfig: patRaw, Store: store}, appCfg, candidateTokenSet(appCfg), appRaw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(passRoot, secretEntry(appCfg))); err != nil {
+		t.Fatalf("App entry was removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(passRoot, secretEntry(patCfg))); !os.IsNotExist(err) {
+		t.Fatalf("old PAT entry remains: %v", err)
+	}
+	state, err := decodeState(store.state)
+	if err != nil || hasCredentialCleanup(state) {
+		t.Fatalf("cleanup state = %#v, %v", state, err)
+	}
+}
+
+func TestPATReauthorizationRestoresPreviousTokenWhenEnableFails(t *testing.T) {
+	env := setupHostHookTest(t, false)
+	project := t.TempDir()
+	cfg := Config{AuthMethod: authMethodPAT, ProjectPath: project, UserID: 8, Login: "tester", RepositoryID: 9, Repository: "octo/repo"}
+	raw, _ := json.Marshal(cfg)
+	previous := TokenSet{Schema: 2, AuthMethod: authMethodPAT, ProjectPath: project, UserID: cfg.UserID, RepositoryID: cfg.RepositoryID, Repository: cfg.Repository, PersonalAccessToken: "github_pat_previous"}
+	candidate := previous
+	candidate.PersonalAccessToken = "github_pat_candidate"
+	passPath, root := credentialMapPass(t)
+	writeMappedCredential(t, root, cfg, previous)
+	if err := os.WriteFile(filepath.Join(env.root, "bin", "systemctl"), []byte("#!/bin/sh\nshift\ncase \"$1\" in\nis-active) exit 3 ;;\nenable) exit 1 ;;\n*) exit 0 ;;\nesac\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	plugin := &Plugin{PassPath: passPath}
+	_, err := plugin.commitCandidate(context.Background(), plugins.HostContext{ProjectPath: project, Config: raw, PreviousConfig: raw, Store: &testScopedStore{}}, cfg, candidate, raw)
+	if err == nil || !strings.Contains(err.Error(), "enable") {
+		t.Fatalf("commitCandidate() error = %v", err)
+	}
+	store := &SecretStore{PassPath: passPath, Entry: secretEntry(cfg), LockDir: filepath.Join(t.TempDir(), "locks")}
+	got, err := store.Read(context.Background(), cfg)
+	if err != nil || got.PersonalAccessToken != previous.PersonalAccessToken {
+		t.Fatalf("restored PAT = %#v, %v", got, err)
 	}
 }
 

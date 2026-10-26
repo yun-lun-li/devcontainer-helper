@@ -195,14 +195,30 @@ func (s *SecretStore) now() time.Time {
 }
 
 func validateCandidate(set TokenSet, now time.Time) error {
-	if set.Schema != 1 || set.ClientID == "" || set.ProjectPath == "" || set.UserID <= 0 || set.RepositoryID <= 0 || !validRepositoryName(set.Repository) || set.AccessToken == "" || set.RefreshToken == "" || strings.ContainsAny(set.AccessToken+set.RefreshToken, "\r\n") || !set.AccessTokenExpiresAt.After(now) || !set.RefreshTokenExpiresAt.After(now) {
+	if set.Schema == 2 {
+		return validatePATCandidate(set)
+	}
+	if set.Schema != 1 || set.AuthMethod != "" || set.PersonalAccessToken != "" || !clientIDPattern.MatchString(set.ClientID) || set.ProjectPath == "" || set.UserID <= 0 || set.RepositoryID <= 0 || !validRepositoryName(set.Repository) || set.AccessToken == "" || set.RefreshToken == "" || strings.ContainsAny(set.AccessToken+set.RefreshToken, "\r\n") || !set.AccessTokenExpiresAt.After(now) || !set.RefreshTokenExpiresAt.After(now) {
+		return fmt.Errorf("invalid GitHub credential")
+	}
+	return nil
+}
+
+func validatePATCandidate(set TokenSet) error {
+	if set.AuthMethod != authMethodPAT || set.ClientID != "" || set.ProjectPath == "" || set.UserID <= 0 || set.RepositoryID <= 0 || !validRepositoryName(set.Repository) || !isFineGrainedPAT(set.PersonalAccessToken) || set.AccessToken != "" || set.RefreshToken != "" || !set.AccessTokenExpiresAt.IsZero() || !set.RefreshTokenExpiresAt.IsZero() {
 		return fmt.Errorf("invalid GitHub credential")
 	}
 	return nil
 }
 
 func validateTokenSet(set TokenSet, cfg Config, now time.Time) error {
-	if set.Schema != 1 || set.ClientID != cfg.ClientID || filepath.Clean(set.ProjectPath) != filepath.Clean(cfg.ProjectPath) || set.UserID != cfg.UserID || set.RepositoryID != cfg.RepositoryID || set.Repository != cfg.Repository || set.AccessToken == "" || set.RefreshToken == "" || strings.ContainsAny(set.AccessToken+set.RefreshToken, "\r\n") || set.AccessTokenExpiresAt.IsZero() || !set.RefreshTokenExpiresAt.After(now) {
+	if cfg.authMethod() == authMethodPAT {
+		if set.Schema != 2 || validatePATCandidate(set) != nil || filepath.Clean(set.ProjectPath) != filepath.Clean(cfg.ProjectPath) || set.UserID != cfg.UserID || set.RepositoryID != cfg.RepositoryID || set.Repository != cfg.Repository {
+			return fmt.Errorf("authorization required")
+		}
+		return nil
+	}
+	if set.Schema != 1 || set.AuthMethod != "" || set.PersonalAccessToken != "" || set.ClientID != cfg.ClientID || filepath.Clean(set.ProjectPath) != filepath.Clean(cfg.ProjectPath) || set.UserID != cfg.UserID || set.RepositoryID != cfg.RepositoryID || set.Repository != cfg.Repository || set.AccessToken == "" || set.RefreshToken == "" || strings.ContainsAny(set.AccessToken+set.RefreshToken, "\r\n") || set.AccessTokenExpiresAt.IsZero() || !set.RefreshTokenExpiresAt.After(now) {
 		return fmt.Errorf("authorization required")
 	}
 	return nil

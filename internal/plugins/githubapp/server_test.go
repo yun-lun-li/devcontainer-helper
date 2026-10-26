@@ -2,9 +2,11 @@ package githubapp
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -141,6 +143,50 @@ func TestCheckCredentialUsesUnixSocket(t *testing.T) {
 	defer cancel()
 	if err := CheckCredential(ctx, sock); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPATCredentialFailureGuidesRecoveryWithoutLeakingAPIError(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "sensitive GitHub detail", http.StatusUnauthorized)
+	}))
+	defer api.Close()
+	cfg := Config{AuthMethod: authMethodPAT, ProjectPath: "/tmp/project", UserID: 8, Login: "tester", RepositoryID: 9, Repository: "octo/repo"}
+	set := TokenSet{Schema: 2, AuthMethod: authMethodPAT, ProjectPath: cfg.ProjectPath, UserID: cfg.UserID, RepositoryID: cfg.RepositoryID, Repository: cfg.Repository, PersonalAccessToken: "github_pat_private_value"}
+	secretPath := filepath.Join(t.TempDir(), "secret.json")
+	data, err := json.Marshal(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	pass := filepath.Join(t.TempDir(), "pass")
+	if err := os.WriteFile(pass, []byte("#!/bin/sh\ncat \"$PASS_SECRET\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PASS_SECRET", secretPath)
+	provider, err := NewProvider(cfg, ProviderOptions{PassPath: pass, APIBaseURL: api.URL, Secret: &SecretStore{PassPath: pass, Entry: "entry", LockDir: filepath.Join(t.TempDir(), "locks")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := httptest.NewServer(credentialMux(provider))
+	defer service.Close()
+	response, err := service.Client().Get(service.URL + "/credential")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := string(body)
+	if response.StatusCode != http.StatusServiceUnavailable || !strings.Contains(message, "reconfigure the PAT in host Project Plugins") || !strings.Contains(message, "unlock host GPG") {
+		t.Fatalf("PAT failure response = %d %q", response.StatusCode, message)
+	}
+	if strings.Contains(message, "sensitive GitHub detail") || strings.Contains(message, "github_pat_private_value") {
+		t.Fatalf("PAT failure leaked secret or API detail: %q", message)
 	}
 }
 

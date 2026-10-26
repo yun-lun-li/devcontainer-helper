@@ -161,6 +161,33 @@ func TestEnablePersistsOwnershipAfterCredentialReadiness(t *testing.T) {
 	}
 }
 
+func TestEnablePreservesTypedCredentialCleanupMarkers(t *testing.T) {
+	setupHostHookTest(t, false)
+	project := filepath.Join(t.TempDir(), "project")
+	if err := os.MkdirAll(filepath.Join(project, ".devcontainer"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	listener := readyCredentialSocket(t, project)
+	defer listener.Close()
+	cfg := Config{AuthMethod: authMethodPAT, ProjectPath: project, UserID: 8, RepositoryID: 9, Repository: "octo/repo"}
+	config, _ := json.Marshal(cfg)
+	pending := credentialIdentity{Method: authMethodPAT, Key: authMethodPAT}
+	store := &testScopedStore{}
+	_, err := New().HandleHost(context.Background(), plugins.HostContext{
+		ProjectPath: project,
+		Config:      config,
+		State:       encodeState(ownershipState{CredentialCleanupIdentities: []credentialIdentity{pending}}),
+		Store:       store,
+	}, plugins.EventEnable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := decodeState(store.state)
+	if err != nil || !containsRecoveryIdentity(state, pending) {
+		t.Fatalf("typed credential cleanup marker was lost: %#v, %v", state, err)
+	}
+}
+
 func TestEnableRestartsActiveServiceWhenConfigChanges(t *testing.T) {
 	env := setupHostHookTest(t, true)
 	project := filepath.Join(env.root, "project")

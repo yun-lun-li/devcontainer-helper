@@ -20,10 +20,50 @@ import (
 )
 
 type ownershipState struct {
-	FragmentDigest    string   `json:"fragment_digest,omitempty"`
-	UnitDigest        string   `json:"unit_digest,omitempty"`
-	UnitPath          string   `json:"unit_path,omitempty"`
-	CredentialCleanup []string `json:"credential_cleanup,omitempty"`
+	FragmentDigest              string               `json:"fragment_digest,omitempty"`
+	UnitDigest                  string               `json:"unit_digest,omitempty"`
+	UnitPath                    string               `json:"unit_path,omitempty"`
+	CredentialCleanup           []string             `json:"credential_cleanup,omitempty"`
+	CredentialCleanupIdentities []credentialIdentity `json:"credential_cleanup_identities,omitempty"`
+}
+
+type credentialIdentity struct {
+	Method string `json:"method"`
+	Key    string `json:"key"`
+}
+
+func identityForConfig(cfg Config) credentialIdentity {
+	if cfg.authMethod() == authMethodPAT {
+		return credentialIdentity{Method: authMethodPAT, Key: authMethodPAT}
+	}
+	return credentialIdentity{Method: authMethodApp, Key: cfg.ClientID}
+}
+
+func (identity credentialIdentity) valid() bool {
+	switch identity.Method {
+	case authMethodApp:
+		return clientIDPattern.MatchString(identity.Key)
+	case authMethodPAT:
+		return identity.Key == authMethodPAT
+	default:
+		return false
+	}
+}
+
+func containsRecoveryIdentity(state ownershipState, active credentialIdentity) bool {
+	if active.Method == authMethodApp && containsClientID(state.CredentialCleanup, active.Key) {
+		return true
+	}
+	for _, identity := range state.CredentialCleanupIdentities {
+		if identity == active {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCredentialCleanup(state ownershipState) bool {
+	return len(state.CredentialCleanup) > 0 || len(state.CredentialCleanupIdentities) > 0
 }
 
 func decodeState(raw json.RawMessage) (ownershipState, error) {
@@ -114,7 +154,7 @@ func prepareEnableResources(ctx context.Context, host plugins.HostContext) (enab
 	if err != nil {
 		return resources, errors.Join(err, resources.restoreFragment())
 	}
-	resources.state = ownershipState{FragmentDigest: digest(fragment), UnitDigest: resources.unit.digest, UnitPath: resources.unit.path, CredentialCleanup: oldState.CredentialCleanup}
+	resources.state = ownershipState{FragmentDigest: digest(fragment), UnitDigest: resources.unit.digest, UnitPath: resources.unit.path, CredentialCleanup: oldState.CredentialCleanup, CredentialCleanupIdentities: oldState.CredentialCleanupIdentities}
 	return resources, nil
 }
 
@@ -231,6 +271,9 @@ func (p *Plugin) disableOwned(ctx context.Context, host plugins.HostContext, sta
 	if err := p.removeCredentialEntries(ctx, host, state.CredentialCleanup); err != nil {
 		return plugins.Result{}, fmt.Errorf("credential cleanup failed; disable can be retried: %w", err)
 	}
+	if err := p.removeCredentialIdentities(ctx, host, state.CredentialCleanupIdentities); err != nil {
+		return plugins.Result{}, fmt.Errorf("credential cleanup failed; disable can be retried: %w", err)
+	}
 	if err := host.Store.SaveState(nil); err != nil {
 		return plugins.Result{}, err
 	}
@@ -239,6 +282,9 @@ func (p *Plugin) disableOwned(ctx context.Context, host plugins.HostContext, sta
 
 func (p *Plugin) disableRecoveryOnly(ctx context.Context, host plugins.HostContext, state ownershipState) (plugins.Result, error) {
 	if err := p.removeCredentialEntries(ctx, host, state.CredentialCleanup); err != nil {
+		return plugins.Result{}, fmt.Errorf("credential cleanup failed; disable can be retried: %w", err)
+	}
+	if err := p.removeCredentialIdentities(ctx, host, state.CredentialCleanupIdentities); err != nil {
 		return plugins.Result{}, fmt.Errorf("credential cleanup failed; disable can be retried: %w", err)
 	}
 	if err := host.Store.SaveState(nil); err != nil {
@@ -265,29 +311,69 @@ func (p *Plugin) removeCredentialEntries(ctx context.Context, host plugins.HostC
 	return nil
 }
 
+func (p *Plugin) removeCredentialIdentities(ctx context.Context, host plugins.HostContext, identities []credentialIdentity) error {
+	for _, identity := range identities {
+		if !identity.valid() {
+			return fmt.Errorf("credential cleanup metadata is invalid")
+		}
+		cfg := configForIdentity(identity, host.ProjectPath)
+		store := p.secretStore(cfg)
+		if err := store.WithLock(ctx, func() error { return store.Delete(ctx) }); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func configForIdentity(identity credentialIdentity, projectPath string) Config {
+	return Config{AuthMethod: identity.Method, ClientID: identity.Key, ProjectPath: projectPath}
+}
+
 func (p *Plugin) retryCredentialCleanup(ctx context.Context, host plugins.HostContext, state ownershipState, protectedClientID string) (ownershipState, error) {
+	return p.retryCredentialCleanupFor(ctx, host, state, credentialIdentity{Method: authMethodApp, Key: protectedClientID})
+}
+
+func (p *Plugin) retryCredentialCleanupFor(ctx context.Context, host plugins.HostContext, state ownershipState, protected credentialIdentity) (ownershipState, error) {
 	pending := make([]string, 0, len(state.CredentialCleanup))
+	pendingIdentities := make([]credentialIdentity, 0, len(state.CredentialCleanupIdentities))
 	var failures []error
 	for _, clientID := range state.CredentialCleanup {
-		if !clientIDPattern.MatchString(clientID) {
+		identity := credentialIdentity{Method: authMethodApp, Key: clientID}
+		keep, err := p.retryCredentialIdentity(ctx, host, identity, protected)
+		if keep {
 			pending = append(pending, clientID)
-			failures = append(failures, fmt.Errorf("credential cleanup metadata is invalid"))
-			continue
 		}
-		if clientID == protectedClientID {
-			pending = append(pending, clientID)
-			continue
-		}
-		cfg := Config{ClientID: clientID, ProjectPath: host.ProjectPath}
-		store := p.secretStore(cfg)
-		err := store.WithLock(ctx, func() error { return store.Delete(ctx) })
 		if err != nil {
-			pending = append(pending, clientID)
+			failures = append(failures, err)
+		}
+	}
+	for _, identity := range state.CredentialCleanupIdentities {
+		keep, err := p.retryCredentialIdentity(ctx, host, identity, protected)
+		if keep {
+			pendingIdentities = append(pendingIdentities, identity)
+		}
+		if err != nil {
 			failures = append(failures, err)
 		}
 	}
 	state.CredentialCleanup = pending
+	state.CredentialCleanupIdentities = pendingIdentities
 	return state, errors.Join(failures...)
+}
+
+func (p *Plugin) retryCredentialIdentity(ctx context.Context, host plugins.HostContext, identity, protected credentialIdentity) (bool, error) {
+	if !identity.valid() {
+		return true, fmt.Errorf("credential cleanup metadata is invalid")
+	}
+	if identity == protected {
+		return true, nil
+	}
+	cfg := configForIdentity(identity, host.ProjectPath)
+	store := p.secretStore(cfg)
+	if err := store.WithLock(ctx, func() error { return store.Delete(ctx) }); err != nil {
+		return true, err
+	}
+	return false, nil
 }
 
 func (p *Plugin) quarantineLegacy(ctx context.Context, host plugins.HostContext) error {
@@ -413,7 +499,7 @@ func (p *Plugin) ensure(ctx context.Context, host plugins.HostContext) (plugins.
 	if err := checkReady(ctx, runtimeDir); err != nil {
 		return plugins.Result{}, p.rollbackEnsure(host, oldState, unit, err)
 	}
-	state, _ = p.retryCredentialCleanup(ctx, host, state, cfg.ClientID)
+	state, _ = p.retryCredentialCleanupFor(ctx, host, state, identityForConfig(cfg))
 	if err := host.Store.SaveState(encodeState(state)); err != nil {
 		return plugins.Result{}, err
 	}
@@ -432,7 +518,7 @@ func (p *Plugin) ensureReadyState(host plugins.HostContext) (Config, ownershipSt
 	if err != nil {
 		return Config{}, state, err
 	}
-	if containsClientID(state.CredentialCleanup, cfg.ClientID) {
+	if containsRecoveryIdentity(state, identityForConfig(cfg)) {
 		return Config{}, state, fmt.Errorf("authorization required: credential recovery is pending; reauthorize this project")
 	}
 	state, err = p.ensureState(host)
@@ -485,7 +571,7 @@ func (p *Plugin) ServeHost(ctx context.Context, host plugins.HostContext) error 
 	if err != nil {
 		return err
 	}
-	if containsClientID(state.CredentialCleanup, cfg.ClientID) {
+	if containsRecoveryIdentity(state, identityForConfig(cfg)) {
 		return fmt.Errorf("authorization required: credential recovery is pending; reauthorize this project")
 	}
 	runtimeDir, err := RuntimeDir(host.ProjectPath)

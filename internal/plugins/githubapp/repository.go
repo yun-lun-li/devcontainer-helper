@@ -356,3 +356,15 @@ func VerifyRepositoryScope(ctx context.Context, token string, selected Repositor
 	}
 	return nil
 }
+
+func VerifyRepositoryAccess(ctx context.Context, token string, selected Repository, opts RepositoryOptions) error {
+	if selected.ID <= 0 || !validFullName(selected.FullName) {
+		return ErrRepositoryUnavailable
+	}
+	parts := strings.Split(selected.FullName, "/")
+	got, err := requestRepository(ctx, http.MethodGet, "/repos/"+url.PathEscape(parts[0])+"/"+url.PathEscape(parts[1]), token, opts)
+	if err != nil || got.ID != selected.ID || !sameRepositoryName(got.FullName, selected.FullName) {
+		return ErrRepositoryUnavailable
+	}
+	return nil
+}

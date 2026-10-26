@@ -9,13 +9,19 @@ import (
 )
 
 type Config struct {
-	ClientID     string `json:"client_id"`
+	AuthMethod   string `json:"auth_method,omitempty"`
+	ClientID     string `json:"client_id,omitempty"`
 	ProjectPath  string `json:"project_path"`
 	UserID       int64  `json:"user_id"`
 	Login        string `json:"login"`
 	RepositoryID int64  `json:"repository_id"`
 	Repository   string `json:"repository"`
 }
+
+const (
+	authMethodApp = "app"
+	authMethodPAT = "pat"
+)
 
 type SharedConfig struct {
 	ClientID string `json:"client_id"`
@@ -27,6 +33,9 @@ func (p *Plugin) ValidateSharedSettings(raw json.RawMessage) error {
 	var cfg SharedConfig
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return fmt.Errorf("invalid GitHub App shared settings")
+	}
+	if cfg.ClientID == "" {
+		return nil
 	}
 	if strings.TrimSpace(cfg.ClientID) != cfg.ClientID || !clientIDPattern.MatchString(cfg.ClientID) {
 		return fmt.Errorf("GitHub App Client ID is required")
@@ -57,13 +66,25 @@ func decodeConfig(raw json.RawMessage) (Config, error) {
 }
 
 func (c Config) Validate() error {
-	if !clientIDPattern.MatchString(c.ClientID) || !filepath.IsAbs(c.ProjectPath) || filepath.Clean(c.ProjectPath) != c.ProjectPath || c.UserID <= 0 || c.RepositoryID <= 0 || c.Repository == "" {
+	method := c.authMethod()
+	validClientID := method == authMethodApp && clientIDPattern.MatchString(c.ClientID) || method == authMethodPAT && c.ClientID == ""
+	if !validClientID || !filepath.IsAbs(c.ProjectPath) || filepath.Clean(c.ProjectPath) != c.ProjectPath || c.UserID <= 0 || c.RepositoryID <= 0 || c.Repository == "" {
 		return fmt.Errorf("GitHub App user authorization is incomplete")
+	}
+	if method != authMethodApp && method != authMethodPAT {
+		return fmt.Errorf("GitHub authentication method is invalid")
 	}
 	if !validRepositoryName(c.Repository) {
 		return fmt.Errorf("GitHub App repository binding is invalid")
 	}
 	return nil
+}
+
+func (c Config) authMethod() string {
+	if c.AuthMethod == "" {
+		return authMethodApp
+	}
+	return c.AuthMethod
 }
 
 func validRepositoryName(name string) bool {

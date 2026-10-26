@@ -30,7 +30,7 @@ type Plugin struct {
 func New() *Plugin { return &Plugin{} }
 
 func (p *Plugin) Definition() plugins.Definition {
-	return plugins.Definition{ID: pluginID, Name: "GitHub App", Description: "Provide repository-scoped GitHub user credentials to this project.", ServiceAliases: []string{"_github-app-serve"}, SharedFields: []plugins.Field{{Name: "client_id", Label: "GitHub App Client ID", Required: true, Kind: plugins.FieldText}}, Notices: []string{"GitHub App Device Flow must be enabled for this Client ID.", "Tokens are limited to the selected repository and saved in the host password store."}}
+	return plugins.Definition{ID: pluginID, Name: "GitHub App", Description: "Provide repository-scoped GitHub user credentials to this project.", ServiceAliases: []string{"_github-app-serve"}, SharedFields: []plugins.Field{{Name: "client_id", Label: "GitHub App Client ID", Required: false, Kind: plugins.FieldText}}, Notices: []string{"GitHub App Device Flow must be enabled for this Client ID.", "Tokens are limited to the selected repository and saved in the host password store."}}
 }
 
 func (p *Plugin) ValidateConfig(raw json.RawMessage) error {
@@ -96,20 +96,15 @@ func (p *Plugin) Status(ctx context.Context, host plugins.HostContext) (plugins.
 		status.Message = "Authorization required: project binding does not match"
 		return status, nil
 	}
-	shared, sharedErr := sharedClient(host.SharedConfig)
-	if sharedErr == nil && shared.ClientID != cfg.ClientID {
-		status.Message = "GitHub App Client ID changed; reauthorize this project"
-		return status, nil
-	}
 	state, stateErr := decodeState(host.State)
 	if stateErr != nil {
 		return status, stateErr
 	}
-	if containsClientID(state.CredentialCleanup, cfg.ClientID) {
+	if containsRecoveryIdentity(state, identityForConfig(cfg)) {
 		status.Message = "Authorization required: credential recovery is pending; reauthorize this project"
 		return status, nil
 	}
-	if len(state.CredentialCleanup) > 0 {
+	if hasCredentialCleanup(state) {
 		status.Message = "Authorization active; previous project credential cleanup is pending"
 		return status, nil
 	}
@@ -130,7 +125,7 @@ func statusWithoutConfiguration(status plugins.PluginStatus, host plugins.HostCo
 	if err != nil {
 		return status, err
 	}
-	if len(state.CredentialCleanup) > 0 {
+	if hasCredentialCleanup(state) {
 		status.Message = "Disabled; previous project credential cleanup is pending"
 		status.CleanupPending = true
 	}
@@ -143,22 +138,69 @@ func (p *Plugin) Configure(ctx context.Context, configure plugins.ConfigureConte
 	if !hasInput || !hasHostCommands {
 		return plugins.PreparedConfiguration{}, fmt.Errorf("host setup interaction is unavailable")
 	}
-	shared, err := sharedClient(configure.SharedConfig)
+	method, err := chooseAuthenticationMethod(ctx, interaction)
 	if err != nil {
 		return plugins.PreparedConfiguration{}, err
 	}
-	if err := p.prepareHost(ctx, configure.Host.ProjectPath, shared.ClientID, interaction, hostCommands); err != nil {
+	config := Config{AuthMethod: method, ProjectPath: configure.Host.ProjectPath}
+	if method == authMethodApp {
+		config.ClientID, err = configuredAppClientID(ctx, configure, interaction)
+		if err != nil {
+			return plugins.PreparedConfiguration{}, err
+		}
+	}
+	if err := p.prepareHost(ctx, config, interaction, hostCommands); err != nil {
 		return plugins.PreparedConfiguration{}, err
 	}
-	resolution, err := p.chooseRepository(ctx, configure.Host.ProjectPath, shared.ClientID, interaction)
+	if method == authMethodPAT {
+		return p.configurePAT(ctx, configure, config, interaction)
+	}
+	clientID := config.ClientID
+	resolution, err := p.chooseRepository(ctx, configure.Host.ProjectPath, clientID, interaction)
 	if err != nil {
 		return plugins.PreparedConfiguration{}, err
 	}
-	issued, user, err := p.authorizeRepository(ctx, shared.ClientID, resolution.Repository, configure.Host.Config, resolution.DiscoveryUserID, interaction)
+	issued, user, err := p.authorizeRepository(ctx, clientID, resolution.Repository, configure.Host.Config, resolution.DiscoveryUserID, interaction)
 	if err != nil {
 		return plugins.PreparedConfiguration{}, err
 	}
-	return p.prepareConfiguration(configure.Host.ProjectPath, shared.ClientID, resolution.Repository, user, issued)
+	return p.prepareConfiguration(configure.Host.ProjectPath, clientID, resolution.Repository, user, issued)
+}
+
+func configuredAppClientID(ctx context.Context, configure plugins.ConfigureContext, interaction plugins.Interaction) (string, error) {
+	defaultID := ""
+	if current, err := decodeConfig(configure.Host.Config); err == nil && current.ClientID != "" {
+		defaultID = current.ClientID
+	} else if shared, err := sharedClient(configure.SharedConfig); err == nil {
+		defaultID = shared.ClientID
+	}
+	input, ok := interaction.(plugins.InputInteraction)
+	if !ok {
+		return "", fmt.Errorf("secure GitHub App Client ID input is unavailable")
+	}
+	clientID, err := input.Input(ctx, "GitHub App Client ID (Enter keeps the current value)", defaultID, false)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(clientID) != clientID || !clientIDPattern.MatchString(clientID) {
+		return "", fmt.Errorf("GitHub App Client ID is required and must be valid")
+	}
+	return clientID, nil
+}
+
+func chooseAuthenticationMethod(ctx context.Context, interaction plugins.Interaction) (string, error) {
+	choices := []plugins.Choice{
+		{Value: "app", Label: "BYO GitHub App (Recommended)"},
+		{Value: "pat", Label: "Fine-grained personal access token"},
+	}
+	method, err := interaction.Select(ctx, "Choose GitHub authentication", choices, 0)
+	if err != nil {
+		return "", err
+	}
+	if method != "app" && method != "pat" {
+		return "", fmt.Errorf("unsupported GitHub authentication method")
+	}
+	return method, nil
 }
 
 func (p *Plugin) chooseRepository(ctx context.Context, project, clientID string, ui plugins.Interaction) (repositoryResolution, error) {
@@ -178,7 +220,7 @@ func (p *Plugin) chooseRepository(ctx context.Context, project, clientID string,
 }
 
 func (p *Plugin) prepareConfiguration(project, clientID string, repo Repository, user githubUser, issued issuedToken) (plugins.PreparedConfiguration, error) {
-	cfg := Config{ClientID: clientID, ProjectPath: project, UserID: user.ID, Login: user.Login, RepositoryID: repo.ID, Repository: repo.FullName}
+	cfg := Config{AuthMethod: authMethodApp, ClientID: clientID, ProjectPath: project, UserID: user.ID, Login: user.Login, RepositoryID: repo.ID, Repository: repo.FullName}
 	tokens, err := tokenSet(issued.Pair, cfg, issued.ReceivedAt)
 	if err != nil {
 		return plugins.PreparedConfiguration{}, err
@@ -197,7 +239,8 @@ func (p *Plugin) prepareConfiguration(project, clientID string, repo Repository,
 }
 
 func (p *Plugin) commitCandidate(ctx context.Context, host plugins.HostContext, cfg Config, tokens TokenSet, raw json.RawMessage) (plugins.Result, error) {
-	candidateState, err := clearRecoveryClient(host.State, cfg.ClientID)
+	activeIdentity := identityForConfig(cfg)
+	candidateState, err := clearRecoveryIdentity(host.State, activeIdentity)
 	if err != nil {
 		return plugins.Result{}, err
 	}
@@ -205,7 +248,7 @@ func (p *Plugin) commitCandidate(ctx context.Context, host plugins.HostContext, 
 	previousSecret, missing, err := saveCandidate(ctx, store, tokens)
 	if err != nil {
 		if isCredentialRestoreFailure(err) {
-			err = errors.Join(err, recordCredentialRecovery(host, cfg.ClientID))
+			err = errors.Join(err, recordCredentialRecoveryIdentity(host, activeIdentity))
 		}
 		return plugins.Result{}, err
 	}
@@ -215,31 +258,33 @@ func (p *Plugin) commitCandidate(ctx context.Context, host plugins.HostContext, 
 	host.Store = tracker
 	result, enableErr := p.enable(ctx, host)
 	if enableErr == nil {
-		old, decodeErr := decodeConfig(host.PreviousConfig)
-		if decodeErr != nil {
-			old = Config{}
+		oldIdentity := credentialIdentity{}
+		if old, decodeErr := decodeConfig(host.PreviousConfig); decodeErr == nil {
+			oldIdentity = identityForConfig(old)
 		}
-		return p.cleanupPreviousClient(ctx, host, result, old.ClientID, cfg.ClientID)
+		return p.cleanupPreviousCredential(ctx, host, result, oldIdentity, activeIdentity)
 	}
-	restoreErr := store.WithLock(context.Background(), func() error {
+	restoreCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	restoreErr := store.WithLock(restoreCtx, func() error {
 		if missing {
-			return store.Delete(context.Background())
+			return store.Delete(restoreCtx)
 		}
-		return store.RestoreRaw(context.Background(), previousSecret)
+		return store.RestoreRaw(restoreCtx, previousSecret)
 	})
 	if restoreErr != nil {
-		recoveryErr := recordCredentialRecovery(host, cfg.ClientID)
+		recoveryErr := recordCredentialRecoveryIdentity(host, activeIdentity)
 		return plugins.Result{}, errors.Join(fmt.Errorf("%w; previous credential restore failed and authorization is required: %v", enableErr, restoreErr), recoveryErr)
 	}
 	return plugins.Result{}, enableErr
 }
 
-func clearRecoveryClient(raw json.RawMessage, clientID string) (json.RawMessage, error) {
+func clearRecoveryIdentity(raw json.RawMessage, identity credentialIdentity) (json.RawMessage, error) {
 	state, err := decodeState(raw)
 	if err != nil {
 		return nil, err
 	}
-	state.CredentialCleanup = removeClientID(state.CredentialCleanup, clientID)
+	state = removeCredentialIdentity(state, identity)
 	return encodeState(state), nil
 }
 
@@ -253,9 +298,9 @@ func isCredentialRestoreFailure(err error) bool {
 	return errors.As(err, &failure)
 }
 
-func recordCredentialRecovery(host plugins.HostContext, clientID string) error {
-	if !clientIDPattern.MatchString(clientID) {
-		return fmt.Errorf("credential recovery metadata cannot be recorded: invalid Client ID")
+func recordCredentialRecoveryIdentity(host plugins.HostContext, identity credentialIdentity) error {
+	if !identity.valid() {
+		return fmt.Errorf("credential recovery metadata cannot be recorded: invalid identity")
 	}
 	baseState := host.State
 	if tracker, ok := host.Store.(*stateTrackingStore); ok && tracker.saved {
@@ -265,9 +310,7 @@ func recordCredentialRecovery(host plugins.HostContext, clientID string) error {
 	if err != nil {
 		return fmt.Errorf("credential recovery metadata cannot be recorded: %w", err)
 	}
-	if !containsClientID(state.CredentialCleanup, clientID) {
-		state.CredentialCleanup = append(state.CredentialCleanup, clientID)
-	}
+	state = addCredentialIdentity(state, identity)
 	if err := host.Store.SaveState(encodeState(state)); err != nil {
 		return fmt.Errorf("credential rollback failed and recovery metadata could not be saved: %w", err)
 	}
@@ -325,24 +368,65 @@ func saveCandidateLocked(ctx context.Context, store *SecretStore, tokens TokenSe
 	}
 }
 
-func (p *Plugin) cleanupPreviousClient(ctx context.Context, host plugins.HostContext, result plugins.Result, oldClientID, activeClientID string) (plugins.Result, error) {
+func (p *Plugin) cleanupPreviousCredential(ctx context.Context, host plugins.HostContext, result plugins.Result, oldIdentity, activeIdentity credentialIdentity) (plugins.Result, error) {
 	state, err := decodeState(result.State)
 	if err != nil {
 		return plugins.Result{}, err
 	}
-	if oldClientID != "" && oldClientID != activeClientID && !containsClientID(state.CredentialCleanup, oldClientID) {
-		state.CredentialCleanup = append(state.CredentialCleanup, oldClientID)
+	if oldIdentity.valid() && oldIdentity != activeIdentity {
+		state = addCredentialIdentity(state, oldIdentity)
 	}
-	state.CredentialCleanup = removeClientID(state.CredentialCleanup, activeClientID)
+	state = removeCredentialIdentity(state, activeIdentity)
 	if err := host.Store.SaveState(encodeState(state)); err != nil {
 		return plugins.Result{}, err
 	}
-	state, _ = p.retryCredentialCleanup(ctx, host, state, activeClientID)
+	state, _ = p.retryCredentialCleanupFor(ctx, host, state, activeIdentity)
 	if err := host.Store.SaveState(encodeState(state)); err != nil {
 		return plugins.Result{}, err
 	}
 	result.State = encodeState(state)
 	return result, nil
+}
+
+func (p *Plugin) cleanupPreviousClient(ctx context.Context, host plugins.HostContext, result plugins.Result, oldClientID, activeClientID string) (plugins.Result, error) {
+	old := credentialIdentity{}
+	if oldClientID != "" {
+		old = credentialIdentity{Method: authMethodApp, Key: oldClientID}
+	}
+	return p.cleanupPreviousCredential(ctx, host, result, old, credentialIdentity{Method: authMethodApp, Key: activeClientID})
+}
+
+func addCredentialIdentity(state ownershipState, identity credentialIdentity) ownershipState {
+	if !identity.valid() {
+		return state
+	}
+	if identity.Method == authMethodApp {
+		if !containsClientID(state.CredentialCleanup, identity.Key) {
+			state.CredentialCleanup = append(state.CredentialCleanup, identity.Key)
+		}
+		return state
+	}
+	for _, previous := range state.CredentialCleanupIdentities {
+		if previous == identity {
+			return state
+		}
+	}
+	state.CredentialCleanupIdentities = append(state.CredentialCleanupIdentities, identity)
+	return state
+}
+
+func removeCredentialIdentity(state ownershipState, identity credentialIdentity) ownershipState {
+	if identity.Method == authMethodApp {
+		state.CredentialCleanup = removeClientID(state.CredentialCleanup, identity.Key)
+	}
+	remaining := make([]credentialIdentity, 0, len(state.CredentialCleanupIdentities))
+	for _, pending := range state.CredentialCleanupIdentities {
+		if pending != identity {
+			remaining = append(remaining, pending)
+		}
+	}
+	state.CredentialCleanupIdentities = remaining
+	return state
 }
 
 func removeClientID(values []string, clientID string) []string {

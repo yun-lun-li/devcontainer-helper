@@ -129,7 +129,7 @@ while IFS= read -r line; do
 	esac
 done
 [ "$protocol" = https ] && [ "$host" = github.com ] || exit 0
-token=$(curl --disable --noproxy '*' --unix-socket /run/dch-github/credential.sock --fail --silent --show-error --max-time 125 http://localhost/credential) || { echo 'dch: credential unavailable; on a headless host, unlock the host GPG agent in a terminal and retry' >&2; exit 1; }
+token=$(curl --disable --noproxy '*' --unix-socket /run/dch-github/credential.sock --fail --silent --show-error --max-time 125 http://localhost/credential) || { echo 'dch: credential unavailable; on a headless host, reconfigure GitHub authorization in host Project Plugins or unlock the host GPG agent in a terminal and retry' >&2; exit 1; }
 [ -n "$token" ] || exit 1
 printf 'username=x-access-token\npassword=%s\n\n' "$token"
 `
@@ -152,8 +152,8 @@ done
 PATH=$clean_path
 export PATH
 real_gh=$(command -v gh) || { echo 'dch: gh is required' >&2; exit 127; }
-token=$(curl --disable --noproxy '*' --unix-socket /run/dch-github/credential.sock --fail --silent --show-error --max-time 125 http://localhost/credential) || { echo 'dch: GitHub credential unavailable; on a headless host, unlock the host GPG agent in a terminal and retry' >&2; exit 1; }
-[ -n "$token" ] || { echo 'dch: GitHub credential unavailable' >&2; exit 1; }
+token=$(curl --disable --noproxy '*' --unix-socket /run/dch-github/credential.sock --fail --silent --show-error --max-time 125 http://localhost/credential) || { echo 'dch: GitHub credential unavailable; on a headless host, reconfigure GitHub authorization in host Project Plugins or unlock the host GPG agent in a terminal and retry' >&2; exit 1; }
+[ -n "$token" ] || { echo 'dch: GitHub credential unavailable; on a headless host, reconfigure GitHub authorization in host Project Plugins or unlock the host GPG agent in a terminal and retry' >&2; exit 1; }
 GH_TOKEN=$token
 export GH_TOKEN
 exec "$real_gh" "$@"

@@ -39,6 +39,100 @@ func TestSecretStoreWritesAndReadsCompleteJSON(t *testing.T) {
 	}
 }
 
+func TestSecretStoreWritesAndReadsPATWithoutAppExpiryFields(t *testing.T) {
+	pass := filepath.Join(t.TempDir(), "pass")
+	if err := os.WriteFile(pass, []byte("#!/bin/sh\ncat \"$PASS_SECRET\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{AuthMethod: authMethodPAT, ProjectPath: "/tmp/p", UserID: 8, Login: "tester", RepositoryID: 9, Repository: "octo/repo"}
+	entry := filepath.Join(t.TempDir(), "secret.json")
+	data := `{"schema":2,"auth_method":"pat","project_path":"/tmp/p","user_id":8,"repository_id":9,"repository":"octo/repo","personal_access_token":"github_pat_test"}`
+	if err := os.WriteFile(entry, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store := &SecretStore{PassPath: pass, Entry: "entry"}
+	t.Setenv("PASS_SECRET", entry)
+	got, err := store.Read(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(got)
+	if got.Schema != 2 || got.RefreshToken != "" || !got.AccessTokenExpiresAt.IsZero() || !strings.Contains(string(encoded), `"personal_access_token":"github_pat_test"`) {
+		t.Fatalf("PAT credential = %#v", got)
+	}
+}
+
+func TestSecretStoreRejectsPATFieldsInLegacyAppCredential(t *testing.T) {
+	called := filepath.Join(t.TempDir(), "called")
+	pass := filepath.Join(t.TempDir(), "pass")
+	if err := os.WriteFile(pass, []byte("#!/bin/sh\ntouch \"$PASS_CALLED\"\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PASS_CALLED", called)
+	cfg := testProviderConfig()
+	set := testTokenSet(cfg, time.Now().Add(time.Hour), time.Now().Add(24*time.Hour))
+	set.AuthMethod = authMethodPAT
+	set.PersonalAccessToken = "github_pat_test"
+	store := &SecretStore{PassPath: pass, Entry: "entry"}
+	if err := store.Write(context.Background(), set); err == nil {
+		t.Fatal("legacy App schema accepted PAT fields")
+	}
+	if _, err := os.Stat(called); !os.IsNotExist(err) {
+		t.Fatalf("pass ran for invalid credential: %v", err)
+	}
+}
+
+func TestProviderReturnsPATAfterCheckingAccountAndRepository(t *testing.T) {
+	cfg := Config{AuthMethod: authMethodPAT, ProjectPath: "/tmp/p", UserID: 8, Login: "tester", RepositoryID: 9, Repository: "octo/repo"}
+	const token = "github_pat_test"
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			t.Errorf("%s authorization = %q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		switch r.URL.Path {
+		case "/user":
+			fmt.Fprint(w, `{"id":8}`)
+		case "/repos/octo/repo":
+			fmt.Fprint(w, `{"id":9,"full_name":"octo/repo"}`)
+		default:
+			t.Errorf("unexpected request path %q", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+	pass := filepath.Join(t.TempDir(), "pass")
+	if err := os.WriteFile(pass, []byte("#!/bin/sh\ncat \"$PASS_SECRET\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(t.TempDir(), "secret.json")
+	secret := `{"schema":2,"auth_method":"pat","project_path":"/tmp/p","user_id":8,"repository_id":9,"repository":"octo/repo","personal_access_token":"` + token + `"}`
+	if err := os.WriteFile(entry, []byte(secret), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PASS_SECRET", entry)
+	store := &SecretStore{PassPath: pass, Entry: "entry", LockDir: filepath.Join(t.TempDir(), "locks")}
+	provider, err := NewProvider(cfg, ProviderOptions{APIBaseURL: api.URL, Secret: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := provider.Token(context.Background())
+	if err != nil || got != token {
+		t.Fatalf("Provider.Token() = %q, %v", got, err)
+	}
+}
+
+func TestCredentialEntriesKeepLegacyAppPathAndSeparatePATPath(t *testing.T) {
+	project := "/tmp/project"
+	app := Config{ClientID: "Iv1_example", ProjectPath: project}
+	pat := Config{AuthMethod: authMethodPAT, ProjectPath: project}
+	if got, want := secretEntry(app), "dch/github-app/users/f630ad93b344dd6bd04d44ec/818fbcd4b513d986a681b5f3"; got != want {
+		t.Fatalf("legacy App entry = %q, want %q", got, want)
+	}
+	if got, want := secretEntry(pat), "dch/github-app/users/f630ad93b344dd6bd04d44ec/pat"; got != want {
+		t.Fatalf("PAT entry = %q, want %q", got, want)
+	}
+}
+
 func TestSecurePassEnvironmentAllowsPinentryAndKeepsSession(t *testing.T) {
 	env := securePassEnvironment([]string{"DISPLAY=:1", "WAYLAND_DISPLAY=wayland-0", "XAUTHORITY=/tmp/x", "DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/bus", "PASSWORD_STORE_GPG_OPTS=--bad", "GPG_TTY=/dev/pts/1"})
 	joined := strings.Join(env, "\n")

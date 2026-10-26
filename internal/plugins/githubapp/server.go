@@ -102,7 +102,11 @@ func credentialHandler(provider *Provider) http.HandlerFunc {
 		defer cancel()
 		token, err := provider.Token(ctx)
 		if err != nil {
-			http.Error(w, "credential unavailable", http.StatusServiceUnavailable)
+			message := "credential unavailable"
+			if provider.cfg.authMethod() == authMethodPAT {
+				message = "credential unavailable; reconfigure the PAT in host Project Plugins or unlock host GPG, then retry"
+			}
+			http.Error(w, message, http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")

@@ -36,7 +36,13 @@ func TestSharedSettingsRequiresClientID(t *testing.T) {
 	}
 }
 
-func TestStatusRequiresReauthorizationAfterSharedClientIDChanges(t *testing.T) {
+func TestSharedSettingsCanOmitAppClientIDForPATProjects(t *testing.T) {
+	if err := New().ValidateSharedSettings(json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("empty shared settings: %v", err)
+	}
+}
+
+func TestStatusKeepsProjectAuthorizationWhenSharedClientIDChanges(t *testing.T) {
 	cfg := Config{ClientID: "Iv1.old", ProjectPath: t.TempDir(), UserID: 42, Login: "octo", RepositoryID: 9, Repository: "octo/repo"}
 	raw, _ := json.Marshal(cfg)
 	shared, _ := json.Marshal(SharedConfig{ClientID: "Iv1.new"})
@@ -44,7 +50,21 @@ func TestStatusRequiresReauthorizationAfterSharedClientIDChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(status.Message, "reauthorize") {
+	if strings.Contains(status.Message, "reauthorize") {
+		t.Fatalf("status message = %q", status.Message)
+	}
+}
+
+func TestStatusBlocksPATWhenItsCredentialRecoveryIsPending(t *testing.T) {
+	project := t.TempDir()
+	cfg := Config{AuthMethod: authMethodPAT, ProjectPath: project, UserID: 42, Login: "octo", RepositoryID: 9, Repository: "octo/repo"}
+	raw, _ := json.Marshal(cfg)
+	state := json.RawMessage(`{"credential_cleanup_identities":[{"method":"pat","key":"pat"}]}`)
+	status, err := New().Status(context.Background(), plugins.HostContext{ProjectPath: project, Config: raw, State: state})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(status.Message, "recovery is pending") {
 		t.Fatalf("status message = %q", status.Message)
 	}
 }

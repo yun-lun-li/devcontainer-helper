@@ -18,6 +18,18 @@ func TestUserAuthorizationConfigValidation(t *testing.T) {
 	}
 }
 
+func TestConfigValidationAcceptsFineGrainedPATWithoutClientID(t *testing.T) {
+	plugin := New()
+	raw := json.RawMessage(`{"auth_method":"pat","project_path":"/tmp/project","user_id":2,"login":"tester","repository_id":3,"repository":"octo/repo"}`)
+	if err := plugin.ValidateConfig(raw); err != nil {
+		t.Fatalf("PAT config without ClientID: %v", err)
+	}
+	withClientID := json.RawMessage(`{"auth_method":"pat","client_id":"Iv1_example","project_path":"/tmp/project","user_id":2,"login":"tester","repository_id":3,"repository":"octo/repo"}`)
+	if err := plugin.ValidateConfig(withClientID); err == nil {
+		t.Fatal("PAT config accepted an App ClientID")
+	}
+}
+
 func TestDecodeConfigRejectsLegacyInstallationMode(t *testing.T) {
 	raw := json.RawMessage(`{"app_id":12,"installation_id":34,"private_key_pass_entry":"old/key","permissions":{"contents":"read"}}`)
 	if !isLegacyConfig(raw) {

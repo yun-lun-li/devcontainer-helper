@@ -23,6 +23,7 @@ const credentialRequestTimeout = 120 * time.Second
 
 type TokenSet struct {
 	Schema                int       `json:"schema"`
+	AuthMethod            string    `json:"auth_method,omitempty"`
 	ClientID              string    `json:"client_id"`
 	ProjectPath           string    `json:"project_path"`
 	UserID                int64     `json:"user_id"`
@@ -30,6 +31,7 @@ type TokenSet struct {
 	Repository            string    `json:"repository"`
 	AccessToken           string    `json:"access_token"`
 	RefreshToken          string    `json:"refresh_token"`
+	PersonalAccessToken   string    `json:"personal_access_token,omitempty"`
 	AccessTokenExpiresAt  time.Time `json:"access_token_expires_at"`
 	RefreshTokenExpiresAt time.Time `json:"refresh_token_expires_at"`
 }
@@ -126,7 +128,12 @@ func configuredSecret(cfg Config, opts ProviderOptions) *SecretStore {
 
 func defaultScopeVerifier(opts ProviderOptions) func(context.Context, string, Config) error {
 	return func(ctx context.Context, token string, config Config) error {
-		return VerifyRepositoryScope(ctx, token, Repository{ID: config.RepositoryID, FullName: config.Repository}, RepositoryOptions{HTTPClient: opts.HTTPClient, APIBaseURL: opts.APIBaseURL})
+		repository := Repository{ID: config.RepositoryID, FullName: config.Repository}
+		repositoryOptions := RepositoryOptions{HTTPClient: opts.HTTPClient, APIBaseURL: opts.APIBaseURL}
+		if config.authMethod() == authMethodPAT {
+			return VerifyRepositoryAccess(ctx, token, repository, repositoryOptions)
+		}
+		return VerifyRepositoryScope(ctx, token, repository, repositoryOptions)
 	}
 }
 
@@ -155,6 +162,15 @@ func (p *Provider) tokenLocked(ctx context.Context) (string, error) {
 	set, err := p.opts.Secret.Read(ctx, p.cfg)
 	if err != nil {
 		return "", err
+	}
+	if p.cfg.authMethod() == authMethodPAT {
+		if err := p.opts.VerifyUser(ctx, set.PersonalAccessToken, p.cfg.UserID); err != nil {
+			return "", fmt.Errorf("authorization required: account verification failed; check or reconfigure the PAT")
+		}
+		if err := p.opts.VerifyScope(ctx, set.PersonalAccessToken, p.cfg); err != nil {
+			return "", fmt.Errorf("authorization required: repository access verification failed; check or reconfigure the PAT")
+		}
+		return set.PersonalAccessToken, nil
 	}
 	if set.AccessToken == "" || set.RefreshToken == "" {
 		return "", fmt.Errorf("authorization required")
@@ -279,7 +295,11 @@ func verifyGitHubUser(ctx context.Context, token string, expectedID int64, opts 
 }
 
 func secretEntry(cfg Config) string {
-	return "dch/github-app/users/" + projectDigest(cfg.ProjectPath) + "/" + clientDigest(cfg.ClientID)
+	base := "dch/github-app/users/" + projectDigest(cfg.ProjectPath) + "/"
+	if cfg.authMethod() == authMethodPAT {
+		return base + authMethodPAT
+	}
+	return base + clientDigest(cfg.ClientID)
 }
 func projectDigest(path string) string  { return pathHash(path) }
 func clientDigest(client string) string { return pathHash(client) }

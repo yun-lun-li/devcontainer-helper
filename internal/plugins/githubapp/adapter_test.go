@@ -456,6 +456,9 @@ func assertGHWrapperLogs(t *testing.T, ghLog, curlLog string) {
 	if !strings.Contains(ghWrapperScript, "unlock the host GPG agent in a terminal and retry") {
 		t.Fatal("adapter does not explain how to retry on a headless host")
 	}
+	if !strings.Contains(ghWrapperScript, "reconfigure GitHub authorization") {
+		t.Fatal("adapter does not explain how to reconfigure an invalid PAT")
+	}
 }
 
 func TestGHWrapperDoesNotRunGHWithoutCredential(t *testing.T) {
