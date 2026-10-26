@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strings"
+	"unicode/utf8"
 
 	"dch/internal/plugins"
 	"golang.org/x/sys/unix"
@@ -26,14 +26,14 @@ func (consoleInteraction) Input(ctx context.Context, title, defaultValue string,
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	fmt.Print(title + ": ")
 	if !terminalInput() {
+		fmt.Print(title + ": ")
 		return readStreamInput(ctx, defaultValue)
 	}
-	return readWithTerminal(ctx, defaultValue, secret)
+	return readWithTerminal(ctx, title, defaultValue, secret)
 }
 
-func readWithTerminal(ctx context.Context, defaultValue string, secret bool) (string, error) {
+func readWithTerminal(ctx context.Context, title, defaultValue string, secret bool) (string, error) {
 	fd := int(os.Stdin.Fd())
 	state, err := unix.IoctlGetTermios(fd, unix.TCGETS)
 	if err != nil {
@@ -48,6 +48,7 @@ func readWithTerminal(ctx context.Context, defaultValue string, secret bool) (st
 	if err := unix.IoctlSetTermios(fd, unix.TCSETS, &updated); err != nil {
 		return "", terminalSetupError(secret, err)
 	}
+	fmt.Print(title + ": ")
 	return readTerminalInput(ctx, defaultValue, state, secret)
 }
 
@@ -59,19 +60,19 @@ func terminalSetupError(secret bool, err error) error {
 }
 
 func readStreamInput(ctx context.Context, defaultValue string) (string, error) {
-	var input strings.Builder
+	var input []byte
 	for {
 		character, err := readTerminalByte(ctx)
 		if err != nil && err != io.EOF {
 			return "", err
 		}
 		if err == io.EOF {
-			if input.Len() == 0 {
+			if len(input) == 0 {
 				return "", io.EOF
 			}
 			break
 		}
-		done, err := appendTerminalInput(&input, character)
+		done, err := appendTerminalInput(&input, character, 0x7f)
 		if err != nil {
 			return "", err
 		}
@@ -79,10 +80,10 @@ func readStreamInput(ctx context.Context, defaultValue string) (string, error) {
 			break
 		}
 	}
-	if input.Len() == 0 {
+	if len(input) == 0 {
 		return defaultValue, nil
 	}
-	return input.String(), nil
+	return string(input), nil
 }
 
 func readTerminalInput(ctx context.Context, defaultValue string, original *unix.Termios, secret bool) (value string, resultErr error) {
@@ -95,13 +96,13 @@ func readTerminalInput(ctx context.Context, defaultValue string, original *unix.
 			fmt.Println()
 		}
 	}()
-	var input strings.Builder
+	var input []byte
 	for {
 		character, err := readTerminalByte(ctx)
 		if err != nil {
 			return "", err
 		}
-		done, err := appendTerminalInput(&input, character)
+		done, err := appendTerminalInput(&input, character, original.Cc[unix.VERASE])
 		if err != nil {
 			return "", err
 		}
@@ -109,23 +110,30 @@ func readTerminalInput(ctx context.Context, defaultValue string, original *unix.
 			break
 		}
 	}
-	if input.Len() == 0 {
+	if len(input) == 0 {
 		return defaultValue, nil
 	}
-	return input.String(), nil
+	return string(input), nil
 }
 
-func appendTerminalInput(input *strings.Builder, character byte) (bool, error) {
+func appendTerminalInput(input *[]byte, character, erase byte) (bool, error) {
 	if character == '\n' {
 		return true, nil
 	}
 	if character == '\r' {
 		return false, nil
 	}
-	if input.Len() >= maxPluginInputBytes {
+	if character == erase || character == 8 || character == 127 {
+		if len(*input) > 0 {
+			_, size := utf8.DecodeLastRune(*input)
+			*input = (*input)[:len(*input)-size]
+		}
+		return false, nil
+	}
+	if len(*input) >= maxPluginInputBytes {
 		return false, fmt.Errorf("input exceeds %d bytes", maxPluginInputBytes)
 	}
-	input.WriteByte(character)
+	*input = append(*input, character)
 	return false, nil
 }
 

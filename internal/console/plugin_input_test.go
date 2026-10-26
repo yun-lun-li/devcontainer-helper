@@ -2,6 +2,8 @@ package console
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -58,6 +60,74 @@ func TestPluginSecretInputDisablesEchoAndRestoresTerminal(t *testing.T) {
 	}
 }
 
+func TestPluginSecretInputDisablesEchoBeforeWritingPrompt(t *testing.T) {
+	master, slave := usePluginPTY(t)
+	defer master.Close()
+	reader, writer := filledOutputPipe(t)
+	defer reader.Close()
+	previousOutput := os.Stdout
+	os.Stdout = writer
+	defer func() { os.Stdout = previousOutput; _ = writer.Close() }()
+	previousScreenState := screenActive
+	screenActive = false
+	defer func() { screenActive = previousScreenState }()
+	result := startPluginInput(context.Background(), true)
+	time.Sleep(20 * time.Millisecond)
+	echoDuringPrompt := terminalFlags(t, slave)&unix.ECHO != 0
+	go func() { _, _ = io.Copy(io.Discard, reader) }()
+	waitForEcho(t, int(slave.Fd()), false)
+	if _, err := master.Write([]byte("secret\n")); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-result; got.err != nil || got.value != "secret" {
+		t.Fatalf("Input() = %q, %v; want secret", got.value, got.err)
+	}
+	if echoDuringPrompt {
+		t.Fatal("terminal echo remained enabled while the secret prompt was being written")
+	}
+}
+
+func filledOutputPipe(t *testing.T) (*os.File, *os.File) {
+	t.Helper()
+	fds := []int{0, 0}
+	if err := unix.Pipe2(fds, unix.O_CLOEXEC|unix.O_NONBLOCK); err != nil {
+		t.Fatal(err)
+	}
+	reader := os.NewFile(uintptr(fds[0]), "output-reader")
+	writer := os.NewFile(uintptr(fds[1]), "output-writer")
+	if reader == nil || writer == nil {
+		_ = unix.Close(fds[0])
+		_ = unix.Close(fds[1])
+		t.Fatal("could not open output pipe")
+	}
+	if err := unix.SetNonblock(int(writer.Fd()), true); err != nil {
+		_ = reader.Close()
+		_ = writer.Close()
+		t.Fatal(err)
+	}
+	fillPipe(t, int(writer.Fd()))
+	if err := unix.SetNonblock(int(writer.Fd()), false); err != nil {
+		_ = reader.Close()
+		_ = writer.Close()
+		t.Fatal(err)
+	}
+	return reader, writer
+}
+
+func fillPipe(t *testing.T, fd int) {
+	t.Helper()
+	buffer := strings.Repeat("x", 4096)
+	for {
+		_, err := unix.Write(fd, []byte(buffer))
+		if errors.Is(err, unix.EAGAIN) {
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestPluginSecretInputRestoresTerminalAfterCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -107,6 +177,19 @@ func TestPluginInputRejectsOversizedLine(t *testing.T) {
 	got := <-result
 	if got.err == nil || !strings.Contains(got.err.Error(), "exceeds") {
 		t.Fatalf("Input() error = %v; want input size error", got.err)
+	}
+}
+
+func TestPluginInputAppliesTerminalErase(t *testing.T) {
+	master, slave := usePluginPTY(t)
+	defer master.Close()
+	result := startPluginInput(context.Background(), true)
+	waitForEcho(t, int(slave.Fd()), false)
+	if _, err := master.Write([]byte("ab\x7fc\n")); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-result; got.err != nil || got.value != "ac" {
+		t.Fatalf("Input() = %q, %v; want erased value ac", got.value, got.err)
 	}
 }
 
