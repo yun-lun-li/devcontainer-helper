@@ -72,13 +72,20 @@ install_dch() {
 	arch=$(detect_arch)
 	if [ "$VERSION" = latest ]; then
 		log "Resolving latest dch release"
+		latest_url="https://github.com/${REPO}/releases/latest"
 		if [ "$DOWNLOADER" = curl ]; then
-			release_json=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest")
+			release_url=$(curl -fsSIL -o /dev/null -w '%{url_effective}' "$latest_url") || fail "Could not determine the latest dch release"
 		else
-			release_json=$(wget -qO- "https://api.github.com/repos/${REPO}/releases/latest")
+			response=$(wget --spider --server-response --max-redirect=0 "$latest_url" 2>&1) || :
+			release_url=$(printf '%s\n' "$response" | sed -n 's/^[[:space:]]*[Ll]ocation:[[:space:]]*//p' | tr -d '\r' | sed -n '1p')
 		fi
-		VERSION=$(printf '%s\n' "$release_json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | sed -n '1p')
-		[ -n "$VERSION" ] || fail "Could not determine the latest dch release"
+		case "$release_url" in
+			"https://github.com/${REPO}/releases/tag/"*) VERSION=${release_url##*/} ;;
+			*) fail "Could not determine the latest dch release" ;;
+		esac
+		case "$VERSION" in
+			*/*|*\?*|*\#*|"") fail "Could not determine the latest dch release" ;;
+		esac
 	fi
 	archive="dch-${VERSION}-${os}-${arch}.tar.gz"
 	url="https://github.com/${REPO}/releases/download/${VERSION}/${archive}"
