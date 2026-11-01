@@ -168,7 +168,7 @@ func renderLogBox(title, output string, start int, running bool, rows, width int
 		pageSize = 1
 	}
 	lines := wrappedLogLines(output, width)
-	if start+pageSize > len(lines) {
+	if running || start+pageSize > len(lines) {
 		start = max(0, len(lines)-pageSize)
 	}
 	clearScreen()
