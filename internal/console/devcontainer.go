@@ -1,16 +1,20 @@
 package console
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"dch/internal/common"
+	"dch/internal/features"
 )
 
 func requireExecutable(name string) error {
@@ -94,6 +98,11 @@ func invokeProjectDevcontainerWithConfig(p Project, config []byte, args ...strin
 		return fmt.Errorf("write temporary merged devcontainer config: %w", err)
 	}
 
+	if args[0] == "up" {
+		if err := initializeProjectFeatures(p, config, mergedPath); err != nil {
+			return err
+		}
+	}
 	if args[0] == "exec" {
 		execArgs := make([]string, 0, len(args)+2)
 		execArgs = append(execArgs, args[0], "--config", mergedPath)
@@ -118,6 +127,22 @@ func invokeProjectDevcontainerWithConfig(p Project, config []byte, args ...strin
 	return invokeDevcontainerWithCleanup(func() { _ = os.RemoveAll(tempDir) }, args...)
 }
 
+func initializeProjectFeatures(p Project, config []byte, configPath string) error {
+	var settings struct {
+		Features map[string]json.RawMessage `json:"features"`
+	}
+	if err := json.Unmarshal(config, &settings); err != nil {
+		return err
+	}
+	if len(settings.Features) == 0 {
+		return nil
+	}
+	screenHeading("Initialize Feature host requirements")
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	return features.Initialize(ctx, p.Path, configPath, os.Stdin, os.Stdout, os.Stderr)
+}
+
 func invokeDevcontainerWithCleanup(cleanup func(), args ...string) error {
 	return invokeDevcontainerCommand(cleanup, args...)
 }
@@ -139,12 +164,26 @@ func rebaseConfigPaths(config []byte, sourceDir, targetDir string) ([]byte, erro
 		return filepath.ToSlash(relative)
 	}
 	if build, ok := settings["build"].(map[string]any); ok {
-		for _, key := range []string{"dockerfile", "context"} {
-			if path, ok := build[key].(string); ok {
-				build[key] = rebase(path)
-			}
+		rebaseBuildPaths(build, rebase)
+	}
+	rebaseComposePaths(settings, rebase)
+	rebaseFeaturePaths(settings, rebase)
+	updated, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode merged devcontainer config: %w", err)
+	}
+	return updated, nil
+}
+
+func rebaseBuildPaths(build map[string]any, rebase func(string) string) {
+	for _, key := range []string{"dockerfile", "context"} {
+		if path, ok := build[key].(string); ok {
+			build[key] = rebase(path)
 		}
 	}
+}
+
+func rebaseComposePaths(settings map[string]any, rebase func(string) string) {
 	switch compose := settings["dockerComposeFile"].(type) {
 	case string:
 		settings["dockerComposeFile"] = rebase(compose)
@@ -155,6 +194,9 @@ func rebaseConfigPaths(config []byte, sourceDir, targetDir string) ([]byte, erro
 			}
 		}
 	}
+}
+
+func rebaseFeaturePaths(settings map[string]any, rebase func(string) string) {
 	if features, ok := settings["features"].(map[string]any); ok {
 		rebased := make(map[string]any, len(features))
 		for feature, options := range features {
@@ -165,11 +207,6 @@ func rebaseConfigPaths(config []byte, sourceDir, targetDir string) ([]byte, erro
 		}
 		settings["features"] = rebased
 	}
-	updated, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return nil, fmt.Errorf("encode merged devcontainer config: %w", err)
-	}
-	return updated, nil
 }
 
 func withStableContainerName(config []byte, p Project) ([]byte, error) {

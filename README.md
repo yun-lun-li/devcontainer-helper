@@ -72,3 +72,40 @@ dch help                  # Show command help
 Lifecycle commands (`initializeCommand`, `onCreateCommand`, `updateContentCommand`, `postCreateCommand`, `postStartCommand`, and `postAttachCommand`) are replaced as whole values. `dockerComposeFile` arrays append in order. `mounts` keeps base entries whose targets are absent from local, then appends local entries in order. Local mounts replace the entire base mount at the same target, including across string and object forms; string targets accept `target`, `dst`, and `destination`. Entries without a readable target and duplicates within each input are preserved. The known set arrays `customizations.vscode.extensions`, `forwardPorts`, `capAdd`, and deprecated root `extensions` remove duplicates; the [VS Code Dev Container schema](https://github.com/microsoft/vscode/blob/main/extensions/configuration-editing/schemas/devContainer.vscode.schema.json) marks root `extensions` deprecated in favor of `customizations.vscode.extensions`. Other arrays use the local array as a whole.
 
 The option classifications follow the Docker CLI `run` reference and flag registrations, and the Buildx `build` reference and flag registrations: [Docker run options](https://docs.docker.com/reference/cli/docker/container/run/), [Docker CLI run registration](https://github.com/docker/cli/blob/master/cli/command/container/run.go) and [container option registrations](https://github.com/docker/cli/blob/master/cli/command/container/opts.go), [Buildx build options](https://docs.docker.com/reference/cli/docker/buildx/build/), and [Buildx build registration](https://github.com/docker/buildx/blob/master/commands/build.go). The set-array names follow the [Dev Container base schema](https://github.com/devcontainers/spec/blob/main/schemas/devContainer.base.schema.json) and supporting tool reference. These are moving `master`/current-documentation sources; dch has no Docker SDK dependency and its option tables can lag newly added or changed upstream flags. Unknown flags therefore remain opaque until the tables are updated.
+### Feature host initialization
+
+Start and Build support Feature host hooks through the tool-specific property
+`customizations.dch.initializeCommand` in `devcontainer-feature.json`:
+
+```json
+{
+  "id": "example",
+  "version": "1.0.0",
+  "name": "Example",
+  "customizations": {
+    "dch": {
+      "initializeCommand": "sh \"$DCH_FEATURE_DIR/initialize.sh\""
+    }
+  }
+}
+```
+
+This is a dch extension, not a standard Feature lifecycle hook. Other Dev Container
+tools ignore it; the project's standard `initializeCommand` still works normally.
+Only enable Features whose host code you trust.
+
+The Dev Container CLI resolves local, OCI, and archive Features and their dependency
+order. dch runs their host hooks in that order before `devcontainer up`, including
+Build and subsequent Starts. A failed hook stops the operation. Connect to an
+already running container does not rerun initialization. Hooks must be safe to run
+repeatedly. They run as your host user, with the workspace as their working directory.
+
+Hooks accept a shell string, an argument array (without shell expansion), or an
+object of commands executed in parallel. Parallel commands have no terminal input;
+use one string/array hook for interactive setup. Cancellation stops the hook's
+process group and aborts startup. Feature options and defaults are available as
+`DCH_FEATURE_OPTION_<UPPERCASE_NAME>` environment variables; for example, `passEntry`
+becomes `DCH_FEATURE_OPTION_PASSENTRY`. The host environment is otherwise preserved.
+`DCH_FEATURE_DIR` points to the resolved Feature directory,
+`DCH_WORKSPACE_FOLDER` to the workspace, and `DCH_EXECUTABLE` to the running dch binary.
+Do not put secrets in Feature options.
