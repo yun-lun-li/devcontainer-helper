@@ -26,19 +26,9 @@ func TestConnectProjectRoutesUserShell(t *testing.T) {
 }
 
 func TestConnectProjectRoutesRootWithMergedTemporaryConfig(t *testing.T) {
-	projectDir := t.TempDir()
-	configDir := filepath.Join(projectDir, ".devcontainer")
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
 	base := `{"name":"base","remoteUser":"developer","features":{"example":"1"}}`
 	local := `{"name":"local","remoteUser":"local-user","remoteEnv":{"KEEP":"yes"}}`
-	if err := os.WriteFile(filepath.Join(configDir, "devcontainer.json"), []byte(base), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "devcontainer.local.json"), []byte(local), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	projectDir, configDir := createRootConnectProject(t, base, local)
 	fakeDevcontainer := installFakeDevcontainer(t)
 	t.Setenv("PATH", filepath.Dir(fakeDevcontainer)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	setConnectInput("2\n")
@@ -47,7 +37,29 @@ func TestConnectProjectRoutesRootWithMergedTemporaryConfig(t *testing.T) {
 	if err := connectProject(Project{Name: "demo", Path: projectDir, State: "RUNNING"}); err != nil {
 		t.Fatal(err)
 	}
-	args := readInvocation(t)
+	assertRootConnectInvocation(t, readInvocation(t), configDir, base, local)
+}
+
+func createRootConnectProject(t *testing.T, base, local string) (string, string) {
+	t.Helper()
+	projectDir := t.TempDir()
+	configDir := filepath.Join(projectDir, ".devcontainer")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{
+		"devcontainer.json":       base,
+		"devcontainer.local.json": local,
+	} {
+		if err := os.WriteFile(filepath.Join(configDir, name), []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return projectDir, configDir
+}
+
+func assertRootConnectInvocation(t *testing.T, args, configDir, base, local string) {
+	t.Helper()
 	if !strings.Contains(args, "--config\n") || !strings.Contains(args, "/bin/sh") {
 		t.Fatalf("root route arguments = %q", args)
 	}
@@ -72,19 +84,18 @@ func TestConnectProjectRoutesRootWithMergedTemporaryConfig(t *testing.T) {
 	if config["remoteUser"] != "root" || config["name"] != "local" || features["example"] != "1" || remoteEnv["KEEP"] != "yes" {
 		t.Fatalf("temporary config did not preserve merged settings and override remoteUser: %s", data)
 	}
-	projectConfig, err := os.ReadFile(filepath.Join(configDir, "devcontainer.json"))
+	assertProjectConfigUnchanged(t, configDir, "devcontainer.json", base)
+	assertProjectConfigUnchanged(t, configDir, "devcontainer.local.json", local)
+}
+
+func assertProjectConfigUnchanged(t *testing.T, configDir, name, want string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(configDir, name))
 	if err != nil {
-		t.Fatalf("read project config: %v", err)
+		t.Fatalf("read project config %s: %v", name, err)
 	}
-	if string(projectConfig) != base {
-		t.Fatalf("project config changed: %s", projectConfig)
-	}
-	localConfig, err := os.ReadFile(filepath.Join(configDir, "devcontainer.local.json"))
-	if err != nil {
-		t.Fatalf("read local project config: %v", err)
-	}
-	if string(localConfig) != local {
-		t.Fatalf("local project config changed: %s", localConfig)
+	if string(data) != want {
+		t.Fatalf("project config %s changed: %s", name, data)
 	}
 }
 
