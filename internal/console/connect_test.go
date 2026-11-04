@@ -52,6 +52,9 @@ func TestConnectProjectRoutesRootWithMergedTemporaryConfig(t *testing.T) {
 		t.Fatalf("root route arguments = %q", args)
 	}
 	configFlag := strings.Index(args, "--config\n")
+	if configFlag > strings.Index(args, "/bin/sh\n") {
+		t.Fatalf("config option must precede the shell command: %q", args)
+	}
 	configPath := strings.SplitN(args[configFlag+len("--config\n"):], "\n", 2)[0]
 	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
 		t.Fatalf("temporary config should be removed after command: %v", err)
