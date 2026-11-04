@@ -2,7 +2,6 @@ package console
 
 import (
 	"bufio"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,77 +24,25 @@ func TestConnectProjectRoutesUserShell(t *testing.T) {
 	}
 }
 
-func TestConnectProjectRoutesRootWithMergedTemporaryConfig(t *testing.T) {
-	base := `{"name":"base","remoteUser":"developer","features":{"example":"1"}}`
-	local := `{"name":"local","remoteUser":"local-user","remoteEnv":{"KEEP":"yes"}}`
-	projectDir, configDir := createRootConnectProject(t, base, local)
-	fakeDevcontainer := installFakeDevcontainer(t)
-	t.Setenv("PATH", filepath.Dir(fakeDevcontainer)+string(os.PathListSeparator)+os.Getenv("PATH"))
-	setConnectInput("2\n")
-	defer resetConnectInput()
-
-	if err := connectProject(Project{Name: "demo", Path: projectDir, State: "RUNNING"}); err != nil {
-		t.Fatal(err)
-	}
-	assertRootConnectInvocation(t, readInvocation(t), configDir, base, local)
-}
-
-func createRootConnectProject(t *testing.T, base, local string) (string, string) {
-	t.Helper()
+func TestConnectProjectRoutesRootThroughDockerExec(t *testing.T) {
+	fakeDocker := installFakeDocker(t)
+	t.Setenv("PATH", filepath.Dir(fakeDocker)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	projectDir := t.TempDir()
 	configDir := filepath.Join(projectDir, ".devcontainer")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for name, value := range map[string]string{
-		"devcontainer.json":       base,
-		"devcontainer.local.json": local,
-	} {
-		if err := os.WriteFile(filepath.Join(configDir, name), []byte(value), 0o600); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.WriteFile(filepath.Join(configDir, "devcontainer.json"), []byte(`{"workspaceFolder":"/workspaces/demo"}`), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	return projectDir, configDir
-}
+	setConnectInput("2\n")
+	defer resetConnectInput()
 
-func assertRootConnectInvocation(t *testing.T, args, configDir, base, local string) {
-	t.Helper()
-	if !strings.Contains(args, "--config\n") || !strings.Contains(args, "/bin/sh") {
+	if err := connectProject(Project{Name: "demo", Path: projectDir, ID: "container-id", State: "RUNNING"}); err != nil {
+		t.Fatal(err)
+	}
+	if args := readInvocation(t); !strings.Contains(args, "exec\n-u\nroot\n-w\n/workspaces/demo\n-it\ncontainer-id\n") || !strings.Contains(args, "/bin/sh") {
 		t.Fatalf("root route arguments = %q", args)
-	}
-	configFlag := strings.Index(args, "--config\n")
-	if configFlag > strings.Index(args, "/bin/sh\n") {
-		t.Fatalf("config option must precede the shell command: %q", args)
-	}
-	configPath := strings.SplitN(args[configFlag+len("--config\n"):], "\n", 2)[0]
-	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
-		t.Fatalf("temporary config should be removed after command: %v", err)
-	}
-	data, err := os.ReadFile(os.Getenv("DCH_CAPTURE_CONFIG"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var config map[string]any
-	if err := json.Unmarshal(data, &config); err != nil {
-		t.Fatal(err)
-	}
-	features, _ := config["features"].(map[string]any)
-	remoteEnv, _ := config["remoteEnv"].(map[string]any)
-	if config["remoteUser"] != "root" || config["name"] != "local" || features["example"] != "1" || remoteEnv["KEEP"] != "yes" {
-		t.Fatalf("temporary config did not preserve merged settings and override remoteUser: %s", data)
-	}
-	assertProjectConfigUnchanged(t, configDir, "devcontainer.json", base)
-	assertProjectConfigUnchanged(t, configDir, "devcontainer.local.json", local)
-}
-
-func assertProjectConfigUnchanged(t *testing.T, configDir, name, want string) {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join(configDir, name))
-	if err != nil {
-		t.Fatalf("read project config %s: %v", name, err)
-	}
-	if string(data) != want {
-		t.Fatalf("project config %s changed: %s", name, data)
 	}
 }
 
@@ -143,6 +90,18 @@ func installFakeDevcontainer(t *testing.T) string {
 	captureDir := t.TempDir()
 	t.Setenv("DCH_CAPTURE_ARGS", filepath.Join(captureDir, "args"))
 	t.Setenv("DCH_CAPTURE_CONFIG", filepath.Join(captureDir, "config"))
+	return tool
+}
+
+func installFakeDocker(t *testing.T) string {
+	t.Helper()
+	binDir := t.TempDir()
+	tool := filepath.Join(binDir, "docker")
+	if err := os.WriteFile(tool, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$DCH_CAPTURE_ARGS\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	captureDir := t.TempDir()
+	t.Setenv("DCH_CAPTURE_ARGS", filepath.Join(captureDir, "args"))
 	return tool
 }
 
