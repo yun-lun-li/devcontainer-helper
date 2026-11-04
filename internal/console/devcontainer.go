@@ -75,6 +75,10 @@ func invokeProjectDevcontainer(p Project, args ...string) error {
 			return err
 		}
 	}
+	return invokeProjectDevcontainerWithConfig(p, config, args...)
+}
+
+func invokeProjectDevcontainerWithConfig(p Project, config []byte, args ...string) error {
 	configDir := filepath.Join(p.Path, ".devcontainer")
 	tempDir, err := os.MkdirTemp("", "dch-devcontainer-")
 	if err != nil {
@@ -90,7 +94,13 @@ func invokeProjectDevcontainer(p Project, args ...string) error {
 		return fmt.Errorf("write temporary merged devcontainer config: %w", err)
 	}
 
-	args = append(args, "--config", mergedPath)
+	if args[0] == "exec" {
+		execArgs := make([]string, 0, len(args)+2)
+		execArgs = append(execArgs, args[0], "--config", mergedPath)
+		args = append(execArgs, args[1:]...)
+	} else {
+		args = append(args, "--config", mergedPath)
+	}
 	if args[0] == "up" {
 		basePath, err := filepath.Abs(filepath.Join(configDir, "devcontainer.json"))
 		if err != nil {
