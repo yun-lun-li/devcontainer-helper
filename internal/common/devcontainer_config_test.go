@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -30,6 +31,60 @@ func TestMergedDevcontainerConfigMergesRunArgsByOption(t *testing.T) {
 	want := `{"runArgs":["--name","base","--env","B=2","-e","A=local","--rm=false"]}`
 	if compactJSON(t, got) != want {
 		t.Fatalf("merged config = %s, want %s", compactJSON(t, got), want)
+	}
+}
+
+func TestMergeConfigMountsOverridesBaseByTarget(t *testing.T) {
+	base := []any{
+		"source=base,target=/shared,type=volume",
+		map[string]any{"source": "base-data", "target": "/data", "type": "volume"},
+		"source=keep,target=/keep,type=volume",
+		"source=unknown,type=volume",
+	}
+	local := []any{
+		map[string]any{"source": "local-shared", "target": "/shared", "type": "volume"},
+		"source=local-data,dst=/data,type=volume",
+		"source=new,target=/new,type=volume",
+		"source=local-unknown,type=volume",
+	}
+	got := mergeConfigValues(map[string]any{"mounts": base}, map[string]any{"mounts": local})
+	want := map[string]any{"mounts": []any{base[2], base[3], local[0], local[1], local[2], local[3]}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("merged config = %#v, want %#v", got, want)
+	}
+}
+
+func TestMergeConfigEmptyLocalMountsKeepsBase(t *testing.T) {
+	base := map[string]any{"mounts": []any{"source=data,target=/data,type=volume"}}
+	got := mergeConfigValues(base, map[string]any{"mounts": []any{}})
+	if !reflect.DeepEqual(got, base) {
+		t.Fatalf("merged config = %#v, want %#v", got, base)
+	}
+}
+
+func TestMountTarget(t *testing.T) {
+	tests := []struct {
+		name  string
+		mount any
+		want  string
+	}{
+		{"target", "source=data,target=/data,type=volume", "/data"},
+		{"dst", "dst=/data,source=data", "/data"},
+		{"destination", "destination=/data,source=data", "/data"},
+		{"quoted CSV", `"source=host,dir","target=/data,dir",type=bind`, "/data,dir"},
+		{"object", map[string]any{"target": "/data"}, "/data"},
+		{"missing target", "source=data,type=volume", ""},
+		{"invalid object target", map[string]any{"target": 123}, ""},
+		{"invalid CSV", `source="broken,target=/data`, ""},
+		{"multiple records", "target=/data\ntarget=/other", ""},
+		{"invalid type", 123, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := mountTarget(tt.mount); got != tt.want {
+				t.Fatalf("mountTarget(%#v) = %q, want %q", tt.mount, got, tt.want)
+			}
+		})
 	}
 }
 

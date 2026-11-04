@@ -2,6 +2,7 @@ package common
 
 import (
 	"bytes"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -115,6 +116,8 @@ func mergeConfigArrays(path string, base, local []any) []any {
 	switch path {
 	case "runArgs", "build.options":
 		return mergeDockerOptions(base, local, path == "runArgs")
+	case "mounts":
+		return mergeMounts(base, local)
 	case "dockerComposeFile":
 		return append(append([]any{}, base...), local...)
 	case "extensions", "customizations.vscode.extensions", "forwardPorts", "capAdd":
@@ -122,6 +125,50 @@ func mergeConfigArrays(path string, base, local []any) []any {
 	default:
 		return local
 	}
+}
+
+func mergeMounts(base, local []any) []any {
+	targets := make(map[string]bool, len(local))
+	for _, mount := range local {
+		if target := mountTarget(mount); target != "" {
+			targets[target] = true
+		}
+	}
+	result := make([]any, 0, len(base)+len(local))
+	for _, mount := range base {
+		if !targets[mountTarget(mount)] {
+			result = append(result, mount)
+		}
+	}
+	return append(result, local...)
+}
+
+func mountTarget(mount any) string {
+	if object, ok := mount.(map[string]any); ok {
+		target, _ := object["target"].(string)
+		return target
+	}
+	value, ok := mount.(string)
+	if !ok {
+		return ""
+	}
+	reader := csv.NewReader(strings.NewReader(value))
+	fields, err := reader.Read()
+	if err != nil {
+		return ""
+	}
+	if _, err := reader.Read(); err != io.EOF {
+		return ""
+	}
+	target := ""
+	for _, field := range fields {
+		key, value, _ := strings.Cut(field, "=")
+		switch key {
+		case "target", "dst", "destination":
+			target = value
+		}
+	}
+	return target
 }
 
 func isLifecyclePath(path string) bool {
