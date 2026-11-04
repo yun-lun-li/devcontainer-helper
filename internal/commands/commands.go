@@ -6,14 +6,16 @@ import (
 
 // Run dispatches a CLI command. The console is also the default command.
 func Run(args []string, openConsole func() error) error {
-	if len(args) == 0 {
-		if openConsole == nil {
-			return fmt.Errorf("console is unavailable")
-		}
-		checkForStartupUpdate()
-		return openConsole()
+	if len(args) > 0 && args[0] == "host-pass" {
+		return runHostPass(args[1:])
 	}
+	if len(args) == 0 {
+		return launchConsole(openConsole)
+	}
+	return runCommand(args, openConsole)
+}
 
+func runCommand(args []string, openConsole func() error) error {
 	switch args[0] {
 	case "help", "-h", "--help":
 		if len(args) != 1 {
@@ -25,11 +27,7 @@ func Run(args []string, openConsole func() error) error {
 		if len(args) != 1 {
 			return fmt.Errorf("console does not accept arguments")
 		}
-		if openConsole == nil {
-			return fmt.Errorf("console is unavailable")
-		}
-		checkForStartupUpdate()
-		return openConsole()
+		return launchConsole(openConsole)
 	case "register":
 		if len(args) != 3 || args[1] != "--path" || args[2] == "" {
 			return fmt.Errorf("usage: dch register --path PROJECT_PATH")
@@ -56,6 +54,14 @@ func Run(args []string, openConsole func() error) error {
 	}
 }
 
+func launchConsole(openConsole func() error) error {
+	if openConsole == nil {
+		return fmt.Errorf("console is unavailable")
+	}
+	checkForStartupUpdate()
+	return openConsole()
+}
+
 func usage() {
 	fmt.Print(`dch — devcontainer helper
 
@@ -67,6 +73,10 @@ Usage:
   dch update                Update dch to the latest release
   dch version               Show the installed version
   dch help                  Show this help
+  dch host-pass prepare --project PATH [--entry NAME]
+                            Prepare a project's host pass PAT service
+  dch host-pass stop --project PATH
+                            Stop the service, retaining the PAT in host pass
 
 Container actions: devcontainer CLI and Docker daemon required
 Config file:   ~/.dch/config (JSON; stores only workspace paths)

@@ -109,3 +109,69 @@ becomes `DCH_FEATURE_OPTION_PASSENTRY`. The host environment is otherwise preser
 `DCH_FEATURE_DIR` points to the resolved Feature directory,
 `DCH_WORKSPACE_FOLDER` to the workspace, and `DCH_EXECUTABLE` to the running dch binary.
 Do not put secrets in Feature options.
+
+### GitHub CLI with a PAT in host pass
+
+The local Feature at `.devcontainer/features/github-cli` depends on the official
+GitHub CLI Feature. It installs a `gh` wrapper and an HTTPS Git credential helper.
+A small detached host process reads exactly one configured `pass` entry on demand
+through a project-specific Unix socket. The password store and GPG keys stay on the
+host. The container receives the PAT when it uses Git or `gh`; processes with access
+to the socket can retrieve that PAT. Use a PAT with the repository permissions you
+intend to grant to the container.
+
+For the first version, use Linux with local Docker, a working host `pass`/GPG setup,
+and matching host/container user IDs. Docker Desktop, remote Docker, and different
+UIDs are not supported. The container image must provide Git and curl. Initialize
+host pass before starting; dch does not install host packages or generate GPG keys.
+
+Copy the Feature directory into your project's `.devcontainer/features/github-cli`,
+then add this to `devcontainer.json` or your `devcontainer.local.json`:
+
+```json
+{
+  "features": {
+    "./features/github-cli": {
+      "passEntry": "dch/github/my-project"
+    }
+  }
+}
+```
+
+Store the PAT using host pass's hidden prompt:
+
+```sh
+pass insert dch/github/my-project
+```
+
+Alternatively, the first dch Start/Build prompts through `pass insert` if the entry
+is missing. Its first line must be a GitHub PAT (`github_pat_...` or `ghp_...`). The
+Feature accepts an entry name, never a token. dch checks token format; GitHub checks
+its permissions, expiration, and organization approval when Git/gh uses it.
+
+Build the container after adding/removing the Feature. No configuration change to
+this repository's own development container is required to build or test dch.
+
+The runtime directory is `.devcontainer/.dch/github-auth`; add
+`.devcontainer/.dch/` to your project's `.gitignore`. The directory and socket are
+private to your host UID. The Feature mounts only that runtime directory. It never
+mounts the password store, GPG directory, or plaintext credential files.
+
+The service remains available when dch exits or the container stops. It rereads pass
+for each request, so updating the same entry with `pass insert` takes effect without
+a rebuild. GPG/pinentry can take up to two minutes; on headless hosts, unlock the same
+host GPG agent in a terminal before retrying. Existing inherited GitHub tokens are
+overridden for the wrapped `gh` process. SSH Git remotes are unchanged; use HTTPS to
+use this helper. The wrapper targets github.com, not GitHub Enterprise.
+
+Stop the service explicitly when removing the Feature or changing its entry:
+
+```sh
+dch host-pass stop --project /path/to/project
+```
+
+This retains the encrypted PAT. Delete it separately with `pass rm ENTRY` if desired.
+After a host restart, use Start in dch or run
+`dch host-pass prepare --project /path/to/project --entry ENTRY` before reconnecting.
+If the host GPG/password-store environment changes, stop and prepare the service
+again. Removing the Feature alone does not stop an existing host process.

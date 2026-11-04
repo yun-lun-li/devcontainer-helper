@@ -1,0 +1,28 @@
+{
+  "id": "github-cli",
+  "version": "1.0.0",
+  "name": "GitHub CLI with host pass",
+  "description": "Use a GitHub PAT stored in host pass through a project-specific socket.",
+  "dependsOn": {
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "options": {
+    "passEntry": {
+      "type": "string",
+      "default": "dch/github/pat",
+      "description": "Host pass entry whose first line contains a GitHub PAT. Never put the PAT itself here."
+    }
+  },
+  "mounts": [
+    {
+      "source": "${localWorkspaceFolder}/.devcontainer/.dch/github-auth",
+      "target": "/run/dch-github-auth",
+      "type": "bind"
+    }
+  ],
+  "customizations": {
+    "dch": {
+      "initializeCommand": "\"$DCH_EXECUTABLE\" host-pass prepare --project \"$DCH_WORKSPACE_FOLDER\" --entry \"$DCH_FEATURE_OPTION_PASSENTRY\""
+    }
+  }
+}
