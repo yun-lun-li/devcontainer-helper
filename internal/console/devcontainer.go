@@ -75,6 +75,22 @@ func invokeProjectDevcontainer(p Project, args ...string) error {
 			return err
 		}
 	}
+	return invokeProjectDevcontainerWithConfig(p, config, args...)
+}
+
+func invokeProjectDevcontainerAsRoot(p Project, args ...string) error {
+	config, err := common.MergedDevcontainerConfig(p.Path)
+	if err != nil {
+		return err
+	}
+	config, err = withRootRemoteUser(config)
+	if err != nil {
+		return err
+	}
+	return invokeProjectDevcontainerWithConfig(p, config, args...)
+}
+
+func invokeProjectDevcontainerWithConfig(p Project, config []byte, args ...string) error {
 	configDir := filepath.Join(p.Path, ".devcontainer")
 	tempDir, err := os.MkdirTemp("", "dch-devcontainer-")
 	if err != nil {
@@ -155,6 +171,23 @@ func rebaseConfigPaths(config []byte, sourceDir, targetDir string) ([]byte, erro
 		}
 		settings["features"] = rebased
 	}
+	updated, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode merged devcontainer config: %w", err)
+	}
+	return updated, nil
+}
+
+func withRootRemoteUser(config []byte) ([]byte, error) {
+	var settings map[string]json.RawMessage
+	if err := json.Unmarshal(config, &settings); err != nil {
+		return nil, fmt.Errorf("decode merged devcontainer config: %w", err)
+	}
+	encodedUser, err := json.Marshal("root")
+	if err != nil {
+		return nil, fmt.Errorf("encode remote user: %w", err)
+	}
+	settings["remoteUser"] = encodedUser
 	updated, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encode merged devcontainer config: %w", err)
