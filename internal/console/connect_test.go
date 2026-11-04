@@ -79,6 +79,13 @@ func TestConnectProjectRoutesRootWithMergedTemporaryConfig(t *testing.T) {
 	if string(projectConfig) != base {
 		t.Fatalf("project config changed: %s", projectConfig)
 	}
+	localConfig, err := os.ReadFile(filepath.Join(configDir, "devcontainer.local.json"))
+	if err != nil {
+		t.Fatalf("read local project config: %v", err)
+	}
+	if string(localConfig) != local {
+		t.Fatalf("local project config changed: %s", localConfig)
+	}
 }
 
 func TestConnectProjectCancelDoesNotInvokeDevcontainer(t *testing.T) {
