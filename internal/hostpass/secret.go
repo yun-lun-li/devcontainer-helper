@@ -57,9 +57,15 @@ func (buffer *tokenBuffer) Write(data []byte) (int, error) {
 }
 
 func readToken(ctx context.Context, entry string) (string, error) {
+	return readTokenUsing(ctx, entry, "pass", passEnvironment(), "")
+}
+
+func readTokenUsing(ctx context.Context, entry, executable string, env []string, directory string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	cmd := passCommand(ctx, "show", "--", entry)
+	cmd := exec.CommandContext(ctx, executable, "show", "--", entry)
+	cmd.Env = env
+	cmd.Dir = directory
 	var output tokenBuffer
 	cmd.Stdout = &output
 	if err := common.RunHostCommand(cmd); err != nil {

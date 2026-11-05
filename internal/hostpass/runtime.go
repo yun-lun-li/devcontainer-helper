@@ -42,7 +42,7 @@ func privatePath(path string, directory bool) error {
 }
 
 func lockRuntime(ctx context.Context, path string, wait bool) (func(), error) {
-	fd, err := syscall.Open(path, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW, 0600)
+	fd, err := syscall.Open(path, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
 	if err != nil {
 		return nil, err
 	}
@@ -72,10 +72,33 @@ func lockRuntime(ctx context.Context, path string, wait bool) (func(), error) {
 }
 
 func socketClient(path string) *http.Client {
+	return unixClient(filepath.Join(path, "pass.sock"))
+}
+
+func unixClient(path string) *http.Client {
 	return &http.Client{Timeout: requestTimeout + 5*time.Second, Transport: &http.Transport{
 		DisableKeepAlives: true,
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", filepath.Join(path, "pass.sock"))
+			return (&net.Dialer{}).DialContext(ctx, "unix", path)
 		},
 	}}
+}
+
+func sharedDirectory() (string, error) {
+	root := os.Getenv("XDG_RUNTIME_DIR")
+	if root == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		root = filepath.Join(home, ".dch")
+	}
+	path := filepath.Join(root, "dch-host-pass")
+	if err := os.MkdirAll(path, 0700); err != nil {
+		return "", err
+	}
+	if err := privatePath(path, true); err != nil {
+		return "", err
+	}
+	return path, nil
 }

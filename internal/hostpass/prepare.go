@@ -42,13 +42,13 @@ func Prepare(ctx context.Context, project, entry string, stdin io.Reader, stdout
 	if running {
 		return nil
 	}
-	if err := startService(project, entry); err != nil {
+	if err := registerShared(ctx, project, entry); err != nil {
 		return err
 	}
 	return waitForService(ctx, dir, entry)
 }
 
-func startService(project, entry string) error {
+func startSharedService() error {
 	executable, err := os.Executable()
 	if err != nil {
 		return err
@@ -58,7 +58,7 @@ func startService(project, entry string) error {
 		return err
 	}
 	defer sink.Close()
-	cmd := exec.Command(executable, "host-pass", "serve", "--project", project, "--entry", entry)
+	cmd := exec.Command(executable, "host-pass", "daemon")
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = sink, sink, sink
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
@@ -118,6 +118,9 @@ func Stop(ctx context.Context, project string) error {
 		return err
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		return unregisterShared(ctx, project)
+	}
 	if response.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("could not stop host pass service")
 	}

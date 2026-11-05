@@ -115,8 +115,9 @@ Do not put secrets in Feature options.
 
 The local Feature at `.devcontainer/features/github-cli` depends on the official
 GitHub CLI Feature. It installs a `gh` wrapper and an HTTPS Git credential helper.
-A small detached host process reads exactly one configured `pass` entry on demand
-through a project-specific Unix socket. The password store and GPG keys stay on the
+A single detached dch process per host user serves all registered projects. Each
+project has its own Unix socket bound to exactly one configured `pass` entry. The
+container cannot select a different entry in its requests. The password store and GPG keys stay on the
 host. The container receives the PAT when it uses Git or `gh`; processes with access
 to the socket can retrieve that PAT. Use a PAT with the repository permissions you
 intend to grant to the container.
@@ -197,3 +198,21 @@ After a host restart, use Start in dch or run
 `dch host-pass prepare --project /path/to/project --entry ENTRY` before reconnecting.
 If the host GPG/password-store environment changes, stop and prepare the service
 again. Removing the Feature alone does not stop an existing host process.
+
+`host-pass stop --project PATH` unregisters only that project, cancels its pending
+credential requests, and removes its socket. Other projects keep working. Once all
+projects are unregistered, the shared process exits after 30 idle seconds. New
+registrations and idle shutdown are serialized with a host-level startup lock.
+Concurrent credential reads are serialized across projects to limit GPG prompts.
+
+The host-only control socket lives at `$XDG_RUNTIME_DIR/dch-host-pass/control.sock`,
+or `~/.dch/dch-host-pass/control.sock` when `XDG_RUNTIME_DIR` is unset. It is never
+mounted into containers. Each registration retains its own pass executable and
+environment and working directory in memory, supporting different password stores/GPG settings. Restarting
+the service clears registrations; run Start or `host-pass prepare` for each project
+that needs to reconnect. Existing services from older dch versions remain supported;
+stop each project's old service and prepare it again to join the shared process.
+
+Socket isolation assumes containers can access only their own socket directory.
+It does not isolate projects from other host processes running as the same user,
+or from containers allowed to mount other projects' sockets or control Docker.

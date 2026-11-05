@@ -88,7 +88,7 @@ func newServer(ctx context.Context, entry string, cancel context.CancelFunc) *ht
 		fmt.Fprint(w, entryIdentity(entry))
 	})
 	mux.HandleFunc("GET /token", func(w http.ResponseWriter, r *http.Request) {
-		serveToken(w, r, entry, gate)
+		serveToken(w, r, gate, func(ctx context.Context) (string, error) { return readToken(ctx, entry) })
 	})
 	mux.HandleFunc("POST /shutdown", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -99,7 +99,7 @@ func newServer(ctx context.Context, entry string, cancel context.CancelFunc) *ht
 		MaxHeaderBytes: 4096, BaseContext: func(net.Listener) context.Context { return ctx }}
 }
 
-func serveToken(w http.ResponseWriter, r *http.Request, entry string, gate chan struct{}) {
+func serveToken(w http.ResponseWriter, r *http.Request, gate chan struct{}, read func(context.Context) (string, error)) {
 	w.Header().Set("Cache-Control", "no-store")
 	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 	defer cancel()
@@ -110,7 +110,7 @@ func serveToken(w http.ResponseWriter, r *http.Request, entry string, gate chan 
 		http.Error(w, "host pass request timed out", http.StatusGatewayTimeout)
 		return
 	}
-	token, err := readToken(ctx, entry)
+	token, err := read(ctx)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
