@@ -14,16 +14,17 @@ import (
 
 func TestProjectFeaturesMenuEnablesAndDisables(t *testing.T) {
 	project := newFeatureMenuProject(t)
-	output, err := runFeatureMenu(t, project, "1\nproject/github\n2\n")
+	installFeatureSetupTools(t, project)
+	output, err := runFeatureMenu(t, project, "1\na\nproject/github\nq\n")
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertMenuFeatureEnabled(t, project, true)
-	if !strings.Contains(output, "Disable GitHub CLI with host pass  [project/github]") {
+	if !strings.Contains(output, "[x] GitHub CLI with host pass  (project/github)") {
 		t.Fatalf("missing enabled status: %s", output)
 	}
 	t.Log(output)
-	output, err = runFeatureMenu(t, project, "1\n2\n")
+	output, err = runFeatureMenu(t, project, "1\na\nq\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,12 +34,65 @@ func TestProjectFeaturesMenuEnablesAndDisables(t *testing.T) {
 	}
 }
 
+func installFeatureSetupTools(t *testing.T, project Project) {
+	t.Helper()
+	bin := filepath.Join(project.Path, "bin")
+	store := filepath.Join(project.Path, "store")
+	for _, dir := range []string{bin, filepath.Join(store, "project")} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"pass", "gpg", "gpg-agent", "pinentry"} {
+		script := "#!/bin/sh\n[ -z \"$DCH_SETUP_FAIL\" ] || exit 1\nprintf ghp_TEST_ONLY\n"
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, path := range []string{filepath.Join(store, ".gpg-id"), filepath.Join(store, "project", "github.gpg")} {
+		if err := os.WriteFile(path, []byte("fixture"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PASSWORD_STORE_DIR", store)
+	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(project.Path, "runtime"))
+}
+
+func TestProjectFeaturesSetupFailureDoesNotEnableFeature(t *testing.T) {
+	project := newFeatureMenuProject(t)
+	installFeatureSetupTools(t, project)
+	t.Setenv("DCH_SETUP_FAIL", "1")
+	_, err := runFeatureMenu(t, project, "1\na\nproject/github\n")
+	if err == nil {
+		t.Fatal("enabled Feature after setup failed")
+	}
+	assertMenuFeatureEnabled(t, project, false)
+	_, err = os.Stat(filepath.Join(project.Path, ".devcontainer", "devcontainer.local.json"))
+	if !os.IsNotExist(err) {
+		t.Fatalf("unexpected local config: %v", err)
+	}
+}
+
 func TestProjectFeaturesMenuCancelDoesNotWriteSettings(t *testing.T) {
 	project := newFeatureMenuProject(t)
-	_, err := runFeatureMenu(t, project, "1\nq\n")
+	_, err := runFeatureMenu(t, project, "1\na\nq\n")
 	if !errors.Is(err, errCancelled) {
 		t.Fatalf("got %v", err)
 	}
+	_, err = os.Stat(filepath.Join(project.Path, ".devcontainer", "devcontainer.local.json"))
+	if !os.IsNotExist(err) {
+		t.Fatalf("unexpected local config: %v", err)
+	}
+}
+
+func TestProjectFeaturesDiscardDoesNotRunSetup(t *testing.T) {
+	project := newFeatureMenuProject(t)
+	_, err := runFeatureMenu(t, project, "1\nq\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMenuFeatureEnabled(t, project, false)
 	_, err = os.Stat(filepath.Join(project.Path, ".devcontainer", "devcontainer.local.json"))
 	if !os.IsNotExist(err) {
 		t.Fatalf("unexpected local config: %v", err)

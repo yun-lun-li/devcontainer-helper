@@ -122,25 +122,46 @@ host. The container receives the PAT when it uses Git or `gh`; processes with ac
 to the socket can retrieve that PAT. Use a PAT with the repository permissions you
 intend to grant to the container.
 
-For the first version, use Linux with local Docker, a working host `pass`/GPG setup,
-and matching host/container user IDs. Docker Desktop, remote Docker, and different
-UIDs are not supported. The container image must provide Git and curl. Initialize
-host pass before starting; dch does not install host packages or generate GPG keys.
+For the first version, use Linux with local Docker and matching host/container
+user IDs. Docker Desktop, remote Docker, and different
+UIDs are not supported. The container image must provide Git and curl.
 
-In dch, select a project, open **Features**, choose **Enable GitHub CLI with host
-pass**, and enter a host pass entry name (never the PAT itself). dch bundles the
-Feature, places it in `.devcontainer/.dch/features/github-cli`, and adds its options
+In dch, select a project, open **Features**, check **GitHub CLI with host pass**
+with Space, and press Enter to apply. Use arrows to move and q/Esc to discard
+pending checkbox changes. With redirected input, enter a number to toggle and
+Enter or `a` to apply. Enter a host pass entry name (never the PAT itself).
+dch then guides host setup before saving the Feature:
+
+1. Check for pass, GPG, gpg-agent and pinentry. If needed, show package installation
+   commands and offer to run them, using sudo for non-root users. Supported package
+   managers are apt-get, dnf, pacman and apk; other systems require manual installation.
+2. Reuse existing pass recipient settings. For a new store, select an existing usable
+   encryption secret key or create one through GPG's interactive name, email and
+   passphrase prompts. Initialize pass with the selected key. Existing stores without
+   applicable recipient settings require manual repair rather than re-encryption.
+3. If the entry is missing, prompt through `pass insert` for the PAT with hidden
+   input, then verify that pass can decrypt it and that its first line has PAT format.
+   An existing entry is verified and retained.
+
+Only successful setup enables the Feature. Cancelling does not save pending Feature
+settings; packages, keys or store initialization already completed remain on the host.
+PAT values and GPG passphrases are never passed as command arguments or saved in
+local configuration. The setup follows [pass initialization](https://www.passwordstore.org/)
+and [GPG key generation](https://www.gnupg.org/documentation/manuals/gnupg/OpenPGP-Key-Management.html).
+
+dch bundles the Feature, places it in `.devcontainer/.dch/features/github-cli`, and adds its options
 to `.devcontainer/devcontainer.local.json`. Other settings and comments are retained.
 Each project has its own toggle and entry setting. The menu is available even when
 Docker is unavailable. Run **Build** afterward to apply the change.
 
 ```text
 demo / Features
-  1) Enable GitHub CLI with host pass
-  2) Back
+  › [ ] GitHub CLI with host pass
+
+  ↑/↓ move · Space toggle · Enter apply · q/Esc discard
 ```
 
-Select the enabled Feature again to disable it. This removes its local setting and
+Uncheck the enabled Feature and apply to disable it. This removes its local setting and
 stops the project's host pass service, retaining the encrypted PAT. Run **Build**
 to remove the Feature from the container. Keep `devcontainer.local.json` and
 `.devcontainer/.dch/` out of version control. Features configured in the base
@@ -149,7 +170,8 @@ existing containers. The menu currently manages the bundled GitHub CLI Feature.
 
 For manual setup instead, copy the Feature directory into your project's
 `.devcontainer/features/github-cli`, then add this to `devcontainer.json` or
-your `devcontainer.local.json`:
+your `devcontainer.local.json`. Initialize host pass/GPG yourself for this path;
+Start/Build and `host-pass prepare` do not install packages or create GPG keys:
 
 ```json
 {

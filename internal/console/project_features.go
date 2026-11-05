@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"dch/internal/features"
@@ -18,16 +21,19 @@ func projectFeatures(p Project) error {
 		if err != nil {
 			return err
 		}
-		label := "Enable GitHub CLI with host pass"
+		label := "GitHub CLI with host pass"
 		if enabled {
-			label = "Disable GitHub CLI with host pass  [" + entry + "]"
+			label += "  (" + entry + ")"
 		}
-		choice, err := choose(p.Name+" / Features", []string{label, "Back"})
-		if errors.Is(err, errCancelled) || choice == 1 {
+		checked, err := chooseCheckboxes(p.Name+" / Features", []string{label}, []bool{enabled})
+		if errors.Is(err, errCancelled) {
 			return nil
 		}
 		if err != nil {
 			return err
+		}
+		if checked[0] == enabled {
+			return nil
 		}
 		if err := toggleGitHubCLI(p, enabled, entry); err != nil {
 			return err
@@ -52,12 +58,27 @@ func toggleGitHubCLI(p Project, enabled bool, entry string) error {
 	if err != nil {
 		return err
 	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	ui := hostpass.SetupUI{Choose: chooseHostSetup, Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr}
+	if err := hostpass.Setup(ctx, value, ui); err != nil {
+		if errors.Is(err, hostpass.ErrSetupCancelled) {
+			return errCancelled
+		}
+		return err
+	}
 	return features.EnableGitHubCLI(p.Path, value)
+}
+
+func chooseHostSetup(title string, options []string) (int, error) {
+	choice, err := choose(title, options)
+	screenHeading("GitHub CLI host setup")
+	return choice, err
 }
 
 func promptPassEntry(defaultEntry string) (string, error) {
 	screenHeading("GitHub CLI with host pass")
-	fmt.Println("Requires Linux, local Docker, matching host/container UIDs, and initialized host pass/GPG.")
+	fmt.Println("Requires Linux, local Docker and matching host/container UIDs. Host pass/GPG setup follows.")
 	fmt.Println("Git and curl must be available in the container. The container can retrieve this PAT.")
 	fmt.Printf("Host pass entry [%s] (entry name, never paste a PAT; q to cancel): ", defaultEntry)
 	line, err := input.ReadString('\n')

@@ -157,7 +157,7 @@ func chooseProject(p Project, actions []projectAction) (int, error) {
 		case actionConfig:
 			options[i] = "⚙ Show config  Preview merged devcontainer settings"
 		case actionFeatures:
-			options[i] = "⚙ Features  Manage optional project Features"
+			options[i] = "◈ Features  Manage optional project Features"
 		case actionRemove:
 			options[i] = "✕ Remove Project  Unregister only; keep files and containers"
 		case actionBack:

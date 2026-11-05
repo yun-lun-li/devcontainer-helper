@@ -44,6 +44,11 @@ func passEnvironment() []string {
 			env = append(env, value)
 		}
 	}
+	if os.Getenv("GPG_TTY") == "" {
+		if tty, err := os.Readlink("/proc/self/fd/0"); err == nil && (strings.HasPrefix(tty, "/dev/pts/") || strings.HasPrefix(tty, "/dev/tty")) {
+			env = append(env, "GPG_TTY="+tty)
+		}
+	}
 	return append(env, "PASSWORD_STORE_GPG_OPTS=--pinentry-mode=ask")
 }
 
@@ -79,17 +84,13 @@ func readTokenUsing(ctx context.Context, entry, executable string, env []string,
 }
 
 func ensureToken(ctx context.Context, entry string, stdin io.Reader, stdout, stderr io.Writer) error {
-	root := os.Getenv("PASSWORD_STORE_DIR")
-	if root == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return err
-		}
-		root = filepath.Join(home, ".password-store")
+	root, err := passwordStoreDirectory()
+	if err != nil {
+		return err
 	}
-	_, err := os.Stat(filepath.Join(root, filepath.FromSlash(entry)+".gpg"))
+	_, err = os.Stat(filepath.Join(root, filepath.FromSlash(entry)+".gpg"))
 	if os.IsNotExist(err) {
-		fmt.Fprintln(stdout, "Store the GitHub PAT in host pass (input is hidden). Initialize pass on the host first if needed.")
+		fmt.Fprintln(stdout, "Store the GitHub PAT in host pass (input is hidden).")
 		cmd := passCommand(ctx, "insert", "--", entry)
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
 		if err := common.RunHostCommand(cmd); err != nil {
