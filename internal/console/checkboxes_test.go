@@ -7,20 +7,21 @@ import (
 	"testing"
 )
 
-func TestCheckboxKeysToggleWithoutApplying(t *testing.T) {
+func TestCheckboxKeysToggleImmediately(t *testing.T) {
 	menu := checkboxMenu{labels: []string{"first", "second"}, checked: []bool{false, true}}
-	for _, key := range []byte{' ', 'j', ' ', 'k'} {
+	for _, key := range []byte{'j', 'k'} {
 		apply, err := menu.handleKey(key)
 		if apply || err != nil {
 			t.Fatalf("key %q applied unexpectedly: %v", key, err)
 		}
 	}
-	if !menu.checked[0] || menu.checked[1] {
-		t.Fatalf("wrong checkbox values: %v", menu.checked)
+	selected, err := menu.handleKey(' ')
+	if !selected || err != nil || !menu.checked[0] {
+		t.Fatalf("Space did not toggle immediately: %v %v", menu.checked, err)
 	}
 	apply, err := menu.handleKey('\n')
-	if !apply || err != nil {
-		t.Fatalf("Enter did not apply: %v", err)
+	if !apply || err != nil || menu.checked[0] {
+		t.Fatalf("Enter did not toggle immediately: %v", err)
 	}
 	_, err = menu.handleKey('q')
 	if !errors.Is(err, errCancelled) {

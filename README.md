@@ -127,9 +127,9 @@ user IDs. Docker Desktop, remote Docker, and different
 UIDs are not supported. The container image must provide Git and curl.
 
 In dch, select a project, open **Features**, check **GitHub CLI with host pass**
-with Space, and press Enter to apply. Use arrows to move and q/Esc to discard
-pending checkbox changes. With redirected input, enter a number to toggle and
-Enter or `a` to apply. Enter a host pass entry name (never the PAT itself).
+with Space or Enter to immediately begin setup. Use arrows to move and q/Esc to
+go back. With redirected input, enter a number to enable or disable a Feature.
+Enter a host pass entry name (never the PAT itself).
 dch then guides host setup before saving the Feature:
 
 1. Check for pass, GPG, gpg-agent and pinentry. If needed, show package installation
@@ -143,8 +143,9 @@ dch then guides host setup before saving the Feature:
    input, then verify that pass can decrypt it and that its first line has PAT format.
    An existing entry is verified and retained.
 
-Only successful setup enables the Feature. Cancelling does not save pending Feature
-settings; packages, keys or store initialization already completed remain on the host.
+Only successful setup enables the Feature and displays its checkbox as checked.
+Cancelling returns to the unchecked Feature without saving settings; packages,
+keys or store initialization already completed remain on the host.
 PAT values and GPG passphrases are never passed as command arguments or saved in
 local configuration. The setup follows [pass initialization](https://www.passwordstore.org/)
 and [GPG key generation](https://www.gnupg.org/documentation/manuals/gnupg/OpenPGP-Key-Management.html).
@@ -158,10 +159,10 @@ Docker is unavailable. Run **Build** afterward to apply the change.
 demo / Features
   › [ ] GitHub CLI with host pass
 
-  ↑/↓ move · Space toggle · Enter apply · q/Esc discard
+  ↑/↓ move · Space/Enter enable/disable · q/Esc back
 ```
 
-Uncheck the enabled Feature and apply to disable it. This removes its local setting and
+Uncheck the enabled Feature to immediately disable it. This removes its local setting and
 stops the project's host pass service, retaining the encrypted PAT. Run **Build**
 to remove the Feature from the container. Keep `devcontainer.local.json` and
 `.devcontainer/.dch/` out of version control. Features configured in the base

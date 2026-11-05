@@ -49,10 +49,10 @@ func (m *checkboxMenu) render(numbered bool) {
 		fmt.Printf("  %s[%s] %s\n", prefix, mark, label)
 	}
 	if numbered {
-		fmt.Print("Number to toggle · Enter/a to apply · q to discard: ")
+		fmt.Print("Number to enable/disable · q to go back: ")
 		return
 	}
-	fmt.Println("\n  ↑/↓ move · Space toggle · Enter apply · q/Esc discard")
+	fmt.Println("\n  ↑/↓ move · Space/Enter enable/disable · q/Esc back")
 }
 
 func (m *checkboxMenu) numbered() ([]bool, error) {
@@ -66,12 +66,10 @@ func (m *checkboxMenu) numbered() ([]bool, error) {
 		if line == "q" || errors.Is(err, io.EOF) {
 			return nil, errCancelled
 		}
-		if line == "" || line == "a" {
-			return m.checked, nil
-		}
 		number, err := strconv.Atoi(line)
 		if err == nil && number > 0 && number <= len(m.labels) {
 			m.checked[number-1] = !m.checked[number-1]
+			return m.checked, nil
 		}
 	}
 }
@@ -104,10 +102,9 @@ func (m *checkboxMenu) handleKey(key byte) (bool, error) {
 	switch key {
 	case 3, 'q', 'Q':
 		return false, errCancelled
-	case '\r', '\n':
-		return true, nil
-	case ' ':
+	case '\r', '\n', ' ':
 		m.checked[m.index] = !m.checked[m.index]
+		return true, nil
 	case 'j':
 		m.index = (m.index + 1) % len(m.labels)
 	case 'k':

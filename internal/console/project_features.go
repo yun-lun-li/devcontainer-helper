@@ -25,17 +25,17 @@ func projectFeatures(p Project) error {
 		if enabled {
 			label += "  (" + entry + ")"
 		}
-		checked, err := chooseCheckboxes(p.Name+" / Features", []string{label}, []bool{enabled})
+		_, err = chooseCheckboxes(p.Name+" / Features", []string{label}, []bool{enabled})
 		if errors.Is(err, errCancelled) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		if checked[0] == enabled {
-			return nil
-		}
 		if err := toggleGitHubCLI(p, enabled, entry); err != nil {
+			if errors.Is(err, errCancelled) {
+				continue
+			}
 			return err
 		}
 		screenNotice("Features", "Saved devcontainer.local.json. Use Build to apply the change.\nKeep devcontainer.local.json and .devcontainer/.dch/ out of version control.")

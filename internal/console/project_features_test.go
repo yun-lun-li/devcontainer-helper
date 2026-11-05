@@ -2,7 +2,6 @@ package console
 
 import (
 	"bufio"
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -15,7 +14,7 @@ import (
 func TestProjectFeaturesMenuEnablesAndDisables(t *testing.T) {
 	project := newFeatureMenuProject(t)
 	installFeatureSetupTools(t, project)
-	output, err := runFeatureMenu(t, project, "1\na\nproject/github\nq\n")
+	output, err := runFeatureMenu(t, project, "1\nproject/github\nq\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +23,7 @@ func TestProjectFeaturesMenuEnablesAndDisables(t *testing.T) {
 		t.Fatalf("missing enabled status: %s", output)
 	}
 	t.Log(output)
-	output, err = runFeatureMenu(t, project, "1\na\nq\n")
+	output, err = runFeatureMenu(t, project, "1\nq\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +62,7 @@ func TestProjectFeaturesSetupFailureDoesNotEnableFeature(t *testing.T) {
 	project := newFeatureMenuProject(t)
 	installFeatureSetupTools(t, project)
 	t.Setenv("DCH_SETUP_FAIL", "1")
-	_, err := runFeatureMenu(t, project, "1\na\nproject/github\n")
+	_, err := runFeatureMenu(t, project, "1\nproject/github\n")
 	if err == nil {
 		t.Fatal("enabled Feature after setup failed")
 	}
@@ -76,9 +75,12 @@ func TestProjectFeaturesSetupFailureDoesNotEnableFeature(t *testing.T) {
 
 func TestProjectFeaturesMenuCancelDoesNotWriteSettings(t *testing.T) {
 	project := newFeatureMenuProject(t)
-	_, err := runFeatureMenu(t, project, "1\na\nq\n")
-	if !errors.Is(err, errCancelled) {
+	output, err := runFeatureMenu(t, project, "1\nq\nq\n")
+	if err != nil {
 		t.Fatalf("got %v", err)
+	}
+	if strings.Contains(output, "[x]") {
+		t.Fatalf("cancelled setup displayed as enabled: %s", output)
 	}
 	_, err = os.Stat(filepath.Join(project.Path, ".devcontainer", "devcontainer.local.json"))
 	if !os.IsNotExist(err) {
@@ -86,9 +88,9 @@ func TestProjectFeaturesMenuCancelDoesNotWriteSettings(t *testing.T) {
 	}
 }
 
-func TestProjectFeaturesDiscardDoesNotRunSetup(t *testing.T) {
+func TestProjectFeaturesBackDoesNotRunSetup(t *testing.T) {
 	project := newFeatureMenuProject(t)
-	_, err := runFeatureMenu(t, project, "1\nq\n")
+	_, err := runFeatureMenu(t, project, "q\n")
 	if err != nil {
 		t.Fatal(err)
 	}
