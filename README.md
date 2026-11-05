@@ -72,6 +72,7 @@ dch help                  # Show command help
 Lifecycle commands (`initializeCommand`, `onCreateCommand`, `updateContentCommand`, `postCreateCommand`, `postStartCommand`, and `postAttachCommand`) are replaced as whole values. `dockerComposeFile` arrays append in order. `mounts` keeps base entries whose targets are absent from local, then appends local entries in order. Local mounts replace the entire base mount at the same target, including across string and object forms; string targets accept `target`, `dst`, and `destination`. Entries without a readable target and duplicates within each input are preserved. The known set arrays `customizations.vscode.extensions`, `forwardPorts`, `capAdd`, and deprecated root `extensions` remove duplicates; the [VS Code Dev Container schema](https://github.com/microsoft/vscode/blob/main/extensions/configuration-editing/schemas/devContainer.vscode.schema.json) marks root `extensions` deprecated in favor of `customizations.vscode.extensions`. Other arrays use the local array as a whole.
 
 The option classifications follow the Docker CLI `run` reference and flag registrations, and the Buildx `build` reference and flag registrations: [Docker run options](https://docs.docker.com/reference/cli/docker/container/run/), [Docker CLI run registration](https://github.com/docker/cli/blob/master/cli/command/container/run.go) and [container option registrations](https://github.com/docker/cli/blob/master/cli/command/container/opts.go), [Buildx build options](https://docs.docker.com/reference/cli/docker/buildx/build/), and [Buildx build registration](https://github.com/docker/buildx/blob/master/commands/build.go). The set-array names follow the [Dev Container base schema](https://github.com/devcontainers/spec/blob/main/schemas/devContainer.base.schema.json) and supporting tool reference. These are moving `master`/current-documentation sources; dch has no Docker SDK dependency and its option tables can lag newly added or changed upstream flags. Unknown flags therefore remain opaque until the tables are updated.
+
 ### Feature host initialization
 
 Start and Build support Feature host hooks through the tool-specific property
@@ -125,8 +126,29 @@ and matching host/container user IDs. Docker Desktop, remote Docker, and differe
 UIDs are not supported. The container image must provide Git and curl. Initialize
 host pass before starting; dch does not install host packages or generate GPG keys.
 
-Copy the Feature directory into your project's `.devcontainer/features/github-cli`,
-then add this to `devcontainer.json` or your `devcontainer.local.json`:
+In dch, select a project, open **Features**, choose **Enable GitHub CLI with host
+pass**, and enter a host pass entry name (never the PAT itself). dch bundles the
+Feature, places it in `.devcontainer/.dch/features/github-cli`, and adds its options
+to `.devcontainer/devcontainer.local.json`. Other settings and comments are retained.
+Each project has its own toggle and entry setting. The menu is available even when
+Docker is unavailable. Run **Build** afterward to apply the change.
+
+```text
+demo / Features
+  1) Enable GitHub CLI with host pass
+  2) Back
+```
+
+Select the enabled Feature again to disable it. This removes its local setting and
+stops the project's host pass service, retaining the encrypted PAT. Run **Build**
+to remove the Feature from the container. Keep `devcontainer.local.json` and
+`.devcontainer/.dch/` out of version control. Features configured in the base
+`devcontainer.json` must be managed there. Feature files remain available for
+existing containers. The menu currently manages the bundled GitHub CLI Feature.
+
+For manual setup instead, copy the Feature directory into your project's
+`.devcontainer/features/github-cli`, then add this to `devcontainer.json` or
+your `devcontainer.local.json`:
 
 ```json
 {

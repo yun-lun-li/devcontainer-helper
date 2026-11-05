@@ -11,13 +11,14 @@ import (
 type projectAction string
 
 const (
-	actionConnect projectAction = "Connect"
-	actionStart   projectAction = "Start"
-	actionStop    projectAction = "Stop"
-	actionBuild   projectAction = "Build"
-	actionConfig  projectAction = "Show config"
-	actionRemove  projectAction = "Remove Project"
-	actionBack    projectAction = "Back to projects"
+	actionConnect  projectAction = "Connect"
+	actionStart    projectAction = "Start"
+	actionStop     projectAction = "Stop"
+	actionBuild    projectAction = "Build"
+	actionConfig   projectAction = "Show config"
+	actionFeatures projectAction = "Features"
+	actionRemove   projectAction = "Remove Project"
+	actionBack     projectAction = "Back to projects"
 )
 
 func projectsMenu() error {
@@ -62,14 +63,7 @@ func projectMenu(path string) error {
 		if err != nil {
 			return err
 		}
-		var p Project
-		found := false
-		for _, candidate := range projects {
-			if candidate.Path == path {
-				p, found = candidate, true
-				break
-			}
-		}
+		p, found := findProject(projects, path)
 		if !found {
 			return nil
 		}
@@ -84,41 +78,68 @@ func projectMenu(path string) error {
 		if err != nil {
 			return err
 		}
-		switch actions[choice] {
-		case actionConnect:
-			err = connectProject(p)
-		case actionStart:
-			err = startProject(p)
-		case actionStop:
-			err = stopProject(p)
-		case actionBuild:
-			err = buildProject(p)
-		case actionConfig:
-			err = showProjectConfig(p)
-		case actionRemove:
-			removeChoice, chooseErr := choose("Remove project?", []string{
-				"Remove project registration  Keep files and containers",
-				"Cancel",
-			})
-			if chooseErr != nil {
-				err = chooseErr
-			} else if removeChoice == 0 {
-				err = common.RemoveProjectRegistration(p.Path)
-				if err == nil {
-					return nil
-				}
-			}
-		case actionBack:
+		back, err := performProjectAction(p, actions[choice])
+		if back {
 			return nil
 		}
-		if err != nil && !errors.Is(err, errCancelled) {
-			if screenActive {
-				screenError(err)
-			} else {
-				return err
-			}
+		if err := reportProjectActionError(err); err != nil {
+			return err
 		}
 	}
+}
+
+func reportProjectActionError(err error) error {
+	if err == nil || errors.Is(err, errCancelled) {
+		return nil
+	}
+	if !screenActive {
+		return err
+	}
+	screenError(err)
+	return nil
+}
+
+func findProject(projects []Project, path string) (Project, bool) {
+	for _, project := range projects {
+		if project.Path == path {
+			return project, true
+		}
+	}
+	return Project{}, false
+}
+
+func performProjectAction(p Project, action projectAction) (bool, error) {
+	var err error
+	switch action {
+	case actionConnect:
+		err = connectProject(p)
+	case actionStart:
+		err = startProject(p)
+	case actionStop:
+		err = stopProject(p)
+	case actionBuild:
+		err = buildProject(p)
+	case actionConfig:
+		err = showProjectConfig(p)
+	case actionFeatures:
+		err = projectFeatures(p)
+	case actionRemove:
+		return removeProjectFromMenu(p)
+	case actionBack:
+		return true, nil
+	}
+	return false, err
+}
+
+func removeProjectFromMenu(p Project) (bool, error) {
+	choice, err := choose("Remove project?", []string{
+		"Remove project registration  Keep files and containers", "Cancel",
+	})
+	if err != nil || choice != 0 {
+		return false, err
+	}
+	err = common.RemoveProjectRegistration(p.Path)
+	return err == nil, err
 }
 
 func chooseProject(p Project, actions []projectAction) (int, error) {
@@ -135,6 +156,8 @@ func chooseProject(p Project, actions []projectAction) (int, error) {
 			options[i] = "▣ Build  Rebuild container or image"
 		case actionConfig:
 			options[i] = "⚙ Show config  Preview merged devcontainer settings"
+		case actionFeatures:
+			options[i] = "⚙ Features  Manage optional project Features"
 		case actionRemove:
 			options[i] = "✕ Remove Project  Unregister only; keep files and containers"
 		case actionBack:
@@ -154,6 +177,9 @@ func availableProjectActions(p Project, dockerAvailable bool) []projectAction {
 			actions = append(actions, actionStart)
 		}
 		actions = append(actions, actionBuild)
+	}
+	if p.Valid {
+		actions = append(actions, actionFeatures)
 	}
 	return append(actions, actionConfig, actionRemove, actionBack)
 }

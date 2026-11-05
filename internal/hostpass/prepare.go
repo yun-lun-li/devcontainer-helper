@@ -123,3 +123,15 @@ func Stop(ctx context.Context, project string) error {
 	}
 	return nil
 }
+
+// StopIfRunning stops an active project service and succeeds when none is running.
+func StopIfRunning(ctx context.Context, project string) error {
+	dir, err := runtimeDirectory(project)
+	if err != nil {
+		return err
+	}
+	if _, running := serviceIdentity(ctx, dir); !running {
+		return nil
+	}
+	return Stop(ctx, project)
+}

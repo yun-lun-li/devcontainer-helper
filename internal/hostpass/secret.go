@@ -21,6 +21,9 @@ const requestTimeout = 120 * time.Second
 var entryPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_./-]*$`)
 var tokenPattern = regexp.MustCompile(`^(github_pat_|ghp_)[A-Za-z0-9_]+$`)
 
+// ValidateEntry checks a pass entry name without reading its secret.
+func ValidateEntry(entry string) error { return validateEntry(entry) }
+
 func validateEntry(entry string) error {
 	if !entryPattern.MatchString(entry) || filepath.Clean(entry) != entry || strings.Contains(entry, "..") {
 		return fmt.Errorf("pass entry must be a relative name without parent traversal")
